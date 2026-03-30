@@ -17,6 +17,8 @@
 // ---------------------------------------------------------------------------
 // LovyanGFX display configuration
 // ---------------------------------------------------------------------------
+#include <driver/i2c.h>
+
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
 #include <lgfx/v1/platforms/esp32s3/Panel_RGB.hpp>

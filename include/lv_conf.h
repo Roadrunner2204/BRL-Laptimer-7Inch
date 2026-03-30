@@ -44,8 +44,6 @@
 /* Align draw buffer to this many bytes */
 #define LV_DRAW_BUF_ALIGN   4
 
-/* Keep draw buffer in RAM (not PSRAM) for speed */
-#define LV_DRAW_BUF_DEFINE_STATIC 0
 
 /*=====================
    RENDERING SETTINGS
