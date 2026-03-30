@@ -55,6 +55,9 @@
 /* Enable 16-bit color swap for flush */
 #define LV_DRAW_SW_COMPLEX 1
 
+/* Disable ARM-specific ASM optimisations (Helium/NEON) — ESP32-S3 uses Xtensa */
+#define LV_DRAW_SW_ASM LV_DRAW_SW_ASM_NONE
+
 /*=======================
    FEATURE CONFIGURATION
  *=======================*/
