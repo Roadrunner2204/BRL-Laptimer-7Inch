@@ -20,16 +20,10 @@
    STDLIB WRAPPER SETTINGS
  *=========================*/
 
-/* Use built-in LVGL malloc/free (backed by heap_caps on ESP32) */
-#define LV_USE_STDLIB_MALLOC    LV_STDLIB_BUILTIN
-#define LV_USE_STDLIB_STRING    LV_STDLIB_BUILTIN
-#define LV_USE_STDLIB_SPRINTF   LV_STDLIB_BUILTIN
-
-/* Memory pool size for LVGL (only used when LV_STDLIB_BUILTIN) */
-#define LV_MEM_SIZE (256 * 1024U)  /* 256 KB */
-#define LV_MEM_POOL_INCLUDE <stdlib.h>
-#define LV_MEM_POOL_ALLOC   malloc
-#define LV_MEM_POOL_FREE    free
+/* Use C stdlib malloc/free — on ESP32 with PSRAM this uses all available RAM */
+#define LV_USE_STDLIB_MALLOC    LV_STDLIB_CLIB
+#define LV_USE_STDLIB_STRING    LV_STDLIB_CLIB
+#define LV_USE_STDLIB_SPRINTF   LV_STDLIB_CLIB
 
 /*====================
    HAL SETTINGS

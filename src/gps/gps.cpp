@@ -20,13 +20,12 @@ static HardwareSerial gps_serial(GPS_UART_PORT);
 // ---------------------------------------------------------------------------
 void gps_init() {
     gps_serial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
-    Serial.printf("[GPS] Tau1201 UART1 gestartet: RX=GPIO%d TX=GPIO%d @%d baud\n",
+    Serial.printf("[GPS] Tau1201 UART2 gestartet: RX=GPIO%d TX=GPIO%d @%d baud\n",
                   GPS_RX_PIN, GPS_TX_PIN, GPS_BAUD);
 
-#ifdef GPS_PPS_PIN
+    // PPS-Pin konfigurieren (jeder freie GPIO geht — hier GPIO 13)
     pinMode(GPS_PPS_PIN, INPUT);
     Serial.printf("[GPS] PPS-Pin: GPIO%d\n", GPS_PPS_PIN);
-#endif
 }
 
 // ---------------------------------------------------------------------------

@@ -13,20 +13,27 @@
 #define BRL_NAVBAR_Y    (BRL_SCREEN_H - BRL_NAVBAR_H)
 
 // ---------------------------------------------------------------------------
-// Color palette
+// Bavarian RaceLabs LLC — Brand Color Palette
+// Primary: Electric Blue  (#0096FF) — high contrast on black
 // ---------------------------------------------------------------------------
-#define BRL_CLR_BG          lv_color_hex(0x000000)   // pure black
-#define BRL_CLR_SURFACE     lv_color_hex(0x111111)   // card surface
-#define BRL_CLR_SURFACE2    lv_color_hex(0x1E1E1E)   // elevated surface
-#define BRL_CLR_BORDER      lv_color_hex(0x2A2A2A)   // subtle border
-#define BRL_CLR_ACCENT      lv_color_hex(0x00E676)   // green — good / active
-#define BRL_CLR_WARN        lv_color_hex(0xFF9800)   // orange — warning / slower
-#define BRL_CLR_DANGER      lv_color_hex(0xF44336)   // red — error / much slower
+#define BRL_CLR_BG          lv_color_hex(0x000000)   // pure black background
+#define BRL_CLR_SURFACE     lv_color_hex(0x0D1117)   // dark blue-tinted surface
+#define BRL_CLR_SURFACE2    lv_color_hex(0x161B22)   // elevated surface
+#define BRL_CLR_BORDER      lv_color_hex(0x1C3A5C)   // blue-tinted border
+
+// ── Brand accent: Bavarian electric blue ──────────────────────────────────
+#define BRL_CLR_ACCENT      lv_color_hex(0x0096FF)   // BRL Blue — active / GPS ok
+#define BRL_CLR_ACCENT_DIM  lv_color_hex(0x0060C0)   // darker blue for pressed states
+// ──────────────────────────────────────────────────────────────────────────
+
+#define BRL_CLR_FASTER      lv_color_hex(0x00C8FF)   // cyan-blue = faster than best
+#define BRL_CLR_WARN        lv_color_hex(0xFF9500)   // orange — slower
+#define BRL_CLR_DANGER      lv_color_hex(0xFF3B30)   // red — much slower / error
 #define BRL_CLR_TEXT        lv_color_hex(0xFFFFFF)   // primary text
-#define BRL_CLR_TEXT_DIM    lv_color_hex(0x888888)   // secondary / dim text
-#define BRL_CLR_TEXT_DARK   lv_color_hex(0x444444)   // inactive nav items
-#define BRL_CLR_NAV_BG      lv_color_hex(0x0A0A0A)   // nav bar background
-#define BRL_CLR_STATUSBAR   lv_color_hex(0x050505)   // status bar background
+#define BRL_CLR_TEXT_DIM    lv_color_hex(0x7A8FA6)   // secondary / dim text (blue-grey)
+#define BRL_CLR_TEXT_DARK   lv_color_hex(0x3A4A5C)   // inactive nav items
+#define BRL_CLR_NAV_BG      lv_color_hex(0x060A0F)   // nav bar background
+#define BRL_CLR_STATUSBAR   lv_color_hex(0x030508)   // status bar background
 
 // ---------------------------------------------------------------------------
 // Helper: apply dark card style to any container

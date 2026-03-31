@@ -333,7 +333,7 @@ static void build_dashboard(lv_obj_t *parent) {
     lv_obj_set_size(start_btn, 210, 52);
     lv_obj_set_pos(start_btn, 578, obd_y);
     lv_obj_set_style_bg_color(start_btn, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(start_btn, lv_color_hex(0x00B050), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_color(start_btn, BRL_CLR_ACCENT_DIM, LV_STATE_PRESSED);
     lv_obj_set_style_radius(start_btn, 6, LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(start_btn, 0, LV_STATE_DEFAULT);
     lv_obj_add_event_cb(start_btn, cb_start_stop, LV_EVENT_CLICKED, NULL);
@@ -341,7 +341,7 @@ static void build_dashboard(lv_obj_t *parent) {
     dash_start_btn_lbl = lv_label_create(start_btn);
     lv_label_set_text(dash_start_btn_lbl, LV_SYMBOL_PLAY "  TIMING STARTEN");
     brl_style_label(dash_start_btn_lbl, &lv_font_montserrat_16,
-                    lv_color_hex(0x000000));
+                    BRL_CLR_TEXT);   // weißer Text auf BRL-Blau
     lv_obj_center(dash_start_btn_lbl);
 }
 
@@ -568,7 +568,9 @@ static void timer_live_update(lv_timer_t * /*t*/) {
 // SECTION 8 — MAIN UI (called after splash)
 // ============================================================================
 static void build_main_ui() {
-    lv_obj_t *root = lv_screen_active();
+    // Eigenen neuen LVGL-Screen anlegen (nicht lv_screen_active() nehmen —
+    // das wäre noch der Splash-Screen, der gleich danach gelöscht wird)
+    lv_obj_t *root = lv_obj_create(nullptr);
 
     // Black background
     lv_obj_set_style_bg_color(root, BRL_CLR_BG, LV_STATE_DEFAULT);
@@ -598,6 +600,9 @@ static void build_main_ui() {
     // Build chrome (drawn on top so they're always visible)
     build_statusbar(root);
     build_navbar(root);
+
+    // Neuen Screen aktivieren (Splash wird danach von screen_splash.cpp gelöscht)
+    lv_screen_load(root);
 
     // Show dashboard
     nav_show(0);
