@@ -102,11 +102,12 @@
 /* Animation */
 #define LV_USE_ANIM 1
 
-/* Enable image decoder */
-#define LV_USE_BMP 0
-#define LV_USE_SJPG 0
-#define LV_USE_GIF 0
-#define LV_USE_PNG 0
+/* Image decoders */
+#define LV_USE_BMP   0
+#define LV_USE_GIF   0
+#define LV_USE_PNG   0
+/* JPEG via TJpgDec — lightweight, fits well on ESP32 */
+#define LV_USE_TJPGD 1
 
 /* Logging */
 #define LV_USE_LOG 0

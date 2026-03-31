@@ -13,6 +13,7 @@
 
 #include <Arduino.h>
 #include <lvgl.h>
+#include "gps/gps.h"
 
 // ---------------------------------------------------------------------------
 // LovyanGFX display configuration
@@ -205,7 +206,10 @@ void setup()
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(indev, my_touchpad_read);
 
-  // Build the UI
+  // GPS initialisieren (Tau1201 auf UART1, GPIO 16/15)
+  gps_init();
+
+  // Build the UI (Splash → Haupt-UI)
   lv_my_setup();
 
   Serial.println("Setup complete");
@@ -213,6 +217,7 @@ void setup()
 
 void loop()
 {
+  gps_poll();          // Tau1201 NMEA-Bytes lesen & parsen (nicht blockierend)
   lv_timer_handler();
   delay(5);
 }

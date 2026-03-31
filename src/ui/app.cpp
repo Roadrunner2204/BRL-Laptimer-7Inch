@@ -14,6 +14,7 @@
 #include <lvgl.h>
 #include "app.h"
 #include "theme.h"
+#include "screen_splash.h"
 #include "../data/lap_data.h"
 #include "../data/track_db.h"
 
@@ -564,15 +565,9 @@ static void timer_live_update(lv_timer_t * /*t*/) {
 }
 
 // ============================================================================
-// SECTION 8 — INIT
+// SECTION 8 — MAIN UI (called after splash)
 // ============================================================================
-void app_init() {
-    // Initialise state
-    g_state = {};
-    g_state.active_track_idx = -1;
-    g_state.language = 0;    // DE
-    g_state.units    = 0;    // km/h
-
+static void build_main_ui() {
     lv_obj_t *root = lv_screen_active();
 
     // Black background
@@ -611,7 +606,19 @@ void app_init() {
     lv_timer_create(timer_live_update, 100, NULL);
 }
 
+// ============================================================================
+// SECTION 9 — PUBLIC ENTRY POINT
+// ============================================================================
+void app_init() {
+    g_state = {};
+    g_state.active_track_idx = -1;
+    g_state.language = 0;   // DE
+    g_state.units    = 0;   // km/h
+
+    // Splash-Screen zuerst zeigen (3 Sekunden), dann Haupt-UI aufbauen
+    splash_show(3000, build_main_ui);
+}
+
 void app_tick() {
-    // Intentionally empty: the lv_timer inside app_init() handles updates.
-    // Add any non-LVGL polling here (GPS UART read, OBD poll, etc.)
+    // GPS und OBD hier pollen (wird von main.cpp loop() aufgerufen)
 }
