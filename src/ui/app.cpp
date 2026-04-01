@@ -18,6 +18,8 @@
 #include "../data/lap_data.h"
 #include "../data/track_db.h"
 #include "../timing/lap_timer.h"
+#include "../obd/obd_bt.h"
+#include "../wifi/wifi_mgr.h"
 
 // ---------------------------------------------------------------------------
 // Global application state
@@ -64,6 +66,15 @@ static lv_obj_t *dash_sec2_lbl;
 static lv_obj_t *dash_sec3_lbl;
 static lv_obj_t *dash_delta_lbl;
 static lv_obj_t *dash_start_btn_lbl;
+
+// Settings handles (updated by timer + callbacks)
+static lv_obj_t *set_obd_status_lbl;
+static lv_obj_t *set_obd_btn;
+static lv_obj_t *set_wifi_ap_sw;
+static lv_obj_t *set_wifi_ap_status_lbl;
+static lv_obj_t *set_wifi_sta_status_lbl;
+static lv_obj_t *set_lang_btn;
+static lv_obj_t *set_units_btn;
 
 // ============================================================================
 // SECTION 1 — STATUS BAR
@@ -430,54 +441,347 @@ static void build_history(lv_obj_t *parent) {
 }
 
 // ============================================================================
-// SECTION 6 — SETTINGS
+// SECTION 6 — SETTINGS  (interactive)
 // ============================================================================
+
+// ---------------------------------------------------------------------------
+// Helper: create a settings row  (card with icon+title left, control right)
+// Returns the right-side container so callers can add controls there.
+// ---------------------------------------------------------------------------
+static lv_obj_t *make_setting_row(lv_obj_t *parent, int y, int h,
+                                   const char *icon, const char *title,
+                                   const char *subtitle = nullptr) {
+    lv_obj_t *row = lv_obj_create(parent);
+    lv_obj_set_size(row, BRL_SCREEN_W - 16, h);
+    lv_obj_set_pos(row, 0, y);
+    brl_style_card(row);
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Icon
+    lv_obj_t *ico = lv_label_create(row);
+    lv_label_set_text(ico, icon);
+    brl_style_label(ico, &lv_font_montserrat_20, BRL_CLR_ACCENT);
+    lv_obj_align(ico, LV_ALIGN_LEFT_MID, 0, subtitle ? -8 : 0);
+
+    // Title
+    lv_obj_t *tit = lv_label_create(row);
+    lv_label_set_text(tit, title);
+    brl_style_label(tit, &lv_font_montserrat_16, BRL_CLR_TEXT);
+    lv_obj_align(tit, LV_ALIGN_LEFT_MID, 32, subtitle ? -8 : 0);
+
+    // Optional subtitle
+    if (subtitle) {
+        lv_obj_t *sub = lv_label_create(row);
+        lv_label_set_text(sub, subtitle);
+        brl_style_label(sub, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
+        lv_obj_align(sub, LV_ALIGN_LEFT_MID, 32, 10);
+    }
+
+    // Right container for controls
+    lv_obj_t *right = lv_obj_create(row);
+    lv_obj_set_size(right, 340, h - 16);
+    lv_obj_align(right, LV_ALIGN_RIGHT_MID, 0, 0);
+    brl_style_transparent(right);
+    lv_obj_remove_flag(right, LV_OBJ_FLAG_SCROLLABLE);
+    return right;
+}
+
+// ---------------------------------------------------------------------------
+// Small action button used inside settings rows
+// ---------------------------------------------------------------------------
+static lv_obj_t *make_setting_btn(lv_obj_t *parent, const char *text,
+                                   lv_color_t color, lv_align_t align,
+                                   int x_ofs = 0) {
+    lv_obj_t *btn = lv_button_create(parent);
+    lv_obj_set_size(btn, 120, 36);
+    lv_obj_align(btn, align, x_ofs, 0);
+    lv_obj_set_style_bg_color(btn, color, LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(btn, BRL_CLR_ACCENT_DIM, LV_STATE_PRESSED);
+    lv_obj_set_style_radius(btn, 6, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(btn, 0, LV_STATE_DEFAULT);
+    lv_obj_t *lbl = lv_label_create(btn);
+    lv_label_set_text(lbl, text);
+    brl_style_label(lbl, &lv_font_montserrat_14, BRL_CLR_TEXT);
+    lv_obj_center(lbl);
+    return btn;
+}
+
+// ---------------------------------------------------------------------------
+// WiFi credential dialog (modal overlay over root screen)
+// ---------------------------------------------------------------------------
+static lv_obj_t *s_wifi_dialog    = nullptr;
+static lv_obj_t *s_ta_ssid        = nullptr;
+static lv_obj_t *s_ta_pass        = nullptr;
+static lv_obj_t *s_kb             = nullptr;
+
+static void cb_wifi_dialog_save(lv_event_t * /*e*/) {
+    if (!s_ta_ssid || !s_ta_pass) return;
+    wifi_set_sta(lv_textarea_get_text(s_ta_ssid),
+                 lv_textarea_get_text(s_ta_pass));
+    // Switch to STA mode immediately
+    wifi_set_mode(BRL_WIFI_STA);
+
+    if (s_wifi_dialog) { lv_obj_delete(s_wifi_dialog); s_wifi_dialog = nullptr; }
+}
+
+static void cb_wifi_dialog_cancel(lv_event_t * /*e*/) {
+    if (s_wifi_dialog) { lv_obj_delete(s_wifi_dialog); s_wifi_dialog = nullptr; }
+}
+
+static void cb_kb_ready(lv_event_t *e) {
+    // Keyboard OK button closes it
+    lv_obj_t *kb = (lv_obj_t *)lv_event_get_target(e);
+    lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void cb_ta_focused(lv_event_t *e) {
+    if (s_kb) {
+        lv_keyboard_set_textarea(s_kb, (lv_obj_t *)lv_event_get_target(e));
+        lv_obj_remove_flag(s_kb, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void open_wifi_sta_dialog() {
+    if (s_wifi_dialog) return;
+
+    lv_obj_t *scr = lv_screen_active();
+    // Dark semi-transparent overlay
+    s_wifi_dialog = lv_obj_create(scr);
+    lv_obj_set_size(s_wifi_dialog, BRL_SCREEN_W, BRL_SCREEN_H);
+    lv_obj_set_pos(s_wifi_dialog, 0, 0);
+    lv_obj_set_style_bg_color(s_wifi_dialog, lv_color_hex(0x000000), LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(s_wifi_dialog, LV_OPA_80, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(s_wifi_dialog, 0, LV_STATE_DEFAULT);
+    lv_obj_remove_flag(s_wifi_dialog, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Dialog card
+    lv_obj_t *card = lv_obj_create(s_wifi_dialog);
+    lv_obj_set_size(card, 500, 320);
+    lv_obj_center(card);
+    brl_style_card(card);
+    lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(card, 16, LV_STATE_DEFAULT);
+
+    lv_obj_t *ttl = lv_label_create(card);
+    lv_label_set_text(ttl, LV_SYMBOL_WIFI "  WLAN einrichten");
+    brl_style_label(ttl, &lv_font_montserrat_20, BRL_CLR_TEXT);
+    lv_obj_align(ttl, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    // SSID field
+    lv_obj_t *lbl_s = lv_label_create(card);
+    lv_label_set_text(lbl_s, "Netzwerkname (SSID)");
+    brl_style_label(lbl_s, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
+    lv_obj_align(lbl_s, LV_ALIGN_TOP_LEFT, 0, 36);
+
+    s_ta_ssid = lv_textarea_create(card);
+    lv_obj_set_size(s_ta_ssid, 468, 40);
+    lv_obj_align(s_ta_ssid, LV_ALIGN_TOP_LEFT, 0, 56);
+    lv_textarea_set_one_line(s_ta_ssid, true);
+    lv_textarea_set_placeholder_text(s_ta_ssid, "MeinHeimnetz");
+    lv_obj_set_style_bg_color(s_ta_ssid, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(s_ta_ssid, BRL_CLR_TEXT, LV_STATE_DEFAULT);
+    lv_obj_add_event_cb(s_ta_ssid, cb_ta_focused, LV_EVENT_FOCUSED, nullptr);
+
+    // Password field
+    lv_obj_t *lbl_p = lv_label_create(card);
+    lv_label_set_text(lbl_p, "Passwort");
+    brl_style_label(lbl_p, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
+    lv_obj_align(lbl_p, LV_ALIGN_TOP_LEFT, 0, 104);
+
+    s_ta_pass = lv_textarea_create(card);
+    lv_obj_set_size(s_ta_pass, 468, 40);
+    lv_obj_align(s_ta_pass, LV_ALIGN_TOP_LEFT, 0, 124);
+    lv_textarea_set_one_line(s_ta_pass, true);
+    lv_textarea_set_password_mode(s_ta_pass, true);
+    lv_textarea_set_placeholder_text(s_ta_pass, "••••••••");
+    lv_obj_set_style_bg_color(s_ta_pass, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(s_ta_pass, BRL_CLR_TEXT, LV_STATE_DEFAULT);
+    lv_obj_add_event_cb(s_ta_pass, cb_ta_focused, LV_EVENT_FOCUSED, nullptr);
+
+    // Buttons
+    lv_obj_t *btn_save = lv_button_create(card);
+    lv_obj_set_size(btn_save, 140, 40);
+    lv_obj_align(btn_save, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_set_style_bg_color(btn_save, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(btn_save, 6, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(btn_save, 0, LV_STATE_DEFAULT);
+    lv_obj_t *lbl_save = lv_label_create(btn_save);
+    lv_label_set_text(lbl_save, LV_SYMBOL_OK "  Verbinden");
+    brl_style_label(lbl_save, &lv_font_montserrat_14, BRL_CLR_TEXT);
+    lv_obj_center(lbl_save);
+    lv_obj_add_event_cb(btn_save, cb_wifi_dialog_save, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *btn_cancel = lv_button_create(card);
+    lv_obj_set_size(btn_cancel, 120, 40);
+    lv_obj_align(btn_cancel, LV_ALIGN_BOTTOM_RIGHT, -150, 0);
+    lv_obj_set_style_bg_color(btn_cancel, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(btn_cancel, 6, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(btn_cancel, 0, LV_STATE_DEFAULT);
+    lv_obj_t *lbl_cancel = lv_label_create(btn_cancel);
+    lv_label_set_text(lbl_cancel, LV_SYMBOL_CLOSE "  Abbrechen");
+    brl_style_label(lbl_cancel, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
+    lv_obj_center(lbl_cancel);
+    lv_obj_add_event_cb(btn_cancel, cb_wifi_dialog_cancel, LV_EVENT_CLICKED, nullptr);
+
+    // Inline keyboard (hidden until textarea focused)
+    s_kb = lv_keyboard_create(s_wifi_dialog);
+    lv_obj_set_size(s_kb, BRL_SCREEN_W, 200);
+    lv_obj_align(s_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_color(s_kb, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
+    lv_obj_add_event_cb(s_kb, cb_kb_ready, LV_EVENT_READY, nullptr);
+    lv_obj_add_flag(s_kb, LV_OBJ_FLAG_HIDDEN);
+}
+
+// ---------------------------------------------------------------------------
+// Settings callbacks
+// ---------------------------------------------------------------------------
+static void cb_obd_connect(lv_event_t * /*e*/) {
+    if (obd_bt_state() == OBD_CONNECTED || obd_bt_state() == OBD_REQUESTING) {
+        obd_bt_disconnect();
+    } else {
+        // Force a new scan by resetting to IDLE — obd_bt_poll() does the rest
+        obd_bt_disconnect();
+    }
+}
+
+static void cb_wifi_ap_toggle(lv_event_t *e) {
+    lv_obj_t *sw = (lv_obj_t *)lv_event_get_target(e);
+    bool on = lv_obj_has_state(sw, LV_STATE_CHECKED);
+    wifi_set_mode(on ? BRL_WIFI_AP : BRL_WIFI_OFF);
+}
+
+static void cb_wifi_sta_setup(lv_event_t * /*e*/) {
+    open_wifi_sta_dialog();
+}
+
+static void cb_wifi_sta_disconnect(lv_event_t * /*e*/) {
+    wifi_set_mode(BRL_WIFI_OFF);
+}
+
+static void cb_lang_toggle(lv_event_t * /*e*/) {
+    g_state.language = (g_state.language == 0) ? 1 : 0;
+    lv_label_set_text(lv_obj_get_child(set_lang_btn, 0),
+                      g_state.language == 0 ? "Deutsch" : "English");
+}
+
+static void cb_units_toggle(lv_event_t * /*e*/) {
+    g_state.units = (g_state.units == 0) ? 1 : 0;
+    lv_label_set_text(lv_obj_get_child(set_units_btn, 0),
+                      g_state.units == 0 ? "km/h" : "mph");
+}
+
+// ---------------------------------------------------------------------------
+// Build the settings panel
+// ---------------------------------------------------------------------------
 static void build_settings(lv_obj_t *parent) {
     lv_obj_t *title = lv_label_create(parent);
     lv_label_set_text(title, "Einstellungen");
     brl_style_label(title, &lv_font_montserrat_24, BRL_CLR_TEXT);
-    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 12, 8);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
 
-    lv_obj_t *list = lv_list_create(parent);
-    lv_obj_set_size(list, BRL_SCREEN_W - 16, BRL_CONTENT_H - 60);
-    lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_set_style_bg_color(list, BRL_CLR_BG, LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(list, LV_OPA_COVER, LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(list, 0, LV_STATE_DEFAULT);
-    lv_obj_set_style_pad_row(list, 4, LV_STATE_DEFAULT);
-    lv_obj_set_style_pad_all(list, 0, LV_STATE_DEFAULT);
+    // Scrollable container for rows
+    lv_obj_t *scroll = lv_obj_create(parent);
+    lv_obj_set_size(scroll, BRL_SCREEN_W - 16, BRL_CONTENT_H - 40);
+    lv_obj_align(scroll, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_opa(scroll, LV_OPA_TRANSP, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(scroll, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_all(scroll, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_row(scroll, 4, LV_STATE_DEFAULT);
+    lv_obj_set_flex_flow(scroll, LV_FLEX_FLOW_COLUMN);
 
-    struct { const char *icon; const char *label; const char *value; } items[] = {
-        { LV_SYMBOL_SETTINGS,  "Sprache",                   "Deutsch"       },
-        { LV_SYMBOL_WIFI,      "WLAN",                      "Nicht verbunden" },
-        { LV_SYMBOL_BLUETOOTH, "OBD Bluetooth",             "Nicht verbunden" },
-        { LV_SYMBOL_GPS,       "GPS Modul",                 "NEO-6M"        },
-        { LV_SYMBOL_LOOP,      "Einheiten",                 "km/h"          },
-        { LV_SYMBOL_DOWNLOAD,  "Updates prüfen",            "v1.0.0"        },
-        { LV_SYMBOL_WIFI,      "Daten per WLAN exportieren","Android App"   },
-        { LV_SYMBOL_SETTINGS,  "Über BRL Laptimer",         ""              },
-    };
+    // ── Row heights ──────────────────────────────────────────────────────────
+    const int RH = 56;   // standard row height
+    const int RH2 = 68;  // tall row (with subtitle)
+    int y = 0;
 
-    for (int i = 0; i < (int)(sizeof(items)/sizeof(items[0])); i++) {
-        char row_text[80];
-        snprintf(row_text, sizeof(row_text), "%-28s %s", items[i].label, items[i].value);
+    // ── 1. OBD Bluetooth ─────────────────────────────────────────────────────
+    {
+        lv_obj_t *right = make_setting_row(scroll, y, RH2,
+            LV_SYMBOL_BLUETOOTH, "OBD Adapter",
+            "BRL-OBD Bluetooth LE");
+        y += RH2 + 4;
 
-        lv_obj_t *btn = lv_list_add_button(list, items[i].icon, row_text);
-        lv_obj_set_style_bg_color(btn, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_color(btn, BRL_CLR_SURFACE2, LV_STATE_PRESSED);
-        lv_obj_set_style_border_width(btn, 0, LV_STATE_DEFAULT);
-        lv_obj_set_style_radius(btn, 6, LV_STATE_DEFAULT);
-        lv_obj_set_height(btn, 48);
+        set_obd_status_lbl = lv_label_create(right);
+        lv_label_set_text(set_obd_status_lbl, "Nicht verbunden");
+        brl_style_label(set_obd_status_lbl, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
+        lv_obj_align(set_obd_status_lbl, LV_ALIGN_LEFT_MID, 0, 0);
 
-        lv_obj_t *lbl = lv_obj_get_child(btn, 1);
-        if (lbl) {
-            lv_obj_set_style_text_color(lbl, BRL_CLR_TEXT, LV_STATE_DEFAULT);
-            lv_obj_set_style_text_font(lbl, &lv_font_montserrat_16, LV_STATE_DEFAULT);
-        }
-        lv_obj_t *icon = lv_obj_get_child(btn, 0);
-        if (icon) {
-            lv_obj_set_style_text_color(icon, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
-        }
+        set_obd_btn = make_setting_btn(right, "Verbinden",
+                                       BRL_CLR_ACCENT, LV_ALIGN_RIGHT_MID);
+        lv_obj_add_event_cb(set_obd_btn, cb_obd_connect, LV_EVENT_CLICKED, nullptr);
+    }
+
+    // ── 2. WiFi Hotspot (AP mode) ─────────────────────────────────────────────
+    {
+        lv_obj_t *right = make_setting_row(scroll, y, RH2,
+            LV_SYMBOL_WIFI, "WiFi Hotspot (AP)",
+            "Android App & Daten-Download");
+        y += RH2 + 4;
+
+        set_wifi_ap_status_lbl = lv_label_create(right);
+        lv_label_set_text(set_wifi_ap_status_lbl, "AUS");
+        brl_style_label(set_wifi_ap_status_lbl, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
+        lv_obj_align(set_wifi_ap_status_lbl, LV_ALIGN_LEFT_MID, 0, 0);
+
+        set_wifi_ap_sw = lv_switch_create(right);
+        lv_obj_align(set_wifi_ap_sw, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_set_style_bg_color(set_wifi_ap_sw, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(set_wifi_ap_sw, BRL_CLR_ACCENT, LV_STATE_CHECKED);
+        lv_obj_add_event_cb(set_wifi_ap_sw, cb_wifi_ap_toggle, LV_EVENT_VALUE_CHANGED, nullptr);
+    }
+
+    // ── 3. WiFi Netzwerk (STA / OTA) ─────────────────────────────────────────
+    {
+        lv_obj_t *right = make_setting_row(scroll, y, RH2,
+            LV_SYMBOL_WIFI, "WiFi Netzwerk (STA)",
+            "Für OTA Firmware Updates");
+        y += RH2 + 4;
+
+        set_wifi_sta_status_lbl = lv_label_create(right);
+        lv_label_set_text(set_wifi_sta_status_lbl, "Nicht verbunden");
+        brl_style_label(set_wifi_sta_status_lbl, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
+        lv_obj_align(set_wifi_sta_status_lbl, LV_ALIGN_LEFT_MID, 0, 0);
+
+        lv_obj_t *btn_cfg = make_setting_btn(right, LV_SYMBOL_SETTINGS " Einrichten",
+                                              BRL_CLR_ACCENT, LV_ALIGN_RIGHT_MID, -130);
+        lv_obj_add_event_cb(btn_cfg, cb_wifi_sta_setup, LV_EVENT_CLICKED, nullptr);
+
+        lv_obj_t *btn_dis = make_setting_btn(right, LV_SYMBOL_CLOSE " Trennen",
+                                              BRL_CLR_SURFACE2, LV_ALIGN_RIGHT_MID);
+        lv_obj_add_event_cb(btn_dis, cb_wifi_sta_disconnect, LV_EVENT_CLICKED, nullptr);
+    }
+
+    // ── 4. Sprache ────────────────────────────────────────────────────────────
+    {
+        lv_obj_t *right = make_setting_row(scroll, y, RH, LV_SYMBOL_SETTINGS, "Sprache");
+        y += RH + 4;
+
+        set_lang_btn = make_setting_btn(right,
+            g_state.language == 0 ? "Deutsch" : "English",
+            BRL_CLR_SURFACE2, LV_ALIGN_RIGHT_MID);
+        lv_obj_add_event_cb(set_lang_btn, cb_lang_toggle, LV_EVENT_CLICKED, nullptr);
+    }
+
+    // ── 5. Einheiten ──────────────────────────────────────────────────────────
+    {
+        lv_obj_t *right = make_setting_row(scroll, y, RH, LV_SYMBOL_LOOP, "Einheiten");
+        y += RH + 4;
+
+        set_units_btn = make_setting_btn(right,
+            g_state.units == 0 ? "km/h" : "mph",
+            BRL_CLR_SURFACE2, LV_ALIGN_RIGHT_MID);
+        lv_obj_add_event_cb(set_units_btn, cb_units_toggle, LV_EVENT_CLICKED, nullptr);
+    }
+
+    // ── 6. Info ───────────────────────────────────────────────────────────────
+    {
+        lv_obj_t *right = make_setting_row(scroll, y, RH,
+            LV_SYMBOL_GPS, "BRL Laptimer");
+        (void)right;
+        lv_obj_t *ver = lv_label_create(right);
+        lv_label_set_text(ver, "v1.0.0 — Bavarian RaceLabs LLC");
+        brl_style_label(ver, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
+        lv_obj_align(ver, LV_ALIGN_RIGHT_MID, 0, 0);
     }
 }
 
@@ -564,6 +868,50 @@ static void timer_live_update(lv_timer_t * /*t*/) {
         char bl_buf[16];
         fmt_laptime(bl_buf, sizeof(bl_buf), sess.laps[bi].total_ms);
         lv_label_set_text(dash_bestlap_lbl, bl_buf);
+    }
+
+    // --- Settings status labels ---
+    if (set_obd_status_lbl) {
+        OBdBtState os = obd_bt_state();
+        const char *obd_txt  = "Nicht verbunden";
+        const char *obd_btn  = "Verbinden";
+        lv_color_t  obd_col  = BRL_CLR_TEXT_DIM;
+        lv_color_t  btn_col  = BRL_CLR_ACCENT;
+        if      (os == OBD_SCANNING || os == OBD_FOUND || os == OBD_CONNECTING) {
+            obd_txt = "Suche..."; obd_col = BRL_CLR_WARN;
+        } else if (os == OBD_CONNECTED || os == OBD_REQUESTING) {
+            obd_txt = "Verbunden"; obd_col = BRL_CLR_ACCENT;
+            obd_btn = "Trennen";   btn_col = BRL_CLR_DANGER;
+        } else if (os == OBD_ERROR) {
+            obd_txt = "Fehler — retry..."; obd_col = BRL_CLR_DANGER;
+        }
+        lv_label_set_text(set_obd_status_lbl, obd_txt);
+        lv_obj_set_style_text_color(set_obd_status_lbl, obd_col, LV_STATE_DEFAULT);
+        lv_label_set_text(lv_obj_get_child(set_obd_btn, 0), obd_btn);
+        lv_obj_set_style_bg_color(set_obd_btn, btn_col, LV_STATE_DEFAULT);
+    }
+
+    if (set_wifi_ap_status_lbl) {
+        bool ap_on = (g_state.wifi_mode == BRL_WIFI_AP);
+        lv_label_set_text(set_wifi_ap_status_lbl,
+            ap_on ? "AN  — BRL-Laptimer (192.168.4.1)" : "AUS");
+        lv_obj_set_style_text_color(set_wifi_ap_status_lbl,
+            ap_on ? BRL_CLR_ACCENT : BRL_CLR_TEXT_DIM, LV_STATE_DEFAULT);
+        // Sync switch state without firing the event
+        if (ap_on && !lv_obj_has_state(set_wifi_ap_sw, LV_STATE_CHECKED))
+            lv_obj_add_state(set_wifi_ap_sw, LV_STATE_CHECKED);
+        else if (!ap_on && lv_obj_has_state(set_wifi_ap_sw, LV_STATE_CHECKED))
+            lv_obj_remove_state(set_wifi_ap_sw, LV_STATE_CHECKED);
+    }
+
+    if (set_wifi_sta_status_lbl) {
+        bool sta_on = (g_state.wifi_mode == BRL_WIFI_STA || g_state.wifi_mode == BRL_WIFI_OTA);
+        bool ota    = (g_state.wifi_mode == BRL_WIFI_OTA);
+        lv_label_set_text(set_wifi_sta_status_lbl,
+            ota    ? "OTA Update läuft..." :
+            sta_on ? g_state.wifi_ssid     : "Nicht verbunden");
+        lv_obj_set_style_text_color(set_wifi_sta_status_lbl,
+            sta_on ? BRL_CLR_ACCENT : BRL_CLR_TEXT_DIM, LV_STATE_DEFAULT);
     }
 }
 
