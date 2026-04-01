@@ -14,6 +14,14 @@
 #include <Arduino.h>
 #include <lvgl.h>
 #include "gps/gps.h"
+#include "obd/obd_bt.h"
+#include "wifi/wifi_mgr.h"
+#include "wifi/data_server.h"
+#include "storage/sd_mgr.h"
+#include "storage/session_store.h"
+#include "timing/lap_timer.h"
+#include "timing/live_delta.h"
+#include "data/lap_data.h"
 
 // ---------------------------------------------------------------------------
 // LovyanGFX display configuration
@@ -206,8 +214,23 @@ void setup()
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(indev, my_touchpad_read);
 
-  // GPS initialisieren (Tau1201 auf UART1, GPIO 16/15)
+  // GPS: Tau1201 on UART2 (GPIO 19 RX, GPIO 20 TX)
   gps_init();
+
+  // SD card (SPI: MOSI=11, MISO=13, SCLK=12, CS=15)
+  sd_mgr_init();
+
+  // Load user-created tracks from SD
+  session_store_load_user_tracks();
+
+  // Lap timer
+  lap_timer_init();
+
+  // OBD Bluetooth BLE
+  obd_bt_init();
+
+  // WiFi manager (off by default, user enables from settings)
+  wifi_mgr_init();
 
   // Build the UI (Splash → Haupt-UI)
   lv_my_setup();
@@ -217,7 +240,11 @@ void setup()
 
 void loop()
 {
-  gps_poll();          // Tau1201 NMEA-Bytes lesen & parsen (nicht blockierend)
+  gps_poll();           // Tau1201 NMEA — non-blocking
+  lap_timer_poll();     // GPS lap detection — after gps_poll()
+  obd_bt_poll();        // BLE OBD state machine
+  wifi_mgr_poll();      // OTA + reconnect
+  data_server_poll();   // HTTP requests
   lv_timer_handler();
   delay(5);
 }

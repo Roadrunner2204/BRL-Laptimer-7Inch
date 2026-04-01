@@ -1,0 +1,232 @@
+/**
+ * session_store.cpp — session serialization using ArduinoJson 7
+ */
+
+#include "session_store.h"
+#include "sd_mgr.h"
+#include "../data/lap_data.h"
+#include "../data/track_db.h"
+#include <Arduino.h>
+#include <ArduinoJson.h>
+#include <SD.h>
+
+static char s_session_path[48] = {};
+static char s_track_name[48]   = {};
+
+// ---------------------------------------------------------------------------
+// Generate session ID: "YYYYMMDD_HHMMSS" if RTC available, else "millis_XXXXXXXX"
+// ---------------------------------------------------------------------------
+static void make_session_id(char *buf, size_t len) {
+    // No RTC yet — use millis for uniqueness
+    uint32_t ts = millis();
+    snprintf(buf, len, "sess_%08lX", (unsigned long)ts);
+}
+
+void session_store_begin(const char *track_name) {
+    strncpy(s_track_name, track_name, sizeof(s_track_name) - 1);
+
+    char id[20];
+    make_session_id(id, sizeof(id));
+    strncpy(g_state.session.session_id, id, sizeof(g_state.session.session_id));
+
+    snprintf(s_session_path, sizeof(s_session_path), "/sessions/%s.json", id);
+
+    // Write initial JSON skeleton
+    if (!g_state.sd_available) return;
+
+    JsonDocument doc;
+    doc["id"]    = id;
+    doc["track"] = s_track_name;
+    doc["laps"]  = JsonArray();
+
+    char buf[256];
+    serializeJson(doc, buf, sizeof(buf));
+    sd_write_file(s_session_path, buf, strlen(buf));
+    Serial.printf("[STORE] Session begun: %s\n", s_session_path);
+}
+
+void session_store_save_lap(uint8_t lap_idx) {
+    if (!g_state.sd_available) return;
+    if (strlen(s_session_path) == 0) return;
+
+    LapSession &sess = g_state.session;
+    if (lap_idx >= sess.lap_count) return;
+    RecordedLap &rl = sess.laps[lap_idx];
+    if (!rl.valid) return;
+
+    // Read existing JSON
+    static char file_buf[8192];
+    if (!sd_read_file(s_session_path, file_buf, sizeof(file_buf))) {
+        Serial.println("[STORE] Read session failed");
+        return;
+    }
+
+    JsonDocument doc;
+    if (deserializeJson(doc, file_buf) != DeserializationError::Ok) {
+        Serial.println("[STORE] Parse session failed");
+        return;
+    }
+
+    JsonArray laps = doc["laps"].as<JsonArray>();
+    JsonObject lap_obj = laps.add<JsonObject>();
+    lap_obj["lap"]      = lap_idx + 1;
+    lap_obj["total_ms"] = rl.total_ms;
+
+    JsonArray sectors = lap_obj["sectors"].to<JsonArray>();
+    for (uint8_t i = 0; i <= rl.sectors_used && i < MAX_SECTORS; i++) {
+        sectors.add(rl.sector_ms[i]);
+    }
+
+    // Track points: write as compact array of [lat, lon, ms]
+    if (rl.points && rl.point_count > 0) {
+        JsonArray pts = lap_obj["track_points"].to<JsonArray>();
+        // Limit to every 5th point to save space (~2 Hz)
+        for (uint16_t i = 0; i < rl.point_count; i += 5) {
+            JsonArray pt = pts.add<JsonArray>();
+            pt.add(serialized(String(rl.points[i].lat, 7)));
+            pt.add(serialized(String(rl.points[i].lon, 7)));
+            pt.add(rl.points[i].lap_ms);
+        }
+    }
+
+    // Serialize back to file
+    File f = SD.open(s_session_path, FILE_WRITE);
+    if (!f) {
+        Serial.println("[STORE] Write failed");
+        return;
+    }
+    serializeJson(doc, f);
+    f.close();
+    Serial.printf("[STORE] Lap %d saved\n", lap_idx + 1);
+}
+
+int session_store_list(char ids[][20], int max_count) {
+    if (!g_state.sd_available) return 0;
+
+    File dir = SD.open("/sessions");
+    if (!dir) return 0;
+
+    int count = 0;
+    File f = dir.openNextFile();
+    while (f && count < max_count) {
+        if (!f.isDirectory()) {
+            String name = f.name();
+            if (name.endsWith(".json")) {
+                int slash = name.lastIndexOf('/');
+                String id = (slash >= 0) ? name.substring(slash + 1) : name;
+                id = id.substring(0, id.length() - 5);
+                strncpy(ids[count], id.c_str(), 19);
+                ids[count][19] = '\0';
+                count++;
+            }
+        }
+        f = dir.openNextFile();
+    }
+    return count;
+}
+
+// ---------------------------------------------------------------------------
+// User track persistence
+// ---------------------------------------------------------------------------
+void session_store_load_user_tracks() {
+    if (!g_state.sd_available) return;
+
+    File dir = SD.open("/tracks");
+    if (!dir) return;
+
+    g_user_track_count = 0;
+    File f = dir.openNextFile();
+    while (f && g_user_track_count < MAX_USER_TRACKS) {
+        if (!f.isDirectory()) {
+            String name = f.name();
+            if (name.endsWith(".json")) {
+                static char buf[1024];
+                if (!sd_read_file(f.name(), buf, sizeof(buf))) { f = dir.openNextFile(); continue; }
+
+                JsonDocument doc;
+                if (deserializeJson(doc, buf) != DeserializationError::Ok) { f = dir.openNextFile(); continue; }
+
+                TrackDef &td = g_user_tracks[g_user_track_count];
+                memset(&td, 0, sizeof(td));
+                strncpy(td.name,    doc["name"]    | "", sizeof(td.name) - 1);
+                strncpy(td.country, doc["country"] | "", sizeof(td.country) - 1);
+                td.length_km  = doc["length_km"] | 0.0f;
+                td.is_circuit = doc["is_circuit"] | true;
+                td.user_created = true;
+
+                td.sf_lat1 = doc["sf"][0] | 0.0;
+                td.sf_lon1 = doc["sf"][1] | 0.0;
+                td.sf_lat2 = doc["sf"][2] | 0.0;
+                td.sf_lon2 = doc["sf"][3] | 0.0;
+
+                if (!td.is_circuit) {
+                    td.fin_lat1 = doc["fin"][0] | 0.0;
+                    td.fin_lon1 = doc["fin"][1] | 0.0;
+                    td.fin_lat2 = doc["fin"][2] | 0.0;
+                    td.fin_lon2 = doc["fin"][3] | 0.0;
+                }
+
+                JsonArray secs = doc["sectors"].as<JsonArray>();
+                td.sector_count = 0;
+                for (JsonObject s : secs) {
+                    if (td.sector_count >= MAX_SECTORS) break;
+                    td.sectors[td.sector_count].lat = s["lat"] | 0.0;
+                    td.sectors[td.sector_count].lon = s["lon"] | 0.0;
+                    strncpy(td.sectors[td.sector_count].name,
+                            s["name"] | "",
+                            SECTOR_NAME_LEN - 1);
+                    td.sector_count++;
+                }
+
+                g_user_track_count++;
+            }
+        }
+        f = dir.openNextFile();
+    }
+    Serial.printf("[STORE] Loaded %d user tracks\n", g_user_track_count);
+}
+
+bool session_store_save_user_track(const TrackDef *td) {
+    if (!g_state.sd_available || !td) return false;
+    if (!SD.exists("/tracks")) SD.mkdir("/tracks");
+
+    // Sanitize name for filename
+    char fname[80];
+    char safe[48];
+    strncpy(safe, td->name, sizeof(safe) - 1);
+    for (char *p = safe; *p; p++) {
+        if (*p == ' ' || *p == '/' || *p == '\\') *p = '_';
+    }
+    snprintf(fname, sizeof(fname), "/tracks/%s.json", safe);
+
+    JsonDocument doc;
+    doc["name"]       = td->name;
+    doc["country"]    = td->country;
+    doc["length_km"]  = td->length_km;
+    doc["is_circuit"] = td->is_circuit;
+
+    JsonArray sf = doc["sf"].to<JsonArray>();
+    sf.add(td->sf_lat1); sf.add(td->sf_lon1);
+    sf.add(td->sf_lat2); sf.add(td->sf_lon2);
+
+    if (!td->is_circuit) {
+        JsonArray fin = doc["fin"].to<JsonArray>();
+        fin.add(td->fin_lat1); fin.add(td->fin_lon1);
+        fin.add(td->fin_lat2); fin.add(td->fin_lon2);
+    }
+
+    JsonArray secs = doc["sectors"].to<JsonArray>();
+    for (uint8_t i = 0; i < td->sector_count; i++) {
+        JsonObject s = secs.add<JsonObject>();
+        s["lat"]  = td->sectors[i].lat;
+        s["lon"]  = td->sectors[i].lon;
+        s["name"] = td->sectors[i].name;
+    }
+
+    File f = SD.open(fname, FILE_WRITE);
+    if (!f) return false;
+    serializeJson(doc, f);
+    f.close();
+    Serial.printf("[STORE] User track saved: %s\n", fname);
+    return true;
+}
