@@ -88,13 +88,13 @@ typedef struct {
 } LiveTiming;
 
 // ---------------------------------------------------------------------------
-// WiFi mode
+// WiFi mode  (prefixed BRL_ to avoid collision with Arduino WiFi.h macros)
 // ---------------------------------------------------------------------------
 typedef enum {
-    WIFI_OFF = 0,
-    WIFI_AP,       // host AP — Android app connects
-    WIFI_STA,      // connect to external network
-    WIFI_OTA       // OTA firmware update in progress
+    BRL_WIFI_OFF = 0,
+    BRL_WIFI_AP,       // host AP — Android app connects
+    BRL_WIFI_STA,      // connect to external network
+    BRL_WIFI_OTA       // OTA firmware update in progress
 } WifiMode;
 
 // ---------------------------------------------------------------------------

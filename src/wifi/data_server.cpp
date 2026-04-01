@@ -19,7 +19,7 @@ static void handle_root() {
     char buf[256];
     snprintf(buf, sizeof(buf),
              "{\"device\":\"BRL-Laptimer\","
-             "\"wifi_mode\":%d,"
+             "\"wifi_mode\":%d,"  // BRL_WIFI_OFF=0 AP=1 STA=2 OTA=3
              "\"sd\":%s,"
              "\"version\":\"1.0.0\"}",
              (int)g_state.wifi_mode,

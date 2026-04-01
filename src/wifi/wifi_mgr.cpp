@@ -26,8 +26,8 @@ void wifi_mgr_init() {
     s_prefs.getString("pass", s_sta_pass, sizeof(s_sta_pass));
     s_prefs.end();
 
-    WiFi.mode(WIFI_OFF);
-    g_state.wifi_mode = WIFI_OFF;
+    WiFi.mode(WIFI_MODE_NULL);
+    g_state.wifi_mode = BRL_WIFI_OFF;
     Serial.println("[WIFI] Manager init");
 }
 
@@ -49,7 +49,7 @@ void wifi_set_mode(WifiMode mode) {
     ArduinoOTA.end();
     data_server_stop();
     WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
+    WiFi.mode(WIFI_MODE_NULL);
     delay(100);
 
     g_state.wifi_mode = mode;
@@ -57,25 +57,25 @@ void wifi_set_mode(WifiMode mode) {
 
     switch (mode) {
 
-        case WIFI_OFF:
+        case BRL_WIFI_OFF:
             Serial.println("[WIFI] OFF");
             break;
 
-        case WIFI_AP:
-            WiFi.mode(WIFI_AP);
+        case BRL_WIFI_AP:
+            WiFi.mode(WIFI_MODE_AP);
             WiFi.softAP(AP_SSID, strlen(AP_PASS) ? AP_PASS : nullptr);
             strncpy(g_state.wifi_ssid, AP_SSID, sizeof(g_state.wifi_ssid));
             Serial.printf("[WIFI] AP started: %s (192.168.4.1)\n", AP_SSID);
             data_server_start();
             break;
 
-        case WIFI_STA:
+        case BRL_WIFI_STA:
             if (strlen(s_sta_ssid) == 0) {
                 Serial.println("[WIFI] No STA credentials");
-                g_state.wifi_mode = WIFI_OFF;
+                g_state.wifi_mode = BRL_WIFI_OFF;
                 return;
             }
-            WiFi.mode(WIFI_STA);
+            WiFi.mode(WIFI_MODE_STA);
             WiFi.begin(s_sta_ssid, s_sta_pass);
             strncpy(g_state.wifi_ssid, s_sta_ssid, sizeof(g_state.wifi_ssid));
             Serial.printf("[WIFI] Connecting to %s...\n", s_sta_ssid);
@@ -84,7 +84,7 @@ void wifi_set_mode(WifiMode mode) {
             ArduinoOTA.setPassword(OTA_PASS);
             ArduinoOTA.setHostname("BRL-Laptimer");
             ArduinoOTA.onStart([]() {
-                g_state.wifi_mode = WIFI_OTA;
+                g_state.wifi_mode = BRL_WIFI_OTA;
                 Serial.println("[OTA] Start");
             });
             ArduinoOTA.onEnd([]() {
@@ -92,12 +92,12 @@ void wifi_set_mode(WifiMode mode) {
             });
             ArduinoOTA.onError([](ota_error_t err) {
                 Serial.printf("[OTA] Error %u\n", err);
-                g_state.wifi_mode = WIFI_STA;
+                g_state.wifi_mode = BRL_WIFI_STA;
             });
             ArduinoOTA.begin();
             break;
 
-        case WIFI_OTA:
+        case BRL_WIFI_OTA:
             // Entered automatically by ArduinoOTA callback
             break;
     }
@@ -107,11 +107,11 @@ void wifi_set_mode(WifiMode mode) {
 void wifi_mgr_poll() {
     WifiMode mode = g_state.wifi_mode;
 
-    if (mode == WIFI_STA || mode == WIFI_OTA) {
+    if (mode == BRL_WIFI_STA || mode == BRL_WIFI_OTA) {
         ArduinoOTA.handle();
     }
 
-    if (mode == WIFI_STA) {
+    if (mode == BRL_WIFI_STA) {
         bool connected = (WiFi.status() == WL_CONNECTED);
         if (connected && !data_server_running()) {
             Serial.printf("[WIFI] STA connected: %s\n", WiFi.localIP().toString().c_str());

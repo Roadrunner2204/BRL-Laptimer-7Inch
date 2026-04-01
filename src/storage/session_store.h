@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "../data/lap_data.h"
+#include "../data/track_db.h"
 
 /**
  * session_store — serialize/deserialize sessions to/from SD as JSON

@@ -17,6 +17,7 @@
 #include "screen_splash.h"
 #include "../data/lap_data.h"
 #include "../data/track_db.h"
+#include "../timing/lap_timer.h"
 
 // ---------------------------------------------------------------------------
 // Global application state
@@ -76,7 +77,7 @@ static void build_statusbar(lv_obj_t *root) {
     lv_obj_set_style_border_width(bar, 0, LV_STATE_DEFAULT);
     lv_obj_set_style_radius(bar, 0, LV_STATE_DEFAULT);
     lv_obj_set_style_pad_all(bar, 0, LV_STATE_DEFAULT);
-    lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
 
     // --- GPS icon + satellite count ---
     sb_gps_lbl = lv_label_create(bar);
@@ -127,7 +128,7 @@ static void build_navbar(lv_obj_t *root) {
     lv_obj_set_style_border_side(bar, LV_BORDER_SIDE_TOP, LV_STATE_DEFAULT);
     lv_obj_set_style_radius(bar, 0, LV_STATE_DEFAULT);
     lv_obj_set_style_pad_all(bar, 0, LV_STATE_DEFAULT);
-    lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
 
     int btn_w = BRL_SCREEN_W / 4;
 
@@ -136,7 +137,7 @@ static void build_navbar(lv_obj_t *root) {
         lv_obj_set_size(btn, btn_w, BRL_NAVBAR_H);
         lv_obj_set_pos(btn, i * btn_w, 0);
         brl_style_transparent(btn);
-        lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_set_user_data(btn, (void *)(intptr_t)i);
         lv_obj_add_event_cb(btn, cb_nav, LV_EVENT_CLICKED, NULL);
@@ -189,7 +190,7 @@ static lv_obj_t *make_card(lv_obj_t *parent, int x, int y, int w, int h) {
     lv_obj_set_size(c, w, h);
     lv_obj_set_pos(c, x, y);
     brl_style_card(c);
-    lv_obj_clear_flag(c, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(c, LV_OBJ_FLAG_SCROLLABLE);
     return c;
 }
 
@@ -217,7 +218,7 @@ static void build_dashboard(lv_obj_t *parent) {
     lv_obj_set_size(info_row, BRL_SCREEN_W, 36);
     lv_obj_set_pos(info_row, 0, 0);
     brl_style_transparent(info_row);
-    lv_obj_clear_flag(info_row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(info_row, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *track_name = lv_label_create(info_row);
     lv_label_set_text(track_name, "Keine Strecke gewählt");
@@ -305,7 +306,7 @@ static void build_dashboard(lv_obj_t *parent) {
 
     lv_obj_t *obd_row_bg = make_card(parent, 8, obd_y, 560, obd_h);
     brl_style_transparent(obd_row_bg);
-    lv_obj_clear_flag(obd_row_bg, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(obd_row_bg, LV_OBJ_FLAG_SCROLLABLE);
 
     struct { const char *label; int x; } obd_items[] = {
         { "GANG",   0   },
@@ -353,10 +354,12 @@ static void cb_track_select(lv_event_t *e) {
     int idx = (int)(intptr_t)lv_obj_get_user_data(item);
     g_state.active_track_idx = idx;
 
-    // Update status bar track name
-    lv_label_set_text(sb_track_lbl, TRACK_DB[idx].name);
+    const TrackDef *td = track_get(idx);
+    if (td) lv_label_set_text(sb_track_lbl, td->name);
 
-    // Switch back to dashboard
+    // Apply track to lap timer
+    lap_timer_set_track(idx);
+
     nav_show(0);
 }
 
@@ -381,10 +384,12 @@ static void build_tracks(lv_obj_t *parent) {
     lv_obj_set_style_pad_row(list, 4, LV_STATE_DEFAULT);
     lv_obj_set_style_pad_all(list, 0, LV_STATE_DEFAULT);
 
-    for (int i = 0; i < TRACK_DB_COUNT; i++) {
+    for (int i = 0; i < track_total_count(); i++) {
+        const TrackDef *td = track_get(i);
+        if (!td) continue;
         char label_text[80];
         snprintf(label_text, sizeof(label_text), "%s   %.3f km   %s",
-                 TRACK_DB[i].name, TRACK_DB[i].length_km, TRACK_DB[i].country);
+                 td->name, td->length_km, td->country);
 
         lv_obj_t *btn = lv_list_add_button(list, LV_SYMBOL_RIGHT, label_text);
         lv_obj_set_style_bg_color(btn, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
@@ -480,20 +485,18 @@ static void build_settings(lv_obj_t *parent) {
 // SECTION 7 — LIVE UPDATE TIMER
 // ============================================================================
 static void cb_start_stop(lv_event_t *e) {
-    LapSession &s = g_state.session;
-    if (!s.timing_active) {
+    LiveTiming &lt = g_state.timing;
+    if (!lt.timing_active) {
         if (g_state.active_track_idx < 0) return; // no track selected
-        s.timing_active        = true;
-        s.current_lap_start_ms = millis();
-        s.sector_start_ms      = millis();
-        s.current_sector       = 0;
-        s.lap_number           = 1;
+        // GPS timing is fully automatic — just arm it
+        lt.timing_active = true;
+        lt.lap_number    = 0;
         lv_label_set_text(dash_start_btn_lbl, LV_SYMBOL_STOP "  TIMING STOPPEN");
         lv_obj_set_style_bg_color(
             lv_obj_get_parent(dash_start_btn_lbl),
             BRL_CLR_DANGER, LV_STATE_DEFAULT);
     } else {
-        s.timing_active = false;
+        lt.timing_active = false;
         lv_label_set_text(dash_start_btn_lbl, LV_SYMBOL_PLAY "  TIMING STARTEN");
         lv_obj_set_style_bg_color(
             lv_obj_get_parent(dash_start_btn_lbl),
@@ -511,12 +514,11 @@ static void timer_live_update(lv_timer_t * /*t*/) {
         g_state.gps.valid ? BRL_CLR_ACCENT : BRL_CLR_TEXT_DIM, LV_STATE_DEFAULT);
 
     // --- WiFi status ---
+    bool wifi_on = (g_state.wifi_mode != BRL_WIFI_OFF);
     lv_label_set_text(sb_wifi_lbl,
-        g_state.wifi_connected
-            ? LV_SYMBOL_WIFI " OK"
-            : LV_SYMBOL_WIFI " --");
+        wifi_on ? LV_SYMBOL_WIFI " OK" : LV_SYMBOL_WIFI " --");
     lv_obj_set_style_text_color(sb_wifi_lbl,
-        g_state.wifi_connected ? BRL_CLR_ACCENT : BRL_CLR_TEXT_DIM, LV_STATE_DEFAULT);
+        wifi_on ? BRL_CLR_ACCENT : BRL_CLR_TEXT_DIM, LV_STATE_DEFAULT);
 
     // --- OBD status ---
     lv_label_set_text(sb_obd_lbl,
@@ -533,33 +535,34 @@ static void timer_live_update(lv_timer_t * /*t*/) {
     lv_label_set_text(dash_speed_lbl, spd);
 
     // --- Lap timer (counting up) ---
-    if (g_state.session.timing_active) {
-        uint32_t elapsed = millis() - g_state.session.current_lap_start_ms;
+    LiveTiming  &lt   = g_state.timing;
+    LapSession  &sess = g_state.session;
+
+    if (lt.timing_active && lt.in_lap) {
+        uint32_t elapsed = millis() - lt.lap_start_ms;
         char lt_buf[16];
         fmt_laptime(lt_buf, sizeof(lt_buf), elapsed);
         lv_label_set_text(dash_laptime_lbl, lt_buf);
 
-        // Delta vs best lap
-        if (g_state.session.best.valid) {
-            int32_t delta = (int32_t)elapsed - (int32_t)g_state.session.best.total_ms;
-            char delta_buf[12];
-            fmt_delta(delta_buf, sizeof(delta_buf), delta);
-            lv_label_set_text(dash_delta_lbl, delta_buf);
-            lv_obj_set_style_text_color(dash_delta_lbl,
-                delta <= 0 ? BRL_CLR_ACCENT : BRL_CLR_WARN, LV_STATE_DEFAULT);
-        }
+        // Live delta vs reference lap
+        char delta_buf[12];
+        fmt_delta(delta_buf, sizeof(delta_buf), lt.live_delta_ms);
+        lv_label_set_text(dash_delta_lbl, delta_buf);
+        lv_obj_set_style_text_color(dash_delta_lbl,
+            lt.live_delta_ms <= 0 ? BRL_CLR_FASTER : BRL_CLR_WARN, LV_STATE_DEFAULT);
 
         // Lap counter
         char lap_buf[16];
-        snprintf(lap_buf, sizeof(lap_buf), "RUNDE %d", g_state.session.lap_number);
+        snprintf(lap_buf, sizeof(lap_buf), "RUNDE %d", lt.lap_number);
         lv_label_set_text(dash_lap_count, lap_buf);
         lv_obj_set_style_text_color(dash_lap_count, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
     }
 
     // --- Best lap ---
-    if (g_state.session.best.valid) {
+    uint8_t bi = sess.best_lap_idx;
+    if (sess.lap_count > 0 && sess.laps[bi].valid) {
         char bl_buf[16];
-        fmt_laptime(bl_buf, sizeof(bl_buf), g_state.session.best.total_ms);
+        fmt_laptime(bl_buf, sizeof(bl_buf), sess.laps[bi].total_ms);
         lv_label_set_text(dash_bestlap_lbl, bl_buf);
     }
 }
@@ -575,7 +578,7 @@ static void build_main_ui() {
     // Black background
     lv_obj_set_style_bg_color(root, BRL_CLR_BG, LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(root, LV_OPA_COVER, LV_STATE_DEFAULT);
-    lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(root, LV_OBJ_FLAG_SCROLLABLE);
 
     // Build panels (content areas)
     for (int i = 0; i < 4; i++) {
@@ -587,7 +590,7 @@ static void build_main_ui() {
         lv_obj_set_style_border_width(panels[i], 0, LV_STATE_DEFAULT);
         lv_obj_set_style_radius(panels[i], 0, LV_STATE_DEFAULT);
         lv_obj_set_style_pad_all(panels[i], 6, LV_STATE_DEFAULT);
-        lv_obj_clear_flag(panels[i], LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(panels[i], LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(panels[i], LV_OBJ_FLAG_HIDDEN);
     }
 
