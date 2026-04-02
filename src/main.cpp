@@ -13,6 +13,9 @@
 
 #include <Arduino.h>
 #include <lvgl.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/semphr.h>
 #include "gps/gps.h"
 #include "obd/obd_bt.h"
 #include "wifi/wifi_mgr.h"
@@ -22,6 +25,13 @@
 #include "timing/lap_timer.h"
 #include "timing/live_delta.h"
 #include "data/lap_data.h"
+
+// ---------------------------------------------------------------------------
+// Cross-core mutex — taken for any read/write of g_state from either task.
+// Use LVGL_LOCK / LVGL_UNLOCK around all lv_* calls made outside the LVGL task
+// (currently we never do that — LVGL stays on Core 1 entirely).
+// ---------------------------------------------------------------------------
+SemaphoreHandle_t g_state_mutex = nullptr;
 
 // ---------------------------------------------------------------------------
 // LovyanGFX display configuration
@@ -182,9 +192,34 @@ void my_touchpad_read(lv_indev_t *indev_drv, lv_indev_data_t *data)
 // ---------------------------------------------------------------------------
 // Arduino setup / loop
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Core 0 task: GPS · OBD · WiFi · Timing  (non-LVGL work)
+// ---------------------------------------------------------------------------
+static void logic_task(void * /*param*/)
+{
+  for (;;) {
+    xSemaphoreTake(g_state_mutex, portMAX_DELAY);
+    gps_poll();
+    lap_timer_poll();
+    xSemaphoreGive(g_state_mutex);
+
+    // OBD, WiFi and HTTP don't touch g_state directly in hot paths
+    obd_bt_poll();
+    wifi_mgr_poll();
+    data_server_poll();
+
+    vTaskDelay(pdMS_TO_TICKS(5));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Arduino setup / loop  — run on Core 1 (APP_CPU)
+// ---------------------------------------------------------------------------
 void setup()
 {
   Serial.begin(115200);
+
+  g_state_mutex = xSemaphoreCreateMutex();
 
   gfx.begin();
 
@@ -235,16 +270,27 @@ void setup()
   // Build the UI (Splash → Haupt-UI)
   lv_my_setup();
 
-  Serial.println("Setup complete");
+  // Spawn logic task pinned to Core 0 (PRO_CPU)
+  // Stack: 8 kB is sufficient for GPS/OBD/WiFi poll loops
+  xTaskCreatePinnedToCore(
+    logic_task,
+    "logic",
+    8192,       // stack bytes
+    nullptr,
+    1,          // priority (same as loop task — yields via vTaskDelay)
+    nullptr,
+    0           // Core 0
+  );
+
+  Serial.println("Setup complete — logic task on Core 0, LVGL on Core 1");
 }
 
+// loop() stays on Core 1 — only drives LVGL rendering
 void loop()
 {
-  gps_poll();           // Tau1201 NMEA — non-blocking
-  lap_timer_poll();     // GPS lap detection — after gps_poll()
-  obd_bt_poll();        // BLE OBD state machine
-  wifi_mgr_poll();      // OTA + reconnect
-  data_server_poll();   // HTTP requests
+  // Guard g_state reads inside lv_timer_handler (timer_live_update)
+  xSemaphoreTake(g_state_mutex, portMAX_DELAY);
   lv_timer_handler();
+  xSemaphoreGive(g_state_mutex);
   delay(5);
 }

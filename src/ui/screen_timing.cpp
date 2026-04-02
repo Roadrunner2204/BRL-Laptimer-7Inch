@@ -46,7 +46,7 @@ static lv_obj_t *mk_card(lv_obj_t *parent, int w, int h,
 
     lv_obj_t *t = lv_label_create(c);
     lv_label_set_text(t, title);
-    brl_style_label(t, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
+    brl_style_label(t, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
     lv_obj_align(t, LV_ALIGN_TOP_LEFT, 0, 0);
 
     lv_obj_t *v = lv_label_create(c);
@@ -143,7 +143,7 @@ static void open_layout_editor() {
 
     lv_obj_t *ttl = lv_label_create(card);
     lv_label_set_text(ttl, LV_SYMBOL_SETTINGS "  LAYOUT ANPASSEN");
-    brl_style_label(ttl, &lv_font_montserrat_20, BRL_CLR_TEXT);
+    brl_style_label(ttl, &BRL_FONT_20, BRL_CLR_TEXT);
     lv_obj_align(ttl, LV_ALIGN_TOP_LEFT, 0, 0);
 
     // 2-column checkbox grid
@@ -159,7 +159,7 @@ static void open_layout_editor() {
         lv_obj_t *cb = lv_checkbox_create(grid);
         lv_checkbox_set_text(cb, WIDGET_NAMES[i]);
         lv_obj_set_width(cb, 340);
-        lv_obj_set_style_text_font(cb, &lv_font_montserrat_14, LV_STATE_DEFAULT);
+        lv_obj_set_style_text_font(cb, &BRL_FONT_14, LV_STATE_DEFAULT);
         lv_obj_set_style_text_color(cb, BRL_CLR_TEXT, LV_STATE_DEFAULT);
         lv_obj_set_style_bg_color(cb, BRL_CLR_ACCENT,
             LV_STATE_CHECKED | LV_PART_INDICATOR);
@@ -179,7 +179,7 @@ static void open_layout_editor() {
     lv_obj_set_style_border_width(btn_save, 0, LV_STATE_DEFAULT);
     lv_obj_t *lsave = lv_label_create(btn_save);
     lv_label_set_text(lsave, LV_SYMBOL_OK "  SPEICHERN");
-    brl_style_label(lsave, &lv_font_montserrat_14, BRL_CLR_TEXT);
+    brl_style_label(lsave, &BRL_FONT_14, BRL_CLR_TEXT);
     lv_obj_center(lsave);
     lv_obj_add_event_cb(btn_save, cb_layout_save, LV_EVENT_CLICKED, nullptr);
 
@@ -191,7 +191,7 @@ static void open_layout_editor() {
     lv_obj_set_style_border_width(btn_cancel, 0, LV_STATE_DEFAULT);
     lv_obj_t *lcancel = lv_label_create(btn_cancel);
     lv_label_set_text(lcancel, LV_SYMBOL_CLOSE "  ABBRECHEN");
-    brl_style_label(lcancel, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
+    brl_style_label(lcancel, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
     lv_obj_center(lcancel);
     lv_obj_add_event_cb(btn_cancel, cb_layout_cancel, LV_EVENT_CLICKED, nullptr);
 }
@@ -240,17 +240,17 @@ lv_obj_t *timing_screen_build() {
 
     tw.sb_gps_lbl = lv_label_create(sb);
     lv_label_set_text(tw.sb_gps_lbl, LV_SYMBOL_GPS " 0");
-    brl_style_label(tw.sb_gps_lbl, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
+    brl_style_label(tw.sb_gps_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
     lv_obj_set_pos(tw.sb_gps_lbl, 8, 12);
 
     tw.sb_wifi_lbl = lv_label_create(sb);
     lv_label_set_text(tw.sb_wifi_lbl, LV_SYMBOL_WIFI " --");
-    brl_style_label(tw.sb_wifi_lbl, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
+    brl_style_label(tw.sb_wifi_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
     lv_obj_set_pos(tw.sb_wifi_lbl, 120, 12);
 
     tw.sb_obd_lbl = lv_label_create(sb);
     lv_label_set_text(tw.sb_obd_lbl, LV_SYMBOL_BLUETOOTH " OBD --");
-    brl_style_label(tw.sb_obd_lbl, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
+    brl_style_label(tw.sb_obd_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
     lv_obj_set_pos(tw.sb_obd_lbl, 230, 12);
 
     // ── Header bar (50px) ──────────────────────────────────────────────────
@@ -273,7 +273,7 @@ lv_obj_t *timing_screen_build() {
     lv_obj_set_style_border_width(back_btn, 0, LV_STATE_DEFAULT);
     lv_obj_t *blbl = lv_label_create(back_btn);
     lv_label_set_text(blbl, LV_SYMBOL_LEFT "  MENÜ");
-    brl_style_label(blbl, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
+    brl_style_label(blbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, cb_back, LV_EVENT_CLICKED, nullptr);
 
@@ -281,7 +281,7 @@ lv_obj_t *timing_screen_build() {
     tw.track_name_lbl = lv_label_create(hdr);
     const TrackDef *td = track_get(g_state.active_track_idx);
     lv_label_set_text(tw.track_name_lbl, td ? td->name : "Keine Strecke");
-    brl_style_label(tw.track_name_lbl, &lv_font_montserrat_16, BRL_CLR_TEXT);
+    brl_style_label(tw.track_name_lbl, &BRL_FONT_16, BRL_CLR_TEXT);
     lv_obj_align(tw.track_name_lbl, LV_ALIGN_CENTER, 0, 0);
 
     // Layout editor button
@@ -293,7 +293,7 @@ lv_obj_t *timing_screen_build() {
     lv_obj_set_style_border_width(layout_btn, 0, LV_STATE_DEFAULT);
     lv_obj_t *llbl = lv_label_create(layout_btn);
     lv_label_set_text(llbl, LV_SYMBOL_SETTINGS "  LAYOUT");
-    brl_style_label(llbl, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
+    brl_style_label(llbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
     lv_obj_center(llbl);
     lv_obj_add_event_cb(layout_btn, cb_layout_btn, LV_EVENT_CLICKED, nullptr);
 
@@ -308,7 +308,7 @@ lv_obj_t *timing_screen_build() {
     lv_label_set_text(tw.start_btn_lbl,
         g_state.timing.timing_active ? LV_SYMBOL_STOP "  STOPPEN"
                                       : LV_SYMBOL_PLAY "  STARTEN");
-    brl_style_label(tw.start_btn_lbl, &lv_font_montserrat_14, BRL_CLR_TEXT);
+    brl_style_label(tw.start_btn_lbl, &BRL_FONT_14, BRL_CLR_TEXT);
     lv_obj_center(tw.start_btn_lbl);
     if (g_state.timing.timing_active)
         lv_obj_set_style_bg_color(start_btn, BRL_CLR_DANGER, LV_STATE_DEFAULT);
@@ -341,19 +341,19 @@ lv_obj_t *timing_screen_build() {
         const int h  = h1 - 10;
 
         if (mask & WDGT_SPEED)
-            mk_card(row1, WW, h, "GESCHWINDIGKEIT", &lv_font_montserrat_48,
+            mk_card(row1, WW, h, "GESCHWINDIGKEIT", &BRL_FONT_48,
                     BRL_CLR_TEXT, &tw.speed_lbl);
         if (mask & WDGT_LAPTIME)
-            mk_card(row1, WW, h, "RUNDENZEIT", &lv_font_montserrat_40,
+            mk_card(row1, WW, h, "RUNDENZEIT", &BRL_FONT_40,
                     BRL_CLR_ACCENT, &tw.laptime_lbl);
         if (mask & WDGT_BESTLAP)
-            mk_card(row1, CW, h, "BESTZEIT", &lv_font_montserrat_24,
+            mk_card(row1, CW, h, "BESTZEIT", &BRL_FONT_24,
                     BRL_CLR_TEXT, &tw.bestlap_lbl);
         if (mask & WDGT_DELTA)
-            mk_card(row1, CW, h, "LIVE DELTA", &lv_font_montserrat_24,
+            mk_card(row1, CW, h, "LIVE DELTA", &BRL_FONT_24,
                     BRL_CLR_TEXT_DIM, &tw.delta_lbl);
         if (mask & WDGT_LAP_NR)
-            mk_card(row1, CW, h, "RUNDE", &lv_font_montserrat_32,
+            mk_card(row1, CW, h, "RUNDE", &BRL_FONT_32,
                     BRL_CLR_TEXT, &tw.lap_nr_lbl);
         cy += h1 + 6;
     }
@@ -367,13 +367,13 @@ lv_obj_t *timing_screen_build() {
         int sh = h2 - 10;
 
         if (mask & WDGT_SECTOR1)
-            mk_card(row2, sw, sh, "SEKTOR 1", &lv_font_montserrat_24,
+            mk_card(row2, sw, sh, "SEKTOR 1", &BRL_FONT_24,
                     BRL_CLR_TEXT, &tw.sec1_lbl);
         if (mask & WDGT_SECTOR2)
-            mk_card(row2, sw, sh, "SEKTOR 2", &lv_font_montserrat_24,
+            mk_card(row2, sw, sh, "SEKTOR 2", &BRL_FONT_24,
                     BRL_CLR_TEXT, &tw.sec2_lbl);
         if (mask & WDGT_SECTOR3)
-            mk_card(row2, sw, sh, "SEKTOR 3", &lv_font_montserrat_24,
+            mk_card(row2, sw, sh, "SEKTOR 3", &BRL_FONT_24,
                     BRL_CLR_TEXT, &tw.sec3_lbl);
         cy += h2 + 6;
     }
@@ -388,28 +388,28 @@ lv_obj_t *timing_screen_build() {
         int oh = h3 - 10;
 
         if (mask & WDGT_RPM)
-            mk_card(row3, ow, oh, "RPM", &lv_font_montserrat_20,
+            mk_card(row3, ow, oh, "RPM", &BRL_FONT_20,
                     BRL_CLR_TEXT, &tw.rpm_lbl);
         if (mask & WDGT_THROTTLE)
-            mk_card(row3, ow, oh, "GAS %", &lv_font_montserrat_20,
+            mk_card(row3, ow, oh, "GAS %", &BRL_FONT_20,
                     BRL_CLR_TEXT, &tw.throttle_lbl);
         if (mask & WDGT_BOOST)
-            mk_card(row3, ow, oh, "LADEDRUCK", &lv_font_montserrat_20,
+            mk_card(row3, ow, oh, "LADEDRUCK", &BRL_FONT_20,
                     BRL_CLR_WARN, &tw.boost_lbl);
         if (mask & WDGT_LAMBDA)
-            mk_card(row3, ow, oh, "LAMBDA", &lv_font_montserrat_20,
+            mk_card(row3, ow, oh, "LAMBDA", &BRL_FONT_20,
                     BRL_CLR_TEXT, &tw.lambda_lbl);
         if (mask & WDGT_BRAKE)
-            mk_card(row3, ow, oh, "BREMSE %", &lv_font_montserrat_20,
+            mk_card(row3, ow, oh, "BREMSE %", &BRL_FONT_20,
                     BRL_CLR_DANGER, &tw.brake_lbl);
         if (mask & WDGT_COOLANT)
-            mk_card(row3, ow, oh, "KÜHLMITTEL", &lv_font_montserrat_20,
+            mk_card(row3, ow, oh, "KÜHLMITTEL", &BRL_FONT_20,
                     BRL_CLR_TEXT, &tw.coolant_lbl);
         if (mask & WDGT_GEAR)
-            mk_card(row3, ow, oh, "GANG", &lv_font_montserrat_20,
+            mk_card(row3, ow, oh, "GANG", &BRL_FONT_20,
                     BRL_CLR_TEXT, &tw.gear_lbl);
         if (mask & WDGT_STEERING)
-            mk_card(row3, ow, oh, "LENKWINKEL", &lv_font_montserrat_20,
+            mk_card(row3, ow, oh, "LENKWINKEL", &BRL_FONT_20,
                     BRL_CLR_TEXT, &tw.steering_lbl);
     }
 

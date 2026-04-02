@@ -3,6 +3,12 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+
+// Mutex protecting g_state across Core 0 (logic) and Core 1 (LVGL).
+// Defined in main.cpp; include this header to access it.
+extern SemaphoreHandle_t g_state_mutex;
 
 // ---------------------------------------------------------------------------
 // GPS
