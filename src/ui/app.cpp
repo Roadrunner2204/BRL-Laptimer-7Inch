@@ -1,25 +1,27 @@
 /**
  * BRL Laptimer — Application UI
  *
- * Screen layout (800 x 480)
- * ┌────────────────────── Status Bar (40px) ───────────────────────┐
- * │                    Content area (380px)                        │
- * ├────────────────────── Nav Bar (60px) ──────────────────────────┤
- *
- * Four panels (one visible at a time):
- *   0 = Dashboard   1 = Tracks   2 = History   3 = Settings
+ * Screen flow:
+ *   Splash → Main Menu → [TIMING]     → Track Selection → Timing Screen
+ *                      → [STRECKEN]   → Track Selection (+ Neue Strecke Wizard)
+ *                      → [VERLAUF]    → History
+ *                      → [EINSTELLUNGEN] → Settings
  */
 
 #include <Arduino.h>
+#include <math.h>
 #include <lvgl.h>
 #include "app.h"
 #include "theme.h"
 #include "screen_splash.h"
+#include "screen_timing.h"
+#include "dash_config.h"
 #include "../data/lap_data.h"
 #include "../data/track_db.h"
 #include "../timing/lap_timer.h"
 #include "../obd/obd_bt.h"
 #include "../wifi/wifi_mgr.h"
+#include "../storage/session_store.h"
 
 // ---------------------------------------------------------------------------
 // Global application state
@@ -27,61 +29,68 @@
 AppState g_state = {};
 
 // ---------------------------------------------------------------------------
+// Status bar handles (one set per long-lived screen)
+// ---------------------------------------------------------------------------
+struct SbH { lv_obj_t *gps, *wifi, *obd; };
+static SbH sb_menu = {};   // menu screen — cached, never rebuilt
+static SbH sb_sub  = {};   // tracks / history / settings — cleared on back
+
+// ---------------------------------------------------------------------------
+// Screen pointers
+// ---------------------------------------------------------------------------
+static lv_obj_t *s_scr_menu  = nullptr;   // cached forever
+static lv_obj_t *s_scr_sub   = nullptr;   // rebuilt each time
+
+// ---------------------------------------------------------------------------
+// Settings interactive handles (kept alive while settings screen exists)
+// ---------------------------------------------------------------------------
+static lv_obj_t *set_obd_status_lbl    = nullptr;
+static lv_obj_t *set_obd_btn          = nullptr;
+static lv_obj_t *set_wifi_ap_sw       = nullptr;
+static lv_obj_t *set_wifi_ap_status_lbl = nullptr;
+static lv_obj_t *set_wifi_sta_status_lbl = nullptr;
+static lv_obj_t *set_lang_btn         = nullptr;
+static lv_obj_t *set_units_btn        = nullptr;
+
+// WiFi credential dialog (modal)
+static lv_obj_t *s_wifi_dialog = nullptr;
+static lv_obj_t *s_ta_ssid     = nullptr;
+static lv_obj_t *s_ta_pass     = nullptr;
+static lv_obj_t *s_dlg_kb      = nullptr;
+
+// Track creator state
+static lv_obj_t *s_tc_name     = nullptr;
+static lv_obj_t *s_tc_sf1_lat  = nullptr, *s_tc_sf1_lon = nullptr;
+static lv_obj_t *s_tc_sf2_lat  = nullptr, *s_tc_sf2_lon = nullptr;
+static lv_obj_t *s_tc_fin_box  = nullptr;  // shown for A-B
+static lv_obj_t *s_tc_fin1_lat = nullptr, *s_tc_fin1_lon = nullptr;
+static lv_obj_t *s_tc_fin2_lat = nullptr, *s_tc_fin2_lon = nullptr;
+static lv_obj_t *s_tc_kb       = nullptr;
+static lv_obj_t *s_tc_type_circ_btn = nullptr;
+static lv_obj_t *s_tc_type_ab_btn   = nullptr;
+static bool      s_tc_is_circuit    = true;
+static lv_obj_t *s_tc_sec_lat[MAX_SECTORS] = {};
+static lv_obj_t *s_tc_sec_lon[MAX_SECTORS] = {};
+static int       s_tc_sec_count = 0;
+static lv_obj_t *s_tc_sec_container = nullptr;
+static lv_obj_t *s_tc_add_sec_btn   = nullptr;
+
+// ---------------------------------------------------------------------------
 // Forward declarations
 // ---------------------------------------------------------------------------
-static void build_statusbar(lv_obj_t *parent);
-static void build_navbar(lv_obj_t *parent);
-static void build_dashboard(lv_obj_t *parent);
-static void build_tracks(lv_obj_t *parent);
-static void build_history(lv_obj_t *parent);
-static void build_settings(lv_obj_t *parent);
-static void nav_show(int idx);
-static void cb_nav(lv_event_t *e);
-static void cb_start_stop(lv_event_t *e);
-static void cb_track_select(lv_event_t *e);
-static void timer_live_update(lv_timer_t *t);
-
-// ---------------------------------------------------------------------------
-// UI object handles
-// ---------------------------------------------------------------------------
-static lv_obj_t *panels[4];      // content panels
-static lv_obj_t *nav_btns[4];    // bottom nav buttons
-static int        active_panel = 0;
-
-// Status bar labels
-static lv_obj_t *sb_gps_lbl;
-static lv_obj_t *sb_wifi_lbl;
-static lv_obj_t *sb_obd_lbl;
-static lv_obj_t *sb_time_lbl;
-static lv_obj_t *sb_track_lbl;
-
-// Dashboard labels (updated by timer)
-static lv_obj_t *dash_speed_lbl;
-static lv_obj_t *dash_speed_unit;
-static lv_obj_t *dash_laptime_lbl;
-static lv_obj_t *dash_bestlap_lbl;
-static lv_obj_t *dash_lap_count;
-static lv_obj_t *dash_sec1_lbl;
-static lv_obj_t *dash_sec2_lbl;
-static lv_obj_t *dash_sec3_lbl;
-static lv_obj_t *dash_delta_lbl;
-static lv_obj_t *dash_start_btn_lbl;
-
-// Settings handles (updated by timer + callbacks)
-static lv_obj_t *set_obd_status_lbl;
-static lv_obj_t *set_obd_btn;
-static lv_obj_t *set_wifi_ap_sw;
-static lv_obj_t *set_wifi_ap_status_lbl;
-static lv_obj_t *set_wifi_sta_status_lbl;
-static lv_obj_t *set_lang_btn;
-static lv_obj_t *set_units_btn;
+static void open_tracks_screen();
+static void open_track_creator(lv_obj_t *parent_scroll);
+static void open_history_screen();
+static void open_settings_screen();
 
 // ============================================================================
-// SECTION 1 — STATUS BAR
+// SECTION 1 — SHARED HELPERS
 // ============================================================================
-static void build_statusbar(lv_obj_t *root) {
-    lv_obj_t *bar = lv_obj_create(root);
-    lv_obj_set_size(bar, BRL_SCREEN_W, BRL_STATUSBAR_H);
+
+// Build a 40px status bar on any screen; fills *out with label handles
+static void build_sb(lv_obj_t *scr, SbH *out) {
+    lv_obj_t *bar = lv_obj_create(scr);
+    lv_obj_set_size(bar, 800, 40);
     lv_obj_set_pos(bar, 0, 0);
     lv_obj_set_style_bg_color(bar, BRL_CLR_STATUSBAR, LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_STATE_DEFAULT);
@@ -90,386 +99,646 @@ static void build_statusbar(lv_obj_t *root) {
     lv_obj_set_style_pad_all(bar, 0, LV_STATE_DEFAULT);
     lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
 
-    // --- GPS icon + satellite count ---
-    sb_gps_lbl = lv_label_create(bar);
-    lv_label_set_text(sb_gps_lbl, LV_SYMBOL_GPS " 0/0");
-    brl_style_label(sb_gps_lbl, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
-    lv_obj_set_pos(sb_gps_lbl, 8, 12);
+    out->gps = lv_label_create(bar);
+    lv_label_set_text(out->gps, LV_SYMBOL_GPS " 0");
+    brl_style_label(out->gps, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
+    lv_obj_set_pos(out->gps, 8, 12);
 
-    // --- WiFi ---
-    sb_wifi_lbl = lv_label_create(bar);
-    lv_label_set_text(sb_wifi_lbl, LV_SYMBOL_WIFI " --");
-    brl_style_label(sb_wifi_lbl, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
-    lv_obj_set_pos(sb_wifi_lbl, 140, 12);
+    out->wifi = lv_label_create(bar);
+    lv_label_set_text(out->wifi, LV_SYMBOL_WIFI " --");
+    brl_style_label(out->wifi, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
+    lv_obj_set_pos(out->wifi, 140, 12);
 
-    // --- OBD ---
-    sb_obd_lbl = lv_label_create(bar);
-    lv_label_set_text(sb_obd_lbl, LV_SYMBOL_BLUETOOTH " OBD --");
-    brl_style_label(sb_obd_lbl, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
-    lv_obj_set_pos(sb_obd_lbl, 270, 12);
+    out->obd = lv_label_create(bar);
+    lv_label_set_text(out->obd, LV_SYMBOL_BLUETOOTH " OBD --");
+    brl_style_label(out->obd, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
+    lv_obj_set_pos(out->obd, 270, 12);
+}
 
-    // --- Active track name (center) ---
-    sb_track_lbl = lv_label_create(bar);
-    lv_label_set_text(sb_track_lbl, "Keine Strecke");
-    brl_style_label(sb_track_lbl, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
-    lv_obj_align(sb_track_lbl, LV_ALIGN_CENTER, 0, 0);
+// Build a sub-screen header bar (back + title) at y=40, h=50
+static lv_obj_t *build_sub_header(lv_obj_t *scr, const char *title,
+                                   lv_event_cb_t back_cb,
+                                   lv_obj_t **action_btn_out = nullptr,
+                                   const char *action_label = nullptr) {
+    lv_obj_t *hdr = lv_obj_create(scr);
+    lv_obj_set_size(hdr, 800, 50);
+    lv_obj_set_pos(hdr, 0, 40);
+    lv_obj_set_style_bg_color(hdr, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(hdr, LV_OPA_COVER, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(hdr, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(hdr, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_all(hdr, 0, LV_STATE_DEFAULT);
+    lv_obj_remove_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
 
-    // --- Clock (right side) ---
-    sb_time_lbl = lv_label_create(bar);
-    lv_label_set_text(sb_time_lbl, "00:00");
-    brl_style_label(sb_time_lbl, &lv_font_montserrat_14, BRL_CLR_TEXT);
-    lv_obj_align(sb_time_lbl, LV_ALIGN_RIGHT_MID, -8, 0);
+    lv_obj_t *back = lv_button_create(hdr);
+    lv_obj_set_size(back, 110, 38);
+    lv_obj_set_pos(back, 6, 6);
+    lv_obj_set_style_bg_color(back, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(back, 6, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(back, 0, LV_STATE_DEFAULT);
+    lv_obj_t *bl = lv_label_create(back);
+    lv_label_set_text(bl, LV_SYMBOL_LEFT "  MENÜ");
+    brl_style_label(bl, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
+    lv_obj_center(bl);
+    lv_obj_add_event_cb(back, back_cb, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *ttl = lv_label_create(hdr);
+    lv_label_set_text(ttl, title);
+    brl_style_label(ttl, &lv_font_montserrat_18, BRL_CLR_TEXT);
+    lv_obj_align(ttl, LV_ALIGN_CENTER, 0, 0);
+
+    if (action_btn_out && action_label) {
+        lv_obj_t *abtn = lv_button_create(hdr);
+        lv_obj_set_size(abtn, 140, 38);
+        lv_obj_align(abtn, LV_ALIGN_RIGHT_MID, -6, 0);
+        lv_obj_set_style_bg_color(abtn, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
+        lv_obj_set_style_radius(abtn, 6, LV_STATE_DEFAULT);
+        lv_obj_set_style_border_width(abtn, 0, LV_STATE_DEFAULT);
+        lv_obj_t *al = lv_label_create(abtn);
+        lv_label_set_text(al, action_label);
+        brl_style_label(al, &lv_font_montserrat_14, BRL_CLR_TEXT);
+        lv_obj_center(al);
+        *action_btn_out = abtn;
+    }
+    return hdr;
+}
+
+// Content area: y=90, h=390 (below status bar + header)
+static lv_obj_t *build_content_area(lv_obj_t *scr, bool scrollable = true) {
+    lv_obj_t *area = lv_obj_create(scr);
+    lv_obj_set_size(area, 800, 390);
+    lv_obj_set_pos(area, 0, 90);
+    lv_obj_set_style_bg_color(area, BRL_CLR_BG, LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(area, LV_OPA_COVER, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(area, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(area, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_all(area, 8, LV_STATE_DEFAULT);
+    if (!scrollable) lv_obj_remove_flag(area, LV_OBJ_FLAG_SCROLLABLE);
+    return area;
+}
+
+// Sub-screen skeleton: status bar + header + content area
+static lv_obj_t *make_sub_screen(const char *title, lv_event_cb_t back_cb,
+                                  lv_obj_t **action_btn = nullptr,
+                                  const char *action_lbl = nullptr) {
+    lv_obj_t *scr = lv_obj_create(nullptr);
+    lv_obj_set_style_bg_color(scr, BRL_CLR_BG, LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_STATE_DEFAULT);
+    lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+
+    build_sb(scr, &sb_sub);
+    build_sub_header(scr, title, back_cb, action_btn, action_lbl);
+    return scr;
 }
 
 // ============================================================================
-// SECTION 2 — NAVIGATION BAR
+// SECTION 2 — NAVIGATION
 // ============================================================================
-static const char *NAV_ICONS[]  = { LV_SYMBOL_HOME, LV_SYMBOL_LIST,
-                                     LV_SYMBOL_DRIVE, LV_SYMBOL_SETTINGS };
-static const char *NAV_LABELS[] = { "Fahrt", "Strecken", "Verlauf", "Einstellungen" };
 
-static void build_navbar(lv_obj_t *root) {
-    lv_obj_t *bar = lv_obj_create(root);
-    lv_obj_set_size(bar, BRL_SCREEN_W, BRL_NAVBAR_H);
-    lv_obj_set_pos(bar, 0, BRL_NAVBAR_Y);
-    lv_obj_set_style_bg_color(bar, BRL_CLR_NAV_BG, LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_STATE_DEFAULT);
-    lv_obj_set_style_border_color(bar, BRL_CLR_BORDER, LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(bar, 1, LV_STATE_DEFAULT);
-    lv_obj_set_style_border_side(bar, LV_BORDER_SIDE_TOP, LV_STATE_DEFAULT);
-    lv_obj_set_style_radius(bar, 0, LV_STATE_DEFAULT);
-    lv_obj_set_style_pad_all(bar, 0, LV_STATE_DEFAULT);
-    lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
+void menu_screen_show() {
+    sb_sub = {};   // clear sub-screen handles before possible deletion
+    if (s_scr_sub) {
+        lv_obj_delete(s_scr_sub);
+        s_scr_sub = nullptr;
+    }
+    // Also clear settings handles (their objects were deleted above)
+    set_obd_status_lbl = set_obd_btn = nullptr;
+    set_wifi_ap_sw = set_wifi_ap_status_lbl = set_wifi_sta_status_lbl = nullptr;
+    set_lang_btn = set_units_btn = nullptr;
+    s_wifi_dialog = nullptr;
+    s_tc_kb = nullptr;
 
-    int btn_w = BRL_SCREEN_W / 4;
+    lv_screen_load(s_scr_menu);
+}
 
-    for (int i = 0; i < 4; i++) {
-        lv_obj_t *btn = lv_obj_create(bar);
-        lv_obj_set_size(btn, btn_w, BRL_NAVBAR_H);
-        lv_obj_set_pos(btn, i * btn_w, 0);
-        brl_style_transparent(btn);
-        lv_obj_remove_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_set_user_data(btn, (void *)(intptr_t)i);
-        lv_obj_add_event_cb(btn, cb_nav, LV_EVENT_CLICKED, NULL);
+static void cb_back_to_menu(lv_event_t * /*e*/) { menu_screen_show(); }
 
-        // Icon + label stacked vertically
-        lv_obj_t *icon = lv_label_create(btn);
-        lv_label_set_text(icon, NAV_ICONS[i]);
-        lv_obj_set_style_text_font(icon, &lv_font_montserrat_20, LV_STATE_DEFAULT);
-        lv_obj_set_style_text_color(icon,
-            (i == 0) ? BRL_CLR_ACCENT : BRL_CLR_TEXT_DIM, LV_STATE_DEFAULT);
-        lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 6);
+static void sub_screen_load(lv_obj_t *scr) {
+    if (s_scr_sub && s_scr_sub != scr) {
+        // Clear handles pointing into old screen before deleting
+        sb_sub = {};
+        set_obd_status_lbl = set_obd_btn = nullptr;
+        set_wifi_ap_sw = set_wifi_ap_status_lbl = set_wifi_sta_status_lbl = nullptr;
+        set_lang_btn = set_units_btn = nullptr;
+        lv_obj_delete(s_scr_sub);
+    }
+    s_scr_sub = scr;
+    lv_screen_load(scr);
+}
 
-        lv_obj_t *lbl = lv_label_create(btn);
-        lv_label_set_text(lbl, NAV_LABELS[i]);
-        brl_style_label(lbl, &lv_font_montserrat_14,
-            (i == 0) ? BRL_CLR_ACCENT : BRL_CLR_TEXT_DIM);
-        lv_obj_align(lbl, LV_ALIGN_BOTTOM_MID, 0, -4);
+// ============================================================================
+// SECTION 3 — MAIN MENU SCREEN
+// ============================================================================
 
-        nav_btns[i] = btn;
+static void cb_tile_timing(lv_event_t * /*e*/) {
+    // Must pick a track first
+    if (g_state.active_track_idx < 0) {
+        open_tracks_screen();
+    } else {
+        timing_screen_open();
     }
 }
+static void cb_tile_tracks (lv_event_t * /*e*/) { open_tracks_screen();  }
+static void cb_tile_history(lv_event_t * /*e*/) { open_history_screen(); }
+static void cb_tile_settings(lv_event_t * /*e*/){ open_settings_screen();}
 
-// Update nav bar highlight
-static void nav_show(int idx) {
-    for (int i = 0; i < 4; i++) {
-        lv_obj_add_flag(panels[i], LV_OBJ_FLAG_HIDDEN);
+static void build_menu_screen() {
+    s_scr_menu = lv_obj_create(nullptr);
+    lv_obj_set_style_bg_color(s_scr_menu, BRL_CLR_BG, LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(s_scr_menu, LV_OPA_COVER, LV_STATE_DEFAULT);
+    lv_obj_remove_flag(s_scr_menu, LV_OBJ_FLAG_SCROLLABLE);
 
-        // Reset nav item colors
-        lv_obj_t *icon = lv_obj_get_child(nav_btns[i], 0);
-        lv_obj_t *lbl  = lv_obj_get_child(nav_btns[i], 1);
-        lv_color_t c = (i == idx) ? BRL_CLR_ACCENT : BRL_CLR_TEXT_DIM;
-        lv_obj_set_style_text_color(icon, c, LV_STATE_DEFAULT);
-        lv_obj_set_style_text_color(lbl,  c, LV_STATE_DEFAULT);
-    }
-    lv_obj_remove_flag(panels[idx], LV_OBJ_FLAG_HIDDEN);
-    active_panel = idx;
-}
+    build_sb(s_scr_menu, &sb_menu);
 
-static void cb_nav(lv_event_t *e) {
-    lv_obj_t *btn = (lv_obj_t *)lv_event_get_target(e);
-    int idx = (int)(intptr_t)lv_obj_get_user_data(btn);
-    nav_show(idx);
-}
+    // Title strip (y=40, h=48)
+    lv_obj_t *strip = lv_obj_create(s_scr_menu);
+    lv_obj_set_size(strip, 800, 48);
+    lv_obj_set_pos(strip, 0, 40);
+    lv_obj_set_style_bg_color(strip, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(strip, LV_OPA_COVER, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(strip, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(strip, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_all(strip, 0, LV_STATE_DEFAULT);
+    lv_obj_remove_flag(strip, LV_OBJ_FLAG_SCROLLABLE);
 
-// ============================================================================
-// SECTION 3 — DASHBOARD
-// ============================================================================
-static lv_obj_t *make_card(lv_obj_t *parent, int x, int y, int w, int h) {
-    lv_obj_t *c = lv_obj_create(parent);
-    lv_obj_set_size(c, w, h);
-    lv_obj_set_pos(c, x, y);
-    brl_style_card(c);
-    lv_obj_remove_flag(c, LV_OBJ_FLAG_SCROLLABLE);
-    return c;
-}
+    lv_obj_t *brand = lv_label_create(strip);
+    lv_label_set_text(brand, "BAVARIAN RACELABS  —  BRL LAPTIMER");
+    brl_style_label(brand, &lv_font_montserrat_16, BRL_CLR_ACCENT);
+    lv_obj_align(brand, LV_ALIGN_CENTER, 0, 0);
 
-static lv_obj_t *make_metric_card(lv_obj_t *parent, int x, int y, int w, int h,
-                                    const char *title, lv_obj_t **value_out) {
-    lv_obj_t *card = make_card(parent, x, y, w, h);
-
-    lv_obj_t *title_lbl = lv_label_create(card);
-    lv_label_set_text(title_lbl, title);
-    brl_style_label(title_lbl, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
-    lv_obj_align(title_lbl, LV_ALIGN_TOP_LEFT, 0, 0);
-
-    lv_obj_t *val = lv_label_create(card);
-    lv_label_set_text(val, "---");
-    brl_style_label(val, &lv_font_montserrat_32, BRL_CLR_TEXT);
-    lv_obj_align(val, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-
-    if (value_out) *value_out = val;
-    return card;
-}
-
-static void build_dashboard(lv_obj_t *parent) {
-    // ---- Top info row: track name + lap counter ----
-    lv_obj_t *info_row = lv_obj_create(parent);
-    lv_obj_set_size(info_row, BRL_SCREEN_W, 36);
-    lv_obj_set_pos(info_row, 0, 0);
-    brl_style_transparent(info_row);
-    lv_obj_remove_flag(info_row, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t *track_name = lv_label_create(info_row);
-    lv_label_set_text(track_name, "Keine Strecke gewählt");
-    brl_style_label(track_name, &lv_font_montserrat_16, BRL_CLR_TEXT_DIM);
-    lv_obj_align(track_name, LV_ALIGN_LEFT_MID, 8, 0);
-
-    dash_lap_count = lv_label_create(info_row);
-    lv_label_set_text(dash_lap_count, "RUNDE --");
-    brl_style_label(dash_lap_count, &lv_font_montserrat_16, BRL_CLR_TEXT_DIM);
-    lv_obj_align(dash_lap_count, LV_ALIGN_RIGHT_MID, -8, 0);
-
-    // ---- Speed display (left, large) ----
-    lv_obj_t *speed_card = make_card(parent, 8, 42, 300, 140);
-
-    lv_obj_t *speed_title = lv_label_create(speed_card);
-    lv_label_set_text(speed_title, "GESCHWINDIGKEIT");
-    brl_style_label(speed_title, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
-    lv_obj_align(speed_title, LV_ALIGN_TOP_LEFT, 0, 0);
-
-    dash_speed_lbl = lv_label_create(speed_card);
-    lv_label_set_text(dash_speed_lbl, "0");
-    brl_style_label(dash_speed_lbl, &lv_font_montserrat_48, BRL_CLR_TEXT);
-    lv_obj_align(dash_speed_lbl, LV_ALIGN_CENTER, -20, 8);
-
-    dash_speed_unit = lv_label_create(speed_card);
-    lv_label_set_text(dash_speed_unit, "km/h");
-    brl_style_label(dash_speed_unit, &lv_font_montserrat_20, BRL_CLR_TEXT_DIM);
-    lv_obj_align_to(dash_speed_unit, dash_speed_lbl, LV_ALIGN_OUT_BOTTOM_MID, 0, 4);
-
-    // ---- Lap time (center, large) ----
-    lv_obj_t *laptime_card = make_card(parent, 316, 42, 300, 140);
-
-    lv_obj_t *lt_title = lv_label_create(laptime_card);
-    lv_label_set_text(lt_title, "RUNDENZEIT");
-    brl_style_label(lt_title, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
-    lv_obj_align(lt_title, LV_ALIGN_TOP_LEFT, 0, 0);
-
-    dash_laptime_lbl = lv_label_create(laptime_card);
-    lv_label_set_text(dash_laptime_lbl, "-:--:---");
-    brl_style_label(dash_laptime_lbl, &lv_font_montserrat_40, BRL_CLR_ACCENT);
-    lv_obj_align(dash_laptime_lbl, LV_ALIGN_CENTER, 0, 8);
-
-    // ---- Best lap (right) ----
-    lv_obj_t *best_card = make_card(parent, 624, 42, 168, 140);
-
-    lv_obj_t *bl_title = lv_label_create(best_card);
-    lv_label_set_text(bl_title, "BESTZEIT");
-    brl_style_label(bl_title, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
-    lv_obj_align(bl_title, LV_ALIGN_TOP_LEFT, 0, 0);
-
-    dash_bestlap_lbl = lv_label_create(best_card);
-    lv_label_set_text(dash_bestlap_lbl, "-:--:---");
-    brl_style_label(dash_bestlap_lbl, &lv_font_montserrat_24, BRL_CLR_TEXT);
-    lv_obj_align(dash_bestlap_lbl, LV_ALIGN_CENTER, 0, 8);
-
-    // ---- Sector times row ----
-    int sec_y = 190;
-    int sec_h = 90;
-    int sec_w = 182;
-
-    make_metric_card(parent, 8,   sec_y, sec_w, sec_h, "SEKTOR 1", &dash_sec1_lbl);
-    make_metric_card(parent, 198, sec_y, sec_w, sec_h, "SEKTOR 2", &dash_sec2_lbl);
-    make_metric_card(parent, 388, sec_y, sec_w, sec_h, "SEKTOR 3", &dash_sec3_lbl);
-    lv_obj_set_style_text_font(dash_sec1_lbl, &lv_font_montserrat_24, LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(dash_sec2_lbl, &lv_font_montserrat_24, LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(dash_sec3_lbl, &lv_font_montserrat_24, LV_STATE_DEFAULT);
-
-    // ---- Delta card ----
-    lv_obj_t *delta_card = make_card(parent, 578, sec_y, 214, sec_h);
-
-    lv_obj_t *delta_title = lv_label_create(delta_card);
-    lv_label_set_text(delta_title, "DIFF ZUR BESTZEIT");
-    brl_style_label(delta_title, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
-    lv_obj_align(delta_title, LV_ALIGN_TOP_LEFT, 0, 0);
-
-    dash_delta_lbl = lv_label_create(delta_card);
-    lv_label_set_text(dash_delta_lbl, "---");
-    brl_style_label(dash_delta_lbl, &lv_font_montserrat_24, BRL_CLR_TEXT_DIM);
-    lv_obj_align(dash_delta_lbl, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-
-    // ---- OBD mini row ----
-    int obd_y = 288;
-    int obd_h = 52;
-    int obd_w = 120;
-
-    lv_obj_t *obd_row_bg = make_card(parent, 8, obd_y, 560, obd_h);
-    brl_style_transparent(obd_row_bg);
-    lv_obj_remove_flag(obd_row_bg, LV_OBJ_FLAG_SCROLLABLE);
-
-    struct { const char *label; int x; } obd_items[] = {
-        { "GANG",   0   },
-        { "RPM",    140 },
-        { "GAS",    280 },
-        { "KÜHLMITTEL", 420 },
+    // 2×2 tile grid (y=96, available h=384)
+    const int TW = 388, TH = 186, GAP = 8, X0 = 8, Y0 = 96;
+    struct { const char *icon; const char *label; const char *sub; lv_event_cb_t cb; } tiles[4] = {
+        { LV_SYMBOL_PLAY,     "TIMING",          "Runde aufzeichnen",    cb_tile_timing   },
+        { LV_SYMBOL_GPS,      "STRECKEN",        "Strecke wählen",       cb_tile_tracks   },
+        { LV_SYMBOL_DRIVE,    "VERLAUF",         "Rundenzeiten",         cb_tile_history  },
+        { LV_SYMBOL_SETTINGS, "EINSTELLUNGEN",   "WiFi · OBD · Sprache", cb_tile_settings },
     };
 
     for (int i = 0; i < 4; i++) {
-        lv_obj_t *c = make_card(obd_row_bg, obd_items[i].x, 0, obd_w, obd_h);
+        int col = i % 2, row = i / 2;
+        lv_obj_t *tile = lv_obj_create(s_scr_menu);
+        lv_obj_set_size(tile, TW, TH);
+        lv_obj_set_pos(tile, X0 + col*(TW+GAP), Y0 + row*(TH+GAP));
+        brl_style_card(tile);
+        lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_remove_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_bg_color(tile, BRL_CLR_SURFACE2, LV_STATE_PRESSED);
+        lv_obj_add_event_cb(tile, tiles[i].cb, LV_EVENT_CLICKED, nullptr);
 
-        lv_obj_t *t = lv_label_create(c);
-        lv_label_set_text(t, obd_items[i].label);
-        brl_style_label(t, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
-        lv_obj_align(t, LV_ALIGN_TOP_LEFT, 0, 0);
+        lv_obj_t *ico = lv_label_create(tile);
+        lv_label_set_text(ico, tiles[i].icon);
+        lv_obj_set_style_text_font(ico, &lv_font_montserrat_48, LV_STATE_DEFAULT);
+        lv_obj_set_style_text_color(ico, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
+        lv_obj_align(ico, LV_ALIGN_CENTER, 0, -24);
 
-        lv_obj_t *v = lv_label_create(c);
-        lv_label_set_text(v, "--");
-        brl_style_label(v, &lv_font_montserrat_20, BRL_CLR_TEXT);
-        lv_obj_align(v, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+        lv_obj_t *lbl = lv_label_create(tile);
+        lv_label_set_text(lbl, tiles[i].label);
+        brl_style_label(lbl, &lv_font_montserrat_20, BRL_CLR_TEXT);
+        lv_obj_align(lbl, LV_ALIGN_BOTTOM_MID, 0, -24);
+
+        lv_obj_t *sub = lv_label_create(tile);
+        lv_label_set_text(sub, tiles[i].sub);
+        brl_style_label(sub, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
+        lv_obj_align(sub, LV_ALIGN_BOTTOM_MID, 0, -8);
     }
 
-    // ---- Start / Stop button ----
-    lv_obj_t *start_btn = lv_button_create(parent);
-    lv_obj_set_size(start_btn, 210, 52);
-    lv_obj_set_pos(start_btn, 578, obd_y);
-    lv_obj_set_style_bg_color(start_btn, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(start_btn, BRL_CLR_ACCENT_DIM, LV_STATE_PRESSED);
-    lv_obj_set_style_radius(start_btn, 6, LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(start_btn, 0, LV_STATE_DEFAULT);
-    lv_obj_add_event_cb(start_btn, cb_start_stop, LV_EVENT_CLICKED, NULL);
-
-    dash_start_btn_lbl = lv_label_create(start_btn);
-    lv_label_set_text(dash_start_btn_lbl, LV_SYMBOL_PLAY "  TIMING STARTEN");
-    brl_style_label(dash_start_btn_lbl, &lv_font_montserrat_16,
-                    BRL_CLR_TEXT);   // weißer Text auf BRL-Blau
-    lv_obj_center(dash_start_btn_lbl);
+    lv_screen_load(s_scr_menu);
+    lv_timer_create([](lv_timer_t *t){
+        extern void timer_live_update(lv_timer_t*);
+        timer_live_update(t);
+    }, 100, nullptr);
 }
 
 // ============================================================================
-// SECTION 4 — TRACK SELECTION
+// SECTION 4 — TRACK SELECTION SCREEN
 // ============================================================================
+
+static double haversine_km(double lat1, double lon1, double lat2, double lon2) {
+    const double R = 6371.0;
+    double dlat = (lat2-lat1)*M_PI/180.0, dlon = (lon2-lon1)*M_PI/180.0;
+    double a = sin(dlat/2)*sin(dlat/2) +
+               cos(lat1*M_PI/180.0)*cos(lat2*M_PI/180.0)*sin(dlon/2)*sin(dlon/2);
+    return R * 2.0 * atan2(sqrt(a), sqrt(1.0-a));
+}
+
 static void cb_track_select(lv_event_t *e) {
-    lv_obj_t *item = (lv_obj_t *)lv_event_get_target(e);
-    int idx = (int)(intptr_t)lv_obj_get_user_data(item);
+    int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e));
     g_state.active_track_idx = idx;
-
-    const TrackDef *td = track_get(idx);
-    if (td) lv_label_set_text(sb_track_lbl, td->name);
-
-    // Apply track to lap timer
     lap_timer_set_track(idx);
-
-    nav_show(0);
+    const TrackDef *td = track_get(idx);
+    Serial.printf("[APP] Track selected: %s\n", td ? td->name : "?");
+    timing_screen_open();
+    // timing_screen_open loads a new LVGL screen — sub screen will be cleaned up on next menu_show
+    s_scr_sub = nullptr;
 }
 
-static void build_tracks(lv_obj_t *parent) {
-    lv_obj_t *title = lv_label_create(parent);
-    lv_label_set_text(title, "Strecke wählen");
-    brl_style_label(title, &lv_font_montserrat_24, BRL_CLR_TEXT);
-    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 12, 8);
+static void cb_open_creator(lv_event_t *e) {
+    // Rebuild sub screen to show creator
+    open_tracks_screen(); // re-opens with creator shown... actually open_track_creator
+    lv_obj_t *scroll = (lv_obj_t*)lv_event_get_user_data(e);
+    if (scroll) open_track_creator(scroll);
+}
 
-    lv_obj_t *hint = lv_label_create(parent);
-    lv_label_set_text(hint, "Tippe auf eine Strecke um sie als aktiv zu setzen.");
-    brl_style_label(hint, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
-    lv_obj_align_to(hint, title, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 4);
-
-    // Scrollable list
-    lv_obj_t *list = lv_list_create(parent);
-    lv_obj_set_size(list, BRL_SCREEN_W - 16, BRL_CONTENT_H - 72);
-    lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_set_style_bg_color(list, BRL_CLR_BG, LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(list, LV_OPA_COVER, LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(list, 0, LV_STATE_DEFAULT);
-    lv_obj_set_style_pad_row(list, 4, LV_STATE_DEFAULT);
-    lv_obj_set_style_pad_all(list, 0, LV_STATE_DEFAULT);
-
-    for (int i = 0; i < track_total_count(); i++) {
+static void open_tracks_screen() {
+    // Sort by GPS distance
+    int n = track_total_count();
+    int sorted[60]; double dist[60];
+    if (n > 60) n = 60;
+    for (int i = 0; i < n; i++) {
+        sorted[i] = i;
         const TrackDef *td = track_get(i);
-        if (!td) continue;
-        char label_text[80];
-        snprintf(label_text, sizeof(label_text), "%s   %.3f km   %s",
-                 td->name, td->length_km, td->country);
+        if (td && g_state.gps.valid) {
+            double mlat = (td->sf_lat1 + td->sf_lat2) * 0.5;
+            double mlon = (td->sf_lon1 + td->sf_lon2) * 0.5;
+            dist[i] = haversine_km(g_state.gps.lat, g_state.gps.lon, mlat, mlon);
+        } else dist[i] = 1e9;
+    }
+    // Simple insertion sort
+    for (int i = 1; i < n; i++)
+        for (int j = i; j > 0 && dist[sorted[j]] < dist[sorted[j-1]]; j--)
+            { int t=sorted[j]; sorted[j]=sorted[j-1]; sorted[j-1]=t; }
 
-        lv_obj_t *btn = lv_list_add_button(list, LV_SYMBOL_RIGHT, label_text);
-        lv_obj_set_style_bg_color(btn, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
+    lv_obj_t *new_btn = nullptr;
+    lv_obj_t *scr = make_sub_screen("STRECKE WÄHLEN", cb_back_to_menu,
+                                     &new_btn, LV_SYMBOL_PLUS " NEUE STRECKE");
+    lv_obj_t *content = build_content_area(scr, true);
+    lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(content, 4, LV_STATE_DEFAULT);
+
+    // Note: GPS hint
+    if (!g_state.gps.valid) {
+        lv_obj_t *hint = lv_label_create(content);
+        lv_label_set_text(hint, LV_SYMBOL_GPS "  Kein GPS-Fix — Sortierung nach Name");
+        brl_style_label(hint, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
+    }
+
+    for (int s = 0; s < n; s++) {
+        int idx = sorted[s];
+        const TrackDef *td = track_get(idx);
+        if (!td) continue;
+
+        char label[96];
+        if (dist[idx] < 1e8)
+            snprintf(label, sizeof(label), "%s  —  %.0f km entfernt  (%s)",
+                     td->name, dist[idx], td->country);
+        else
+            snprintf(label, sizeof(label), "%s  —  %s", td->name, td->country);
+
+        lv_obj_t *btn = lv_list_add_button(content, LV_SYMBOL_RIGHT, label);
+        lv_obj_set_height(btn, 48);
+        lv_obj_set_style_bg_color(btn,
+            idx == g_state.active_track_idx ? BRL_CLR_BORDER : BRL_CLR_SURFACE,
+            LV_STATE_DEFAULT);
         lv_obj_set_style_bg_color(btn, BRL_CLR_SURFACE2, LV_STATE_PRESSED);
         lv_obj_set_style_border_width(btn, 0, LV_STATE_DEFAULT);
         lv_obj_set_style_radius(btn, 6, LV_STATE_DEFAULT);
-        lv_obj_set_height(btn, 46);
-
-        // Style the label inside the list button
         lv_obj_t *lbl = lv_obj_get_child(btn, 1);
-        if (lbl) {
-            lv_obj_set_style_text_color(lbl, BRL_CLR_TEXT, LV_STATE_DEFAULT);
-            lv_obj_set_style_text_font(lbl, &lv_font_montserrat_16, LV_STATE_DEFAULT);
-        }
-        lv_obj_t *icon = lv_obj_get_child(btn, 0);
-        if (icon) {
-            lv_obj_set_style_text_color(icon, BRL_CLR_TEXT_DIM, LV_STATE_DEFAULT);
-        }
-
-        lv_obj_set_user_data(btn, (void *)(intptr_t)i);
-        lv_obj_add_event_cb(btn, cb_track_select, LV_EVENT_CLICKED, NULL);
+        if (lbl) brl_style_label(lbl, &lv_font_montserrat_16, BRL_CLR_TEXT);
+        lv_obj_set_user_data(btn, (void*)(intptr_t)idx);
+        lv_obj_add_event_cb(btn, cb_track_select, LV_EVENT_CLICKED, nullptr);
     }
+
+    if (new_btn) lv_obj_add_event_cb(new_btn, cb_open_creator, LV_EVENT_CLICKED, (void*)content);
+    sub_screen_load(scr);
 }
 
 // ============================================================================
-// SECTION 5 — HISTORY
+// SECTION 5 — TRACK CREATOR
 // ============================================================================
-static void build_history(lv_obj_t *parent) {
-    lv_obj_t *title = lv_label_create(parent);
-    lv_label_set_text(title, "Rundenzeiten");
-    brl_style_label(title, &lv_font_montserrat_24, BRL_CLR_TEXT);
-    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 12, 8);
 
-    lv_obj_t *placeholder = lv_label_create(parent);
-    lv_label_set_text(placeholder, "Noch keine Rundenzeiten aufgezeichnet.");
-    brl_style_label(placeholder, &lv_font_montserrat_16, BRL_CLR_TEXT_DIM);
-    lv_obj_align(placeholder, LV_ALIGN_CENTER, 0, 0);
+static lv_obj_t *mk_coord_row(lv_obj_t *parent, const char *label,
+                               lv_obj_t **ta_lat, lv_obj_t **ta_lon) {
+    lv_obj_t *row = lv_obj_create(parent);
+    lv_obj_set_width(row, LV_PCT(100));
+    lv_obj_set_height(row, LV_SIZE_CONTENT);
+    brl_style_transparent(row);
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(row, 6, LV_STATE_DEFAULT);
+
+    lv_obj_t *lbl = lv_label_create(row);
+    lv_label_set_text(lbl, label);
+    brl_style_label(lbl, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
+    lv_obj_set_width(lbl, 80);
+    lv_obj_set_style_pad_top(lbl, 10, LV_STATE_DEFAULT);
+
+    *ta_lat = lv_textarea_create(row);
+    lv_obj_set_width(*ta_lat, 160); lv_obj_set_height(*ta_lat, 38);
+    lv_textarea_set_one_line(*ta_lat, true);
+    lv_textarea_set_placeholder_text(*ta_lat, "Lat z.B. 50.3356");
+    lv_obj_set_style_bg_color(*ta_lat, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(*ta_lat, BRL_CLR_TEXT, LV_STATE_DEFAULT);
+
+    lv_obj_t *sep = lv_label_create(row);
+    lv_label_set_text(sep, " / ");
+    brl_style_label(sep, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
+    lv_obj_set_style_pad_top(sep, 10, LV_STATE_DEFAULT);
+
+    *ta_lon = lv_textarea_create(row);
+    lv_obj_set_width(*ta_lon, 160); lv_obj_set_height(*ta_lon, 38);
+    lv_textarea_set_one_line(*ta_lon, true);
+    lv_textarea_set_placeholder_text(*ta_lon, "Lon z.B. 6.9475");
+    lv_obj_set_style_bg_color(*ta_lon, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(*ta_lon, BRL_CLR_TEXT, LV_STATE_DEFAULT);
+
+    // Focus → show keyboard
+    auto kb_focus = [](lv_event_t *ev){
+        if (s_tc_kb) {
+            lv_keyboard_set_textarea(s_tc_kb, (lv_obj_t*)lv_event_get_target(ev));
+            lv_obj_remove_flag(s_tc_kb, LV_OBJ_FLAG_HIDDEN);
+        }
+    };
+    lv_obj_add_event_cb(*ta_lat, kb_focus, LV_EVENT_FOCUSED, nullptr);
+    lv_obj_add_event_cb(*ta_lon, kb_focus, LV_EVENT_FOCUSED, nullptr);
+    return row;
+}
+
+static lv_obj_t *mk_section_label(lv_obj_t *parent, const char *text) {
+    lv_obj_t *lbl = lv_label_create(parent);
+    lv_label_set_text(lbl, text);
+    brl_style_label(lbl, &lv_font_montserrat_16, BRL_CLR_ACCENT);
+    return lbl;
+}
+
+static void cb_tc_type_circuit(lv_event_t* /*e*/) {
+    s_tc_is_circuit = true;
+    if (s_tc_fin_box) lv_obj_add_flag(s_tc_fin_box, LV_OBJ_FLAG_HIDDEN);
+    if (s_tc_type_circ_btn)
+        lv_obj_set_style_bg_color(s_tc_type_circ_btn, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
+    if (s_tc_type_ab_btn)
+        lv_obj_set_style_bg_color(s_tc_type_ab_btn, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
+}
+static void cb_tc_type_ab(lv_event_t* /*e*/) {
+    s_tc_is_circuit = false;
+    if (s_tc_fin_box) lv_obj_remove_flag(s_tc_fin_box, LV_OBJ_FLAG_HIDDEN);
+    if (s_tc_type_circ_btn)
+        lv_obj_set_style_bg_color(s_tc_type_circ_btn, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
+    if (s_tc_type_ab_btn)
+        lv_obj_set_style_bg_color(s_tc_type_ab_btn, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
+}
+
+static void cb_tc_add_sector(lv_event_t* /*e*/) {
+    if (s_tc_sec_count >= MAX_SECTORS || !s_tc_sec_container) return;
+    char sec_lbl[8]; snprintf(sec_lbl, sizeof(sec_lbl), "S%d", s_tc_sec_count+1);
+    mk_coord_row(s_tc_sec_container, sec_lbl,
+                 &s_tc_sec_lat[s_tc_sec_count], &s_tc_sec_lon[s_tc_sec_count]);
+    s_tc_sec_count++;
+    if (s_tc_sec_count >= MAX_SECTORS && s_tc_add_sec_btn)
+        lv_obj_add_flag(s_tc_add_sec_btn, LV_OBJ_FLAG_HIDDEN);
+    if (s_tc_kb) lv_obj_add_flag(s_tc_kb, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void cb_tc_save(lv_event_t* /*e*/) {
+    if (!s_tc_name || !s_tc_sf1_lat || !s_tc_sf1_lon || !s_tc_sf2_lat || !s_tc_sf2_lon) return;
+    const char *name = lv_textarea_get_text(s_tc_name);
+    if (!name || strlen(name) < 2) return;
+
+    if (g_user_track_count >= MAX_USER_TRACKS) return;
+    TrackDef &td = g_user_tracks[g_user_track_count];
+    memset(&td, 0, sizeof(td));
+    strncpy(td.name, name, sizeof(td.name)-1);
+    strncpy(td.country, "Benutzerdefiniert", sizeof(td.country)-1);
+    td.is_circuit   = s_tc_is_circuit;
+    td.user_created = true;
+
+    td.sf_lat1 = atof(lv_textarea_get_text(s_tc_sf1_lat));
+    td.sf_lon1 = atof(lv_textarea_get_text(s_tc_sf1_lon));
+    td.sf_lat2 = atof(lv_textarea_get_text(s_tc_sf2_lat));
+    td.sf_lon2 = atof(lv_textarea_get_text(s_tc_sf2_lon));
+
+    if (!td.is_circuit && s_tc_fin1_lat) {
+        td.fin_lat1 = atof(lv_textarea_get_text(s_tc_fin1_lat));
+        td.fin_lon1 = atof(lv_textarea_get_text(s_tc_fin1_lon));
+        td.fin_lat2 = atof(lv_textarea_get_text(s_tc_fin2_lat));
+        td.fin_lon2 = atof(lv_textarea_get_text(s_tc_fin2_lon));
+    }
+
+    for (int i = 0; i < s_tc_sec_count && i < MAX_SECTORS; i++) {
+        td.sectors[i].lat = atof(lv_textarea_get_text(s_tc_sec_lat[i]));
+        td.sectors[i].lon = atof(lv_textarea_get_text(s_tc_sec_lon[i]));
+        snprintf(td.sectors[i].name, SECTOR_NAME_LEN, "S%d", i+1);
+    }
+    td.sector_count = (uint8_t)s_tc_sec_count;
+
+    // Rough length estimate (straight-line S/F to itself)
+    td.length_km = 0.0f;
+
+    g_user_track_count++;
+    session_store_save_user_track(&td);
+
+    int new_idx = TRACK_DB_BUILTIN_COUNT + g_user_track_count - 1;
+    g_state.active_track_idx = new_idx;
+    lap_timer_set_track(new_idx);
+    timing_screen_open();
+    s_scr_sub = nullptr;
+}
+
+static void open_track_creator(lv_obj_t *scroll) {
+    // Reset creator state
+    s_tc_name = s_tc_sf1_lat = s_tc_sf1_lon = s_tc_sf2_lat = s_tc_sf2_lon = nullptr;
+    s_tc_fin1_lat = s_tc_fin1_lon = s_tc_fin2_lat = s_tc_fin2_lon = nullptr;
+    s_tc_fin_box = s_tc_sec_container = s_tc_add_sec_btn = nullptr;
+    memset(s_tc_sec_lat, 0, sizeof(s_tc_sec_lat));
+    memset(s_tc_sec_lon, 0, sizeof(s_tc_sec_lon));
+    s_tc_sec_count = 0;
+    s_tc_is_circuit = true;
+
+    // Clear the existing list and build creator form in place
+    lv_obj_clean(scroll);
+
+    auto section = [&](const char *t){ mk_section_label(scroll, t); };
+    auto kb_focus_name = [](lv_event_t *ev){
+        if (s_tc_kb) {
+            lv_keyboard_set_textarea(s_tc_kb, (lv_obj_t*)lv_event_get_target(ev));
+            lv_obj_remove_flag(s_tc_kb, LV_OBJ_FLAG_HIDDEN);
+        }
+    };
+
+    // Name
+    section("─── NAME ───────────────────────────────");
+    s_tc_name = lv_textarea_create(scroll);
+    lv_obj_set_width(s_tc_name, 500); lv_obj_set_height(s_tc_name, 40);
+    lv_textarea_set_one_line(s_tc_name, true);
+    lv_textarea_set_placeholder_text(s_tc_name, "z.B. Meine Hausstrecke");
+    lv_obj_set_style_bg_color(s_tc_name, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(s_tc_name, BRL_CLR_TEXT, LV_STATE_DEFAULT);
+    lv_obj_add_event_cb(s_tc_name, kb_focus_name, LV_EVENT_FOCUSED, nullptr);
+
+    // Type selector
+    section("─── STRECKENTYP ─────────────────────────");
+    lv_obj_t *type_row = lv_obj_create(scroll);
+    lv_obj_set_width(type_row, LV_PCT(100)); lv_obj_set_height(type_row, LV_SIZE_CONTENT);
+    brl_style_transparent(type_row);
+    lv_obj_remove_flag(type_row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(type_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(type_row, 8, LV_STATE_DEFAULT);
+
+    s_tc_type_circ_btn = lv_button_create(type_row);
+    lv_obj_set_size(s_tc_type_circ_btn, 200, 44);
+    lv_obj_set_style_bg_color(s_tc_type_circ_btn, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(s_tc_type_circ_btn, 6, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(s_tc_type_circ_btn, 0, LV_STATE_DEFAULT);
+    lv_obj_t *lc = lv_label_create(s_tc_type_circ_btn);
+    lv_label_set_text(lc, LV_SYMBOL_LOOP "  RUNDKURS");
+    brl_style_label(lc, &lv_font_montserrat_16, BRL_CLR_TEXT);
+    lv_obj_center(lc);
+    lv_obj_add_event_cb(s_tc_type_circ_btn, cb_tc_type_circuit, LV_EVENT_CLICKED, nullptr);
+
+    s_tc_type_ab_btn = lv_button_create(type_row);
+    lv_obj_set_size(s_tc_type_ab_btn, 200, 44);
+    lv_obj_set_style_bg_color(s_tc_type_ab_btn, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(s_tc_type_ab_btn, 6, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(s_tc_type_ab_btn, 0, LV_STATE_DEFAULT);
+    lv_obj_t *lab = lv_label_create(s_tc_type_ab_btn);
+    lv_label_set_text(lab, LV_SYMBOL_RIGHT "  A-B STRECKE");
+    brl_style_label(lab, &lv_font_montserrat_16, BRL_CLR_TEXT);
+    lv_obj_center(lab);
+    lv_obj_add_event_cb(s_tc_type_ab_btn, cb_tc_type_ab, LV_EVENT_CLICKED, nullptr);
+
+    // S/F line
+    section("─── START/ZIEL LINIE (2 Punkte quer zur Strecke) ───");
+    mk_coord_row(scroll, "Punkt 1:", &s_tc_sf1_lat, &s_tc_sf1_lon);
+    mk_coord_row(scroll, "Punkt 2:", &s_tc_sf2_lat, &s_tc_sf2_lon);
+
+    // A-B finish section (hidden by default)
+    s_tc_fin_box = lv_obj_create(scroll);
+    lv_obj_set_width(s_tc_fin_box, LV_PCT(100)); lv_obj_set_height(s_tc_fin_box, LV_SIZE_CONTENT);
+    brl_style_transparent(s_tc_fin_box);
+    lv_obj_remove_flag(s_tc_fin_box, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(s_tc_fin_box, LV_FLEX_FLOW_COLUMN);
+    lv_obj_add_flag(s_tc_fin_box, LV_OBJ_FLAG_HIDDEN);
+    mk_section_label(s_tc_fin_box, "─── ZIELLINIE (nur A-B) ──────────────────");
+    mk_coord_row(s_tc_fin_box, "Punkt 1:", &s_tc_fin1_lat, &s_tc_fin1_lon);
+    mk_coord_row(s_tc_fin_box, "Punkt 2:", &s_tc_fin2_lat, &s_tc_fin2_lon);
+
+    // Sectors
+    section("─── SEKTOREN (optional, max 8) ─────────");
+    s_tc_sec_container = lv_obj_create(scroll);
+    lv_obj_set_width(s_tc_sec_container, LV_PCT(100));
+    lv_obj_set_height(s_tc_sec_container, LV_SIZE_CONTENT);
+    brl_style_transparent(s_tc_sec_container);
+    lv_obj_remove_flag(s_tc_sec_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(s_tc_sec_container, LV_FLEX_FLOW_COLUMN);
+
+    s_tc_add_sec_btn = lv_button_create(scroll);
+    lv_obj_set_size(s_tc_add_sec_btn, 220, 40);
+    lv_obj_set_style_bg_color(s_tc_add_sec_btn, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(s_tc_add_sec_btn, 6, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(s_tc_add_sec_btn, 0, LV_STATE_DEFAULT);
+    lv_obj_t *asl = lv_label_create(s_tc_add_sec_btn);
+    lv_label_set_text(asl, LV_SYMBOL_PLUS "  SEKTOR HINZUFÜGEN");
+    brl_style_label(asl, &lv_font_montserrat_14, BRL_CLR_TEXT);
+    lv_obj_center(asl);
+    lv_obj_add_event_cb(s_tc_add_sec_btn, cb_tc_add_sector, LV_EVENT_CLICKED, nullptr);
+
+    // Save button
+    lv_obj_t *save_btn = lv_button_create(scroll);
+    lv_obj_set_size(save_btn, 280, 50);
+    lv_obj_set_style_bg_color(save_btn, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(save_btn, 6, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(save_btn, 0, LV_STATE_DEFAULT);
+    lv_obj_t *sl = lv_label_create(save_btn);
+    lv_label_set_text(sl, LV_SYMBOL_OK "  SPEICHERN & TIMING STARTEN");
+    brl_style_label(sl, &lv_font_montserrat_16, BRL_CLR_TEXT);
+    lv_obj_center(sl);
+    lv_obj_add_event_cb(save_btn, cb_tc_save, LV_EVENT_CLICKED, nullptr);
+
+    // Touch keyboard (shown when textarea focused)
+    s_tc_kb = lv_keyboard_create(lv_screen_active());
+    lv_obj_set_size(s_tc_kb, 800, 200);
+    lv_obj_align(s_tc_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_color(s_tc_kb, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
+    lv_obj_add_event_cb(s_tc_kb, [](lv_event_t *ev){
+        lv_obj_add_flag((lv_obj_t*)lv_event_get_target(ev), LV_OBJ_FLAG_HIDDEN);
+    }, LV_EVENT_READY, nullptr);
+    lv_obj_add_flag(s_tc_kb, LV_OBJ_FLAG_HIDDEN);
+}
+
+
+// ============================================================================
+// SECTION 6 — HISTORY SCREEN
+// ============================================================================
+
+static void open_history_screen() {
+    lv_obj_t *scr = make_sub_screen("VERLAUF", cb_back_to_menu);
+    lv_obj_t *content = build_content_area(scr, true);
+    lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(content, 4, LV_STATE_DEFAULT);
+
+    LapSession &sess = g_state.session;
+    if (sess.lap_count == 0) {
+        lv_obj_t *ph = lv_label_create(content);
+        lv_label_set_text(ph, "Noch keine Rundenzeiten in dieser Sitzung.");
+        brl_style_label(ph, &lv_font_montserrat_16, BRL_CLR_TEXT_DIM);
+        lv_obj_align(ph, LV_ALIGN_CENTER, 0, 0);
+    } else {
+        for (int i = 0; i < sess.lap_count; i++) {
+            RecordedLap &rl = sess.laps[i];
+            lv_obj_t *row = lv_obj_create(content);
+            lv_obj_set_width(row, LV_PCT(100)); lv_obj_set_height(row, 52);
+            brl_style_card(row);
+            lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+            char lt_buf[16]; fmt_laptime(lt_buf, sizeof(lt_buf), rl.total_ms);
+            char lap_buf[64];
+            snprintf(lap_buf, sizeof(lap_buf), "Runde %d    %s%s",
+                     i+1, lt_buf,
+                     i == (int)sess.best_lap_idx ? "  ★ BEST" : "");
+
+            lv_obj_t *lbl = lv_label_create(row);
+            lv_label_set_text(lbl, lap_buf);
+            brl_style_label(lbl, &lv_font_montserrat_16,
+                i == (int)sess.best_lap_idx ? BRL_CLR_ACCENT : BRL_CLR_TEXT);
+            lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
+
+            // Ref lap button
+            lv_obj_t *ref_btn = lv_button_create(row);
+            lv_obj_set_size(ref_btn, 130, 34);
+            lv_obj_align(ref_btn, LV_ALIGN_RIGHT_MID, 0, 0);
+            lv_obj_set_style_bg_color(ref_btn,
+                i == (int)sess.ref_lap_idx ? BRL_CLR_ACCENT : BRL_CLR_SURFACE2,
+                LV_STATE_DEFAULT);
+            lv_obj_set_style_radius(ref_btn, 6, LV_STATE_DEFAULT);
+            lv_obj_set_style_border_width(ref_btn, 0, LV_STATE_DEFAULT);
+            lv_obj_t *rl2 = lv_label_create(ref_btn);
+            lv_label_set_text(rl2, i == (int)sess.ref_lap_idx ? "✓ REFERENZ" : "Als Referenz");
+            brl_style_label(rl2, &lv_font_montserrat_14, BRL_CLR_TEXT);
+            lv_obj_center(rl2);
+            lv_obj_set_user_data(ref_btn, (void*)(intptr_t)i);
+            lv_obj_add_event_cb(ref_btn, [](lv_event_t *e){
+                int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e));
+                lap_timer_set_ref_lap((uint8_t)idx);
+                open_history_screen(); // rebuild to refresh button states
+            }, LV_EVENT_CLICKED, nullptr);
+        }
+    }
+    sub_screen_load(scr);
 }
 
 // ============================================================================
-// SECTION 6 — SETTINGS  (interactive)
+// SECTION 7 — SETTINGS SCREEN
 // ============================================================================
 
-// ---------------------------------------------------------------------------
-// Helper: create a settings row  (card with icon+title left, control right)
-// Returns the right-side container so callers can add controls there.
-// ---------------------------------------------------------------------------
-static lv_obj_t *make_setting_row(lv_obj_t *parent, int y, int h,
+static lv_obj_t *make_setting_row(lv_obj_t *parent, int /*y*/, int h,
                                    const char *icon, const char *title,
                                    const char *subtitle = nullptr) {
     lv_obj_t *row = lv_obj_create(parent);
-    lv_obj_set_size(row, BRL_SCREEN_W - 16, h);
-    lv_obj_set_pos(row, 0, y);
+    lv_obj_set_width(row, LV_PCT(100));
+    lv_obj_set_height(row, h);
     brl_style_card(row);
     lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Icon
     lv_obj_t *ico = lv_label_create(row);
     lv_label_set_text(ico, icon);
     brl_style_label(ico, &lv_font_montserrat_20, BRL_CLR_ACCENT);
     lv_obj_align(ico, LV_ALIGN_LEFT_MID, 0, subtitle ? -8 : 0);
 
-    // Title
     lv_obj_t *tit = lv_label_create(row);
     lv_label_set_text(tit, title);
     brl_style_label(tit, &lv_font_montserrat_16, BRL_CLR_TEXT);
     lv_obj_align(tit, LV_ALIGN_LEFT_MID, 32, subtitle ? -8 : 0);
 
-    // Optional subtitle
     if (subtitle) {
         lv_obj_t *sub = lv_label_create(row);
         lv_label_set_text(sub, subtitle);
@@ -477,7 +746,6 @@ static lv_obj_t *make_setting_row(lv_obj_t *parent, int y, int h,
         lv_obj_align(sub, LV_ALIGN_LEFT_MID, 32, 10);
     }
 
-    // Right container for controls
     lv_obj_t *right = lv_obj_create(row);
     lv_obj_set_size(right, 340, h - 16);
     lv_obj_align(right, LV_ALIGN_RIGHT_MID, 0, 0);
@@ -486,17 +754,12 @@ static lv_obj_t *make_setting_row(lv_obj_t *parent, int y, int h,
     return right;
 }
 
-// ---------------------------------------------------------------------------
-// Small action button used inside settings rows
-// ---------------------------------------------------------------------------
 static lv_obj_t *make_setting_btn(lv_obj_t *parent, const char *text,
-                                   lv_color_t color, lv_align_t align,
-                                   int x_ofs = 0) {
+                                   lv_color_t color, lv_align_t align, int x_ofs = 0) {
     lv_obj_t *btn = lv_button_create(parent);
     lv_obj_set_size(btn, 120, 36);
     lv_obj_align(btn, align, x_ofs, 0);
     lv_obj_set_style_bg_color(btn, color, LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(btn, BRL_CLR_ACCENT_DIM, LV_STATE_PRESSED);
     lv_obj_set_style_radius(btn, 6, LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(btn, 0, LV_STATE_DEFAULT);
     lv_obj_t *lbl = lv_label_create(btn);
@@ -506,60 +769,39 @@ static lv_obj_t *make_setting_btn(lv_obj_t *parent, const char *text,
     return btn;
 }
 
-// ---------------------------------------------------------------------------
-// WiFi credential dialog (modal overlay over root screen)
-// ---------------------------------------------------------------------------
-static lv_obj_t *s_wifi_dialog    = nullptr;
-static lv_obj_t *s_ta_ssid        = nullptr;
-static lv_obj_t *s_ta_pass        = nullptr;
-static lv_obj_t *s_kb             = nullptr;
-
-static void cb_wifi_dialog_save(lv_event_t * /*e*/) {
-    if (!s_ta_ssid || !s_ta_pass) return;
-    wifi_set_sta(lv_textarea_get_text(s_ta_ssid),
-                 lv_textarea_get_text(s_ta_pass));
-    // Switch to STA mode immediately
-    wifi_set_mode(BRL_WIFI_STA);
-
+// WiFi dialog
+static void cb_wifi_dialog_save(lv_event_t* /*e*/) {
+    if (s_ta_ssid && s_ta_pass) {
+        wifi_set_sta(lv_textarea_get_text(s_ta_ssid), lv_textarea_get_text(s_ta_pass));
+        wifi_set_mode(BRL_WIFI_STA);
+    }
     if (s_wifi_dialog) { lv_obj_delete(s_wifi_dialog); s_wifi_dialog = nullptr; }
 }
-
-static void cb_wifi_dialog_cancel(lv_event_t * /*e*/) {
+static void cb_wifi_dialog_cancel(lv_event_t* /*e*/) {
     if (s_wifi_dialog) { lv_obj_delete(s_wifi_dialog); s_wifi_dialog = nullptr; }
 }
-
-static void cb_kb_ready(lv_event_t *e) {
-    // Keyboard OK button closes it
-    lv_obj_t *kb = (lv_obj_t *)lv_event_get_target(e);
-    lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+static void cb_dlg_kb_ready(lv_event_t *e) {
+    lv_obj_add_flag((lv_obj_t*)lv_event_get_target(e), LV_OBJ_FLAG_HIDDEN);
 }
-
-static void cb_ta_focused(lv_event_t *e) {
-    if (s_kb) {
-        lv_keyboard_set_textarea(s_kb, (lv_obj_t *)lv_event_get_target(e));
-        lv_obj_remove_flag(s_kb, LV_OBJ_FLAG_HIDDEN);
+static void cb_dlg_ta_focus(lv_event_t *e) {
+    if (s_dlg_kb) {
+        lv_keyboard_set_textarea(s_dlg_kb, (lv_obj_t*)lv_event_get_target(e));
+        lv_obj_remove_flag(s_dlg_kb, LV_OBJ_FLAG_HIDDEN);
     }
 }
-
 static void open_wifi_sta_dialog() {
     if (s_wifi_dialog) return;
-
     lv_obj_t *scr = lv_screen_active();
-    // Dark semi-transparent overlay
     s_wifi_dialog = lv_obj_create(scr);
-    lv_obj_set_size(s_wifi_dialog, BRL_SCREEN_W, BRL_SCREEN_H);
-    lv_obj_set_pos(s_wifi_dialog, 0, 0);
+    lv_obj_set_size(s_wifi_dialog, 800, 480); lv_obj_set_pos(s_wifi_dialog, 0, 0);
     lv_obj_set_style_bg_color(s_wifi_dialog, lv_color_hex(0x000000), LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(s_wifi_dialog, LV_OPA_80, LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(s_wifi_dialog, 0, LV_STATE_DEFAULT);
     lv_obj_remove_flag(s_wifi_dialog, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Dialog card
     lv_obj_t *card = lv_obj_create(s_wifi_dialog);
-    lv_obj_set_size(card, 500, 320);
-    lv_obj_center(card);
-    brl_style_card(card);
-    lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_size(card, 500, 300); lv_obj_center(card);
+    brl_style_card(card); lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_pad_all(card, 16, LV_STATE_DEFAULT);
 
     lv_obj_t *ttl = lv_label_create(card);
@@ -567,414 +809,379 @@ static void open_wifi_sta_dialog() {
     brl_style_label(ttl, &lv_font_montserrat_20, BRL_CLR_TEXT);
     lv_obj_align(ttl, LV_ALIGN_TOP_LEFT, 0, 0);
 
-    // SSID field
-    lv_obj_t *lbl_s = lv_label_create(card);
-    lv_label_set_text(lbl_s, "Netzwerkname (SSID)");
-    brl_style_label(lbl_s, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
-    lv_obj_align(lbl_s, LV_ALIGN_TOP_LEFT, 0, 36);
+    auto mk_ta = [&](const char *hint, bool pw, int y) -> lv_obj_t* {
+        lv_obj_t *ta = lv_textarea_create(card);
+        lv_obj_set_size(ta, 468, 40); lv_obj_align(ta, LV_ALIGN_TOP_LEFT, 0, y);
+        lv_textarea_set_one_line(ta, true);
+        lv_textarea_set_placeholder_text(ta, hint);
+        if (pw) lv_textarea_set_password_mode(ta, true);
+        lv_obj_set_style_bg_color(ta, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
+        lv_obj_set_style_text_color(ta, BRL_CLR_TEXT, LV_STATE_DEFAULT);
+        lv_obj_add_event_cb(ta, cb_dlg_ta_focus, LV_EVENT_FOCUSED, nullptr);
+        return ta;
+    };
+    lv_obj_t *l1 = lv_label_create(card);
+    lv_label_set_text(l1, "Netzwerkname (SSID)");
+    brl_style_label(l1, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
+    lv_obj_align(l1, LV_ALIGN_TOP_LEFT, 0, 36);
+    s_ta_ssid = mk_ta("MeinHeimnetz", false, 56);
 
-    s_ta_ssid = lv_textarea_create(card);
-    lv_obj_set_size(s_ta_ssid, 468, 40);
-    lv_obj_align(s_ta_ssid, LV_ALIGN_TOP_LEFT, 0, 56);
-    lv_textarea_set_one_line(s_ta_ssid, true);
-    lv_textarea_set_placeholder_text(s_ta_ssid, "MeinHeimnetz");
-    lv_obj_set_style_bg_color(s_ta_ssid, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
-    lv_obj_set_style_text_color(s_ta_ssid, BRL_CLR_TEXT, LV_STATE_DEFAULT);
-    lv_obj_add_event_cb(s_ta_ssid, cb_ta_focused, LV_EVENT_FOCUSED, nullptr);
+    lv_obj_t *l2 = lv_label_create(card);
+    lv_label_set_text(l2, "Passwort");
+    brl_style_label(l2, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
+    lv_obj_align(l2, LV_ALIGN_TOP_LEFT, 0, 106);
+    s_ta_pass = mk_ta("••••••••", true, 126);
 
-    // Password field
-    lv_obj_t *lbl_p = lv_label_create(card);
-    lv_label_set_text(lbl_p, "Passwort");
-    brl_style_label(lbl_p, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
-    lv_obj_align(lbl_p, LV_ALIGN_TOP_LEFT, 0, 104);
+    auto mk_btn = [&](const char *t, lv_color_t c, int x) -> lv_obj_t* {
+        lv_obj_t *b = lv_button_create(card);
+        lv_obj_set_size(b, 140, 40); lv_obj_align(b, LV_ALIGN_BOTTOM_RIGHT, x, 0);
+        lv_obj_set_style_bg_color(b, c, LV_STATE_DEFAULT);
+        lv_obj_set_style_radius(b, 6, LV_STATE_DEFAULT);
+        lv_obj_set_style_border_width(b, 0, LV_STATE_DEFAULT);
+        lv_obj_t *l = lv_label_create(b); lv_label_set_text(l, t);
+        brl_style_label(l, &lv_font_montserrat_14, BRL_CLR_TEXT); lv_obj_center(l);
+        return b;
+    };
+    lv_obj_t *bsave = mk_btn(LV_SYMBOL_OK "  Verbinden", BRL_CLR_ACCENT, 0);
+    lv_obj_add_event_cb(bsave, cb_wifi_dialog_save, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *bcancel = mk_btn(LV_SYMBOL_CLOSE "  Abbrechen", BRL_CLR_SURFACE2, -150);
+    lv_obj_add_event_cb(bcancel, cb_wifi_dialog_cancel, LV_EVENT_CLICKED, nullptr);
 
-    s_ta_pass = lv_textarea_create(card);
-    lv_obj_set_size(s_ta_pass, 468, 40);
-    lv_obj_align(s_ta_pass, LV_ALIGN_TOP_LEFT, 0, 124);
-    lv_textarea_set_one_line(s_ta_pass, true);
-    lv_textarea_set_password_mode(s_ta_pass, true);
-    lv_textarea_set_placeholder_text(s_ta_pass, "••••••••");
-    lv_obj_set_style_bg_color(s_ta_pass, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
-    lv_obj_set_style_text_color(s_ta_pass, BRL_CLR_TEXT, LV_STATE_DEFAULT);
-    lv_obj_add_event_cb(s_ta_pass, cb_ta_focused, LV_EVENT_FOCUSED, nullptr);
-
-    // Buttons
-    lv_obj_t *btn_save = lv_button_create(card);
-    lv_obj_set_size(btn_save, 140, 40);
-    lv_obj_align(btn_save, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
-    lv_obj_set_style_bg_color(btn_save, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
-    lv_obj_set_style_radius(btn_save, 6, LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(btn_save, 0, LV_STATE_DEFAULT);
-    lv_obj_t *lbl_save = lv_label_create(btn_save);
-    lv_label_set_text(lbl_save, LV_SYMBOL_OK "  Verbinden");
-    brl_style_label(lbl_save, &lv_font_montserrat_14, BRL_CLR_TEXT);
-    lv_obj_center(lbl_save);
-    lv_obj_add_event_cb(btn_save, cb_wifi_dialog_save, LV_EVENT_CLICKED, nullptr);
-
-    lv_obj_t *btn_cancel = lv_button_create(card);
-    lv_obj_set_size(btn_cancel, 120, 40);
-    lv_obj_align(btn_cancel, LV_ALIGN_BOTTOM_RIGHT, -150, 0);
-    lv_obj_set_style_bg_color(btn_cancel, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
-    lv_obj_set_style_radius(btn_cancel, 6, LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(btn_cancel, 0, LV_STATE_DEFAULT);
-    lv_obj_t *lbl_cancel = lv_label_create(btn_cancel);
-    lv_label_set_text(lbl_cancel, LV_SYMBOL_CLOSE "  Abbrechen");
-    brl_style_label(lbl_cancel, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
-    lv_obj_center(lbl_cancel);
-    lv_obj_add_event_cb(btn_cancel, cb_wifi_dialog_cancel, LV_EVENT_CLICKED, nullptr);
-
-    // Inline keyboard (hidden until textarea focused)
-    s_kb = lv_keyboard_create(s_wifi_dialog);
-    lv_obj_set_size(s_kb, BRL_SCREEN_W, 200);
-    lv_obj_align(s_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_set_style_bg_color(s_kb, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
-    lv_obj_add_event_cb(s_kb, cb_kb_ready, LV_EVENT_READY, nullptr);
-    lv_obj_add_flag(s_kb, LV_OBJ_FLAG_HIDDEN);
+    s_dlg_kb = lv_keyboard_create(s_wifi_dialog);
+    lv_obj_set_size(s_dlg_kb, 800, 200); lv_obj_align(s_dlg_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_color(s_dlg_kb, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
+    lv_obj_add_event_cb(s_dlg_kb, cb_dlg_kb_ready, LV_EVENT_READY, nullptr);
+    lv_obj_add_flag(s_dlg_kb, LV_OBJ_FLAG_HIDDEN);
 }
 
-// ---------------------------------------------------------------------------
-// Settings callbacks
-// ---------------------------------------------------------------------------
-static void cb_obd_connect(lv_event_t * /*e*/) {
-    if (obd_bt_state() == OBD_CONNECTED || obd_bt_state() == OBD_REQUESTING) {
-        obd_bt_disconnect();
-    } else {
-        // Force a new scan by resetting to IDLE — obd_bt_poll() does the rest
-        obd_bt_disconnect();
-    }
-}
+static void open_settings_screen() {
+    lv_obj_t *scr = make_sub_screen("EINSTELLUNGEN", cb_back_to_menu);
+    lv_obj_t *content = build_content_area(scr, true);
+    lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(content, 4, LV_STATE_DEFAULT);
 
-static void cb_wifi_ap_toggle(lv_event_t *e) {
-    lv_obj_t *sw = (lv_obj_t *)lv_event_get_target(e);
-    bool on = lv_obj_has_state(sw, LV_STATE_CHECKED);
-    wifi_set_mode(on ? BRL_WIFI_AP : BRL_WIFI_OFF);
-}
+    const int RH = 56, RH2 = 68;
 
-static void cb_wifi_sta_setup(lv_event_t * /*e*/) {
-    open_wifi_sta_dialog();
-}
-
-static void cb_wifi_sta_disconnect(lv_event_t * /*e*/) {
-    wifi_set_mode(BRL_WIFI_OFF);
-}
-
-static void cb_lang_toggle(lv_event_t * /*e*/) {
-    g_state.language = (g_state.language == 0) ? 1 : 0;
-    lv_label_set_text(lv_obj_get_child(set_lang_btn, 0),
-                      g_state.language == 0 ? "Deutsch" : "English");
-}
-
-static void cb_units_toggle(lv_event_t * /*e*/) {
-    g_state.units = (g_state.units == 0) ? 1 : 0;
-    lv_label_set_text(lv_obj_get_child(set_units_btn, 0),
-                      g_state.units == 0 ? "km/h" : "mph");
-}
-
-// ---------------------------------------------------------------------------
-// Build the settings panel
-// ---------------------------------------------------------------------------
-static void build_settings(lv_obj_t *parent) {
-    lv_obj_t *title = lv_label_create(parent);
-    lv_label_set_text(title, "Einstellungen");
-    brl_style_label(title, &lv_font_montserrat_24, BRL_CLR_TEXT);
-    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
-
-    // Scrollable container for rows
-    lv_obj_t *scroll = lv_obj_create(parent);
-    lv_obj_set_size(scroll, BRL_SCREEN_W - 16, BRL_CONTENT_H - 40);
-    lv_obj_align(scroll, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_set_style_bg_opa(scroll, LV_OPA_TRANSP, LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(scroll, 0, LV_STATE_DEFAULT);
-    lv_obj_set_style_pad_all(scroll, 0, LV_STATE_DEFAULT);
-    lv_obj_set_style_pad_row(scroll, 4, LV_STATE_DEFAULT);
-    lv_obj_set_flex_flow(scroll, LV_FLEX_FLOW_COLUMN);
-
-    // ── Row heights ──────────────────────────────────────────────────────────
-    const int RH = 56;   // standard row height
-    const int RH2 = 68;  // tall row (with subtitle)
-    int y = 0;
-
-    // ── 1. OBD Bluetooth ─────────────────────────────────────────────────────
+    // OBD
     {
-        lv_obj_t *right = make_setting_row(scroll, y, RH2,
-            LV_SYMBOL_BLUETOOTH, "OBD Adapter",
-            "BRL-OBD Bluetooth LE");
-        y += RH2 + 4;
-
-        set_obd_status_lbl = lv_label_create(right);
+        lv_obj_t *r = make_setting_row(content, 0, RH2, LV_SYMBOL_BLUETOOTH,
+                                        "OBD Adapter", "BRL-OBD Bluetooth LE");
+        set_obd_status_lbl = lv_label_create(r);
         lv_label_set_text(set_obd_status_lbl, "Nicht verbunden");
         brl_style_label(set_obd_status_lbl, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
         lv_obj_align(set_obd_status_lbl, LV_ALIGN_LEFT_MID, 0, 0);
-
-        set_obd_btn = make_setting_btn(right, "Verbinden",
-                                       BRL_CLR_ACCENT, LV_ALIGN_RIGHT_MID);
-        lv_obj_add_event_cb(set_obd_btn, cb_obd_connect, LV_EVENT_CLICKED, nullptr);
+        set_obd_btn = make_setting_btn(r, "Verbinden", BRL_CLR_ACCENT, LV_ALIGN_RIGHT_MID);
+        lv_obj_add_event_cb(set_obd_btn, [](lv_event_t* /*e*/){
+            if (obd_bt_state() == OBD_CONNECTED || obd_bt_state() == OBD_REQUESTING)
+                obd_bt_disconnect();
+            else obd_bt_disconnect(); // resets to IDLE → poll restarts scan
+        }, LV_EVENT_CLICKED, nullptr);
     }
-
-    // ── 2. WiFi Hotspot (AP mode) ─────────────────────────────────────────────
+    // WiFi AP
     {
-        lv_obj_t *right = make_setting_row(scroll, y, RH2,
-            LV_SYMBOL_WIFI, "WiFi Hotspot (AP)",
-            "Android App & Daten-Download");
-        y += RH2 + 4;
-
-        set_wifi_ap_status_lbl = lv_label_create(right);
+        lv_obj_t *r = make_setting_row(content, 0, RH2, LV_SYMBOL_WIFI,
+                                        "WiFi Hotspot (AP)", "Android App & Download");
+        set_wifi_ap_status_lbl = lv_label_create(r);
         lv_label_set_text(set_wifi_ap_status_lbl, "AUS");
         brl_style_label(set_wifi_ap_status_lbl, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
         lv_obj_align(set_wifi_ap_status_lbl, LV_ALIGN_LEFT_MID, 0, 0);
-
-        set_wifi_ap_sw = lv_switch_create(right);
+        set_wifi_ap_sw = lv_switch_create(r);
         lv_obj_align(set_wifi_ap_sw, LV_ALIGN_RIGHT_MID, 0, 0);
         lv_obj_set_style_bg_color(set_wifi_ap_sw, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
         lv_obj_set_style_bg_color(set_wifi_ap_sw, BRL_CLR_ACCENT, LV_STATE_CHECKED);
-        lv_obj_add_event_cb(set_wifi_ap_sw, cb_wifi_ap_toggle, LV_EVENT_VALUE_CHANGED, nullptr);
+        lv_obj_add_event_cb(set_wifi_ap_sw, [](lv_event_t *e){
+            wifi_set_mode(lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED)
+                          ? BRL_WIFI_AP : BRL_WIFI_OFF);
+        }, LV_EVENT_VALUE_CHANGED, nullptr);
     }
-
-    // ── 3. WiFi Netzwerk (STA / OTA) ─────────────────────────────────────────
+    // WiFi STA
     {
-        lv_obj_t *right = make_setting_row(scroll, y, RH2,
-            LV_SYMBOL_WIFI, "WiFi Netzwerk (STA)",
-            "Für OTA Firmware Updates");
-        y += RH2 + 4;
-
-        set_wifi_sta_status_lbl = lv_label_create(right);
+        lv_obj_t *r = make_setting_row(content, 0, RH2, LV_SYMBOL_WIFI,
+                                        "WiFi Netzwerk (STA)", "Für OTA Updates");
+        set_wifi_sta_status_lbl = lv_label_create(r);
         lv_label_set_text(set_wifi_sta_status_lbl, "Nicht verbunden");
         brl_style_label(set_wifi_sta_status_lbl, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
         lv_obj_align(set_wifi_sta_status_lbl, LV_ALIGN_LEFT_MID, 0, 0);
-
-        lv_obj_t *btn_cfg = make_setting_btn(right, LV_SYMBOL_SETTINGS " Einrichten",
-                                              BRL_CLR_ACCENT, LV_ALIGN_RIGHT_MID, -130);
-        lv_obj_add_event_cb(btn_cfg, cb_wifi_sta_setup, LV_EVENT_CLICKED, nullptr);
-
-        lv_obj_t *btn_dis = make_setting_btn(right, LV_SYMBOL_CLOSE " Trennen",
-                                              BRL_CLR_SURFACE2, LV_ALIGN_RIGHT_MID);
-        lv_obj_add_event_cb(btn_dis, cb_wifi_sta_disconnect, LV_EVENT_CLICKED, nullptr);
+        lv_obj_t *bcfg = make_setting_btn(r, LV_SYMBOL_SETTINGS " Einrichten",
+                                           BRL_CLR_ACCENT, LV_ALIGN_RIGHT_MID, -130);
+        lv_obj_add_event_cb(bcfg, [](lv_event_t* /*e*/){ open_wifi_sta_dialog(); },
+                            LV_EVENT_CLICKED, nullptr);
+        lv_obj_t *bdis = make_setting_btn(r, LV_SYMBOL_CLOSE " Trennen",
+                                           BRL_CLR_SURFACE2, LV_ALIGN_RIGHT_MID);
+        lv_obj_add_event_cb(bdis, [](lv_event_t* /*e*/){ wifi_set_mode(BRL_WIFI_OFF); },
+                            LV_EVENT_CLICKED, nullptr);
     }
-
-    // ── 4. Sprache ────────────────────────────────────────────────────────────
+    // Language
     {
-        lv_obj_t *right = make_setting_row(scroll, y, RH, LV_SYMBOL_SETTINGS, "Sprache");
-        y += RH + 4;
-
-        set_lang_btn = make_setting_btn(right,
-            g_state.language == 0 ? "Deutsch" : "English",
-            BRL_CLR_SURFACE2, LV_ALIGN_RIGHT_MID);
-        lv_obj_add_event_cb(set_lang_btn, cb_lang_toggle, LV_EVENT_CLICKED, nullptr);
+        lv_obj_t *r = make_setting_row(content, 0, RH, LV_SYMBOL_SETTINGS, "Sprache");
+        set_lang_btn = make_setting_btn(r, g_state.language==0?"Deutsch":"English",
+                                        BRL_CLR_SURFACE2, LV_ALIGN_RIGHT_MID);
+        lv_obj_add_event_cb(set_lang_btn, [](lv_event_t* /*e*/){
+            g_state.language ^= 1;
+            lv_label_set_text(lv_obj_get_child(set_lang_btn,0),
+                              g_state.language==0?"Deutsch":"English");
+        }, LV_EVENT_CLICKED, nullptr);
     }
-
-    // ── 5. Einheiten ──────────────────────────────────────────────────────────
+    // Units
     {
-        lv_obj_t *right = make_setting_row(scroll, y, RH, LV_SYMBOL_LOOP, "Einheiten");
-        y += RH + 4;
-
-        set_units_btn = make_setting_btn(right,
-            g_state.units == 0 ? "km/h" : "mph",
-            BRL_CLR_SURFACE2, LV_ALIGN_RIGHT_MID);
-        lv_obj_add_event_cb(set_units_btn, cb_units_toggle, LV_EVENT_CLICKED, nullptr);
+        lv_obj_t *r = make_setting_row(content, 0, RH, LV_SYMBOL_LOOP, "Einheiten");
+        set_units_btn = make_setting_btn(r, g_state.units==0?"km/h":"mph",
+                                         BRL_CLR_SURFACE2, LV_ALIGN_RIGHT_MID);
+        lv_obj_add_event_cb(set_units_btn, [](lv_event_t* /*e*/){
+            g_state.units ^= 1;
+            lv_label_set_text(lv_obj_get_child(set_units_btn,0),
+                              g_state.units==0?"km/h":"mph");
+        }, LV_EVENT_CLICKED, nullptr);
     }
-
-    // ── 6. Info ───────────────────────────────────────────────────────────────
+    // Info
     {
-        lv_obj_t *right = make_setting_row(scroll, y, RH,
-            LV_SYMBOL_GPS, "BRL Laptimer");
-        (void)right;
-        lv_obj_t *ver = lv_label_create(right);
+        lv_obj_t *r = make_setting_row(content, 0, RH, LV_SYMBOL_GPS, "BRL Laptimer");
+        lv_obj_t *ver = lv_label_create(r);
         lv_label_set_text(ver, "v1.0.0 — Bavarian RaceLabs LLC");
         brl_style_label(ver, &lv_font_montserrat_14, BRL_CLR_TEXT_DIM);
         lv_obj_align(ver, LV_ALIGN_RIGHT_MID, 0, 0);
     }
+    sub_screen_load(scr);
 }
 
-// ============================================================================
-// SECTION 7 — LIVE UPDATE TIMER
-// ============================================================================
-static void cb_start_stop(lv_event_t *e) {
-    LiveTiming &lt = g_state.timing;
-    if (!lt.timing_active) {
-        if (g_state.active_track_idx < 0) return; // no track selected
-        // GPS timing is fully automatic — just arm it
-        lt.timing_active = true;
-        lt.lap_number    = 0;
-        lv_label_set_text(dash_start_btn_lbl, LV_SYMBOL_STOP "  TIMING STOPPEN");
-        lv_obj_set_style_bg_color(
-            lv_obj_get_parent(dash_start_btn_lbl),
-            BRL_CLR_DANGER, LV_STATE_DEFAULT);
-    } else {
-        lt.timing_active = false;
-        lv_label_set_text(dash_start_btn_lbl, LV_SYMBOL_PLAY "  TIMING STARTEN");
-        lv_obj_set_style_bg_color(
-            lv_obj_get_parent(dash_start_btn_lbl),
-            BRL_CLR_ACCENT, LV_STATE_DEFAULT);
-    }
+
+// ---------------------------------------------------------------------------
+// Section 8: Live update timer (100 ms)
+// ---------------------------------------------------------------------------
+
+// Helper: is OBD currently connected/requesting?
+static inline bool obd_is_connected() {
+    OBdBtState st = obd_bt_state();
+    return st == OBD_CONNECTED || st == OBD_REQUESTING;
+}
+static inline bool obd_is_scanning() {
+    OBdBtState st = obd_bt_state();
+    return st == OBD_SCANNING || st == OBD_FOUND || st == OBD_CONNECTING;
 }
 
-static void timer_live_update(lv_timer_t * /*t*/) {
-    // --- GPS status ---
-    char gps_buf[24];
-    snprintf(gps_buf, sizeof(gps_buf), LV_SYMBOL_GPS " %d/%d",
-             g_state.gps.satellites, 12);
-    lv_label_set_text(sb_gps_lbl, gps_buf);
-    lv_obj_set_style_text_color(sb_gps_lbl,
-        g_state.gps.valid ? BRL_CLR_ACCENT : BRL_CLR_TEXT_DIM, LV_STATE_DEFAULT);
+static void update_sb(SbH &sb) {
+    if (!sb.gps && !sb.wifi && !sb.obd) return;
 
-    // --- WiFi status ---
-    bool wifi_on = (g_state.wifi_mode != BRL_WIFI_OFF);
-    lv_label_set_text(sb_wifi_lbl,
-        wifi_on ? LV_SYMBOL_WIFI " OK" : LV_SYMBOL_WIFI " --");
-    lv_obj_set_style_text_color(sb_wifi_lbl,
-        wifi_on ? BRL_CLR_ACCENT : BRL_CLR_TEXT_DIM, LV_STATE_DEFAULT);
-
-    // --- OBD status ---
-    lv_label_set_text(sb_obd_lbl,
-        g_state.obd.connected
-            ? LV_SYMBOL_BLUETOOTH " OBD OK"
-            : LV_SYMBOL_BLUETOOTH " OBD --");
-    lv_obj_set_style_text_color(sb_obd_lbl,
-        g_state.obd.connected ? BRL_CLR_ACCENT : BRL_CLR_TEXT_DIM, LV_STATE_DEFAULT);
-
-    // --- Speed ---
-    char spd[8];
-    int spd_val = (int)g_state.gps.speed_kmh;
-    snprintf(spd, sizeof(spd), "%d", spd_val);
-    lv_label_set_text(dash_speed_lbl, spd);
-
-    // --- Lap timer (counting up) ---
-    LiveTiming  &lt   = g_state.timing;
-    LapSession  &sess = g_state.session;
-
-    if (lt.timing_active && lt.in_lap) {
-        uint32_t elapsed = millis() - lt.lap_start_ms;
-        char lt_buf[16];
-        fmt_laptime(lt_buf, sizeof(lt_buf), elapsed);
-        lv_label_set_text(dash_laptime_lbl, lt_buf);
-
-        // Live delta vs reference lap
-        char delta_buf[12];
-        fmt_delta(delta_buf, sizeof(delta_buf), lt.live_delta_ms);
-        lv_label_set_text(dash_delta_lbl, delta_buf);
-        lv_obj_set_style_text_color(dash_delta_lbl,
-            lt.live_delta_ms <= 0 ? BRL_CLR_FASTER : BRL_CLR_WARN, LV_STATE_DEFAULT);
-
-        // Lap counter
-        char lap_buf[16];
-        snprintf(lap_buf, sizeof(lap_buf), "RUNDE %d", lt.lap_number);
-        lv_label_set_text(dash_lap_count, lap_buf);
-        lv_obj_set_style_text_color(dash_lap_count, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
+    // GPS label
+    if (sb.gps) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), LV_SYMBOL_GPS " %d", (int)g_state.gps.satellites);
+        lv_label_set_text(sb.gps, buf);
+        lv_obj_set_style_text_color(sb.gps,
+            g_state.gps.valid ? lv_color_hex(0x00CC66) : lv_color_hex(0xAAAAAA), 0);
     }
-
-    // --- Best lap ---
-    uint8_t bi = sess.best_lap_idx;
-    if (sess.lap_count > 0 && sess.laps[bi].valid) {
-        char bl_buf[16];
-        fmt_laptime(bl_buf, sizeof(bl_buf), sess.laps[bi].total_ms);
-        lv_label_set_text(dash_bestlap_lbl, bl_buf);
-    }
-
-    // --- Settings status labels ---
-    if (set_obd_status_lbl) {
-        OBdBtState os = obd_bt_state();
-        const char *obd_txt  = "Nicht verbunden";
-        const char *obd_btn  = "Verbinden";
-        lv_color_t  obd_col  = BRL_CLR_TEXT_DIM;
-        lv_color_t  btn_col  = BRL_CLR_ACCENT;
-        if      (os == OBD_SCANNING || os == OBD_FOUND || os == OBD_CONNECTING) {
-            obd_txt = "Suche..."; obd_col = BRL_CLR_WARN;
-        } else if (os == OBD_CONNECTED || os == OBD_REQUESTING) {
-            obd_txt = "Verbunden"; obd_col = BRL_CLR_ACCENT;
-            obd_btn = "Trennen";   btn_col = BRL_CLR_DANGER;
-        } else if (os == OBD_ERROR) {
-            obd_txt = "Fehler — retry..."; obd_col = BRL_CLR_DANGER;
+    // WiFi label
+    if (sb.wifi) {
+        const char *wlbl = "WiFi: OFF";
+        lv_color_t wcol = lv_color_hex(0xAAAAAA);
+        switch (g_state.wifi_mode) {
+            case BRL_WIFI_AP:  wlbl = LV_SYMBOL_WIFI " AP";   wcol = lv_color_hex(0x00AAFF); break;
+            case BRL_WIFI_STA: wlbl = LV_SYMBOL_WIFI " STA";  wcol = lv_color_hex(0x00CC66); break;
+            case BRL_WIFI_OTA: wlbl = LV_SYMBOL_WIFI " OTA";  wcol = lv_color_hex(0xFFAA00); break;
+            default: break;
         }
-        lv_label_set_text(set_obd_status_lbl, obd_txt);
-        lv_obj_set_style_text_color(set_obd_status_lbl, obd_col, LV_STATE_DEFAULT);
-        lv_label_set_text(lv_obj_get_child(set_obd_btn, 0), obd_btn);
-        lv_obj_set_style_bg_color(set_obd_btn, btn_col, LV_STATE_DEFAULT);
+        lv_label_set_text(sb.wifi, wlbl);
+        lv_obj_set_style_text_color(sb.wifi, wcol, 0);
+    }
+    // OBD label
+    if (sb.obd) {
+        bool conn = obd_is_connected();
+        lv_label_set_text(sb.obd, conn ? LV_SYMBOL_BLUETOOTH " OBD" : LV_SYMBOL_BLUETOOTH);
+        lv_obj_set_style_text_color(sb.obd,
+            conn ? lv_color_hex(0x00CC66) : lv_color_hex(0xAAAAAA), 0);
+    }
+}
+
+void timer_live_update(lv_timer_t * /*t*/) {
+    // Update status bars
+    update_sb(sb_menu);
+    update_sb(sb_sub);
+
+    // ---- Timing screen widgets (all null-checked) ----
+    if (tw.speed_lbl) {
+        char buf[16];
+        float spd = g_state.units == 0
+                    ? g_state.gps.speed_kmh
+                    : g_state.gps.speed_kmh * 0.621371f;
+        snprintf(buf, sizeof(buf), "%.0f", spd);
+        lv_label_set_text(tw.speed_lbl, buf);
+    }
+    if (tw.laptime_lbl) {
+        uint32_t ms = 0;
+        if (g_state.timing.timing_active) {
+            ms = millis() - g_state.timing.lap_start_ms;
+        } else if (g_state.session.lap_count > 0) {
+            ms = g_state.session.laps[g_state.session.lap_count - 1].total_ms;
+        }
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%u:%05.2f",
+                 ms / 60000, fmod(ms / 1000.0f, 60.0f));
+        lv_label_set_text(tw.laptime_lbl, buf);
+    }
+    if (tw.bestlap_lbl && g_state.session.lap_count > 0) {
+        uint32_t ms = g_state.session.laps[g_state.session.best_lap_idx].total_ms;
+        if (ms > 0) {
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%u:%05.2f",
+                     ms / 60000, fmod(ms / 1000.0f, 60.0f));
+            lv_label_set_text(tw.bestlap_lbl, buf);
+        }
+    }
+    if (tw.delta_lbl) {
+        int32_t d = g_state.timing.live_delta_ms;
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%+.2f s", d / 1000.0f);
+        lv_label_set_text(tw.delta_lbl, buf);
+        lv_obj_set_style_text_color(tw.delta_lbl,
+            d < 0 ? lv_color_hex(0x00CC66)
+                  : (d > 0 ? lv_color_hex(0xFF4444) : lv_color_hex(0xFFFFFF)), 0);
+    }
+    if (tw.lap_nr_lbl) {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%d", (int)g_state.timing.lap_number);
+        lv_label_set_text(tw.lap_nr_lbl, buf);
+    }
+    // Sectors — show last completed lap's sector times
+    if (g_state.session.lap_count > 0) {
+        const RecordedLap &last = g_state.session.laps[g_state.session.lap_count - 1];
+        if (tw.sec1_lbl && last.sector_ms[0] > 0) {
+            char buf[16];
+            snprintf(buf, sizeof(buf), "S1 %u.%02u",
+                     last.sector_ms[0] / 1000, (last.sector_ms[0] % 1000) / 10);
+            lv_label_set_text(tw.sec1_lbl, buf);
+        }
+        if (tw.sec2_lbl && last.sector_ms[1] > 0) {
+            char buf[16];
+            snprintf(buf, sizeof(buf), "S2 %u.%02u",
+                     last.sector_ms[1] / 1000, (last.sector_ms[1] % 1000) / 10);
+            lv_label_set_text(tw.sec2_lbl, buf);
+        }
+        if (tw.sec3_lbl && last.sector_ms[2] > 0) {
+            char buf[16];
+            snprintf(buf, sizeof(buf), "S3 %u.%02u",
+                     last.sector_ms[2] / 1000, (last.sector_ms[2] % 1000) / 10);
+            lv_label_set_text(tw.sec3_lbl, buf);
+        }
+    }
+    // OBD widgets
+    if (tw.rpm_lbl) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%.0f rpm", g_state.obd.rpm);
+        lv_label_set_text(tw.rpm_lbl, buf);
+    }
+    if (tw.throttle_lbl) {
+        char buf[12];
+        snprintf(buf, sizeof(buf), "%.0f %%", g_state.obd.throttle_pct);
+        lv_label_set_text(tw.throttle_lbl, buf);
+    }
+    if (tw.boost_lbl) {
+        // boost_kpa is MAP absolute; show as boost (subtract ~101 kPa)
+        float boost = g_state.obd.boost_kpa - 101.3f;
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%+.0f kPa", boost);
+        lv_label_set_text(tw.boost_lbl, buf);
+    }
+    if (tw.lambda_lbl) {
+        char buf[12];
+        snprintf(buf, sizeof(buf), "%.2f λ", g_state.obd.lambda);
+        lv_label_set_text(tw.lambda_lbl, buf);
+    }
+    if (tw.brake_lbl) {
+        char buf[12];
+        snprintf(buf, sizeof(buf), "%.0f %%", g_state.obd.brake_pct);
+        lv_label_set_text(tw.brake_lbl, buf);
+    }
+    if (tw.coolant_lbl) {
+        char buf[12];
+        snprintf(buf, sizeof(buf), "%.0f °C", g_state.obd.coolant_temp_c);
+        lv_label_set_text(tw.coolant_lbl, buf);
+    }
+    // gear_lbl and steering_lbl: ObdData has no gear field; use steering_angle
+    if (tw.gear_lbl) {
+        // Gear not in ObdData — show placeholder
+        lv_label_set_text(tw.gear_lbl, "-");
+    }
+    if (tw.steering_lbl) {
+        char buf[12];
+        snprintf(buf, sizeof(buf), "%+.0f°", g_state.obd.steering_angle);
+        lv_label_set_text(tw.steering_lbl, buf);
+    }
+    // Track name
+    if (tw.track_name_lbl) {
+        if (g_state.active_track_idx >= 0 && g_state.active_track_idx < track_total_count()) {
+            lv_label_set_text(tw.track_name_lbl,
+                              track_get(g_state.active_track_idx)->name);
+        }
+    }
+    // Start/stop button label
+    if (tw.start_btn_lbl) {
+        lv_label_set_text(tw.start_btn_lbl,
+                          g_state.timing.timing_active
+                          ? LV_SYMBOL_STOP " STOP"
+                          : LV_SYMBOL_PLAY " START");
     }
 
+    // ---- Settings screen labels (null-checked) ----
+    if (set_obd_status_lbl) {
+        bool conn = obd_is_connected();
+        lv_label_set_text(set_obd_status_lbl,
+                          conn ? "Verbunden"
+                               : (obd_is_scanning() ? "Suche..." : "Nicht verbunden"));
+        lv_obj_set_style_text_color(set_obd_status_lbl,
+            conn ? lv_color_hex(0x00CC66) : lv_color_hex(0xAAAAAA), 0);
+    }
+    if (set_obd_btn) {
+        bool conn = obd_is_connected();
+        lv_label_set_text(lv_obj_get_child(set_obd_btn, 0),
+                          conn ? LV_SYMBOL_CLOSE " Trennen"
+                               : LV_SYMBOL_BLUETOOTH " Verbinden");
+    }
     if (set_wifi_ap_status_lbl) {
-        bool ap_on = (g_state.wifi_mode == BRL_WIFI_AP);
-        lv_label_set_text(set_wifi_ap_status_lbl,
-            ap_on ? "AN  — BRL-Laptimer (192.168.4.1)" : "AUS");
+        bool ap_on = (g_state.wifi_mode == BRL_WIFI_AP || g_state.wifi_mode == BRL_WIFI_OTA);
+        lv_label_set_text(set_wifi_ap_status_lbl, ap_on ? "Aktiv" : "Inaktiv");
         lv_obj_set_style_text_color(set_wifi_ap_status_lbl,
-            ap_on ? BRL_CLR_ACCENT : BRL_CLR_TEXT_DIM, LV_STATE_DEFAULT);
-        // Sync switch state without firing the event
-        if (ap_on && !lv_obj_has_state(set_wifi_ap_sw, LV_STATE_CHECKED))
-            lv_obj_add_state(set_wifi_ap_sw, LV_STATE_CHECKED);
-        else if (!ap_on && lv_obj_has_state(set_wifi_ap_sw, LV_STATE_CHECKED))
-            lv_obj_remove_state(set_wifi_ap_sw, LV_STATE_CHECKED);
+            ap_on ? lv_color_hex(0x00CC66) : lv_color_hex(0xAAAAAA), 0);
+        if (set_wifi_ap_sw) {
+            if (ap_on && !lv_obj_has_state(set_wifi_ap_sw, LV_STATE_CHECKED))
+                lv_obj_add_state(set_wifi_ap_sw, LV_STATE_CHECKED);
+            else if (!ap_on && lv_obj_has_state(set_wifi_ap_sw, LV_STATE_CHECKED))
+                lv_obj_remove_state(set_wifi_ap_sw, LV_STATE_CHECKED);
+        }
     }
-
     if (set_wifi_sta_status_lbl) {
-        bool sta_on = (g_state.wifi_mode == BRL_WIFI_STA || g_state.wifi_mode == BRL_WIFI_OTA);
-        bool ota    = (g_state.wifi_mode == BRL_WIFI_OTA);
+        bool sta_on = (g_state.wifi_mode == BRL_WIFI_STA);
         lv_label_set_text(set_wifi_sta_status_lbl,
-            ota    ? "OTA Update läuft..." :
-            sta_on ? g_state.wifi_ssid     : "Nicht verbunden");
+                          sta_on ? "Verbunden" : "Nicht verbunden");
         lv_obj_set_style_text_color(set_wifi_sta_status_lbl,
-            sta_on ? BRL_CLR_ACCENT : BRL_CLR_TEXT_DIM, LV_STATE_DEFAULT);
+            sta_on ? lv_color_hex(0x00CC66) : lv_color_hex(0xAAAAAA), 0);
     }
 }
 
-// ============================================================================
-// SECTION 8 — MAIN UI (called after splash)
-// ============================================================================
-static void build_main_ui() {
-    // Eigenen neuen LVGL-Screen anlegen (nicht lv_screen_active() nehmen —
-    // das wäre noch der Splash-Screen, der gleich danach gelöscht wird)
-    lv_obj_t *root = lv_obj_create(nullptr);
 
-    // Black background
-    lv_obj_set_style_bg_color(root, BRL_CLR_BG, LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(root, LV_OPA_COVER, LV_STATE_DEFAULT);
-    lv_obj_remove_flag(root, LV_OBJ_FLAG_SCROLLABLE);
-
-    // Build panels (content areas)
-    for (int i = 0; i < 4; i++) {
-        panels[i] = lv_obj_create(root);
-        lv_obj_set_size(panels[i], BRL_SCREEN_W, BRL_CONTENT_H);
-        lv_obj_set_pos(panels[i], 0, BRL_CONTENT_Y);
-        lv_obj_set_style_bg_color(panels[i], BRL_CLR_BG, LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_opa(panels[i], LV_OPA_COVER, LV_STATE_DEFAULT);
-        lv_obj_set_style_border_width(panels[i], 0, LV_STATE_DEFAULT);
-        lv_obj_set_style_radius(panels[i], 0, LV_STATE_DEFAULT);
-        lv_obj_set_style_pad_all(panels[i], 6, LV_STATE_DEFAULT);
-        lv_obj_remove_flag(panels[i], LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_flag(panels[i], LV_OBJ_FLAG_HIDDEN);
-    }
-
-    // Build screen contents
-    build_dashboard(panels[0]);
-    build_tracks(panels[1]);
-    build_history(panels[2]);
-    build_settings(panels[3]);
-
-    // Build chrome (drawn on top so they're always visible)
-    build_statusbar(root);
-    build_navbar(root);
-
-    // Neuen Screen aktivieren (Splash wird danach von screen_splash.cpp gelöscht)
-    lv_screen_load(root);
-
-    // Show dashboard
-    nav_show(0);
-
-    // Periodic live-update timer (100 ms)
-    lv_timer_create(timer_live_update, 100, NULL);
-}
-
-// ============================================================================
-// SECTION 9 — PUBLIC ENTRY POINT
-// ============================================================================
+// ---------------------------------------------------------------------------
+// Section 9: app_init() and app_tick()
+// ---------------------------------------------------------------------------
 void app_init() {
     g_state = {};
     g_state.active_track_idx = -1;
-    g_state.language = 0;   // DE
-    g_state.units    = 0;   // km/h
+    g_state.language = 0;
+    g_state.units = 0;
 
-    // Splash-Screen zuerst zeigen (3 Sekunden), dann Haupt-UI aufbauen
-    splash_show(3000, build_main_ui);
+    dash_config_load();
+
+    // Create the persistent menu screen now (so timing_screen_build can
+    // reference menu_screen_show even before the menu is visible).
+    build_menu_screen();
+
+    // Kick off a 100 ms live-update timer
+    lv_timer_create(timer_live_update, 100, nullptr);
+
+    // Show splash, then load menu screen when done
+    splash_show(3000, []() {
+        lv_screen_load(s_scr_menu);
+    });
 }
 
 void app_tick() {
-    // GPS und OBD hier pollen (wird von main.cpp loop() aufgerufen)
+    // Reserved for future per-loop work (currently handled by lv_timer_handler)
 }

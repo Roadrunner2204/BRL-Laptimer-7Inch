@@ -1,0 +1,34 @@
+#pragma once
+#include <lvgl.h>
+
+// ---------------------------------------------------------------------------
+// Handles for all timing-screen LVGL labels.
+// Null if widget is disabled or screen is not yet built.
+// Zero the whole struct BEFORE deleting the screen (timer safety).
+// ---------------------------------------------------------------------------
+typedef struct {
+    lv_obj_t *speed_lbl;
+    lv_obj_t *laptime_lbl;
+    lv_obj_t *bestlap_lbl;
+    lv_obj_t *delta_lbl;
+    lv_obj_t *lap_nr_lbl;
+    lv_obj_t *sec1_lbl, *sec2_lbl, *sec3_lbl;
+    lv_obj_t *rpm_lbl, *throttle_lbl, *boost_lbl;
+    lv_obj_t *lambda_lbl, *brake_lbl, *coolant_lbl;
+    lv_obj_t *gear_lbl, *steering_lbl;
+    lv_obj_t *start_btn_lbl;
+    lv_obj_t *track_name_lbl;
+    // Status bar labels on the timing screen
+    lv_obj_t *sb_gps_lbl, *sb_wifi_lbl, *sb_obd_lbl;
+} TimingWidgets;
+
+extern TimingWidgets tw;
+
+// Build timing LVGL screen; returns the new screen object (NOT yet loaded).
+lv_obj_t *timing_screen_build();
+
+// Delete + rebuild + lv_screen_load (called after layout editor saves).
+void timing_screen_rebuild();
+
+// Build (if needed) and load the timing screen.
+void timing_screen_open();
