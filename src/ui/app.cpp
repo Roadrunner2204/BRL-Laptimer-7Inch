@@ -144,7 +144,7 @@ static lv_obj_t *build_sub_header(lv_obj_t *scr, const char *title,
 
     lv_obj_t *ttl = lv_label_create(hdr);
     lv_label_set_text(ttl, title);
-    brl_style_label(ttl, &lv_font_montserrat_18, BRL_CLR_TEXT);
+    brl_style_label(ttl, &lv_font_montserrat_20, BRL_CLR_TEXT);
     lv_obj_align(ttl, LV_ALIGN_CENTER, 0, 0);
 
     if (action_btn_out && action_label) {
