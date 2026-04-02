@@ -77,7 +77,7 @@
  * Once enabled, brl_font_NN aliases replace lv_font_montserrat_NN everywhere in the UI.
  * All font sizes (14 16 20 24 32 40 48) are covered.
  */
-#define BRL_USE_EXTENDED_FONTS  1   /* custom fonts with Ä Ö Ü ä ö ü ß — see src/ui/fonts/ */
+#define BRL_USE_EXTENDED_FONTS  0   /* set to 1 only after generating fonts via lvgl.io/tools/fontconverter (LVGL 9 target) */
 
 #if BRL_USE_EXTENDED_FONTS
   /* Alias macros — LV_FONT_DECLARE is in include/brl_fonts.h (included after lvgl.h) */
