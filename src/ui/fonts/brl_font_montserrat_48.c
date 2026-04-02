@@ -4,10 +4,7 @@
  * Opts: --font /tmp/Montserrat-Regular.ttf -r 0x20-0x7E,0xA0-0xFF --size 48 --format lvgl --bpp 4 --no-compress --force-fast-kern-format -o /home/user/BRL-Laptimer-7Inch/src/ui/fonts/brl_font_montserrat_48.c
  ******************************************************************************/
 
-#ifdef LV_LVGL_H_INCLUDE_SIMPLE
 #include <lvgl.h>
-#else
-#endif
 
 #ifndef BRL_FONT_MONTSERRAT_48
 #define BRL_FONT_MONTSERRAT_48 1

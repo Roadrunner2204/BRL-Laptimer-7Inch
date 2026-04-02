@@ -56,10 +56,6 @@
    FEATURE CONFIGURATION
  *=======================*/
 
-/* Use full 32-bit font glyph descriptors (not bit-packed).
- * Required for lv_font_conv-generated fonts with extended glyph ranges. */
-#define LV_FONT_FMT_TXT_LARGE 1
-
 /* Large memory - enable all font/widget features */
 #define LV_FONT_MONTSERRAT_14 1
 #define LV_FONT_MONTSERRAT_16 1
