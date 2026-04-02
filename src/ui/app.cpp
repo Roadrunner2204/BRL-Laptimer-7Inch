@@ -11,6 +11,7 @@
 #include <Arduino.h>
 #include <math.h>
 #include <lvgl.h>
+#include "brl_fonts.h"
 #include "app.h"
 #include "theme.h"
 #include "screen_splash.h"

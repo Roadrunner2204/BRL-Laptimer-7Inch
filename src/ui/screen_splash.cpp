@@ -10,6 +10,7 @@
 
 #include <Arduino.h>
 #include <lvgl.h>
+#include "brl_fonts.h"
 #include "screen_splash.h"
 #include "theme.h"
 #include "../assets/logo_data.h"
