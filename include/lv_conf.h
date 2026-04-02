@@ -56,6 +56,10 @@
    FEATURE CONFIGURATION
  *=======================*/
 
+/* Use full 32-bit font glyph descriptors (not bit-packed).
+ * Required for lv_font_conv-generated fonts with extended glyph ranges. */
+#define LV_FONT_FMT_TXT_LARGE 1
+
 /* Large memory - enable all font/widget features */
 #define LV_FONT_MONTSERRAT_14 1
 #define LV_FONT_MONTSERRAT_16 1
@@ -77,7 +81,7 @@
  * Once enabled, brl_font_NN aliases replace lv_font_montserrat_NN everywhere in the UI.
  * All font sizes (14 16 20 24 32 40 48) are covered.
  */
-#define BRL_USE_EXTENDED_FONTS  0   /* set to 1 only after generating fonts via lvgl.io/tools/fontconverter (LVGL 9 target) */
+#define BRL_USE_EXTENDED_FONTS  1   /* custom fonts with Ä Ö Ü ä ö ü ß — see src/ui/fonts/ */
 
 #if BRL_USE_EXTENDED_FONTS
   /* Alias macros — LV_FONT_DECLARE is in include/brl_fonts.h (included after lvgl.h) */
