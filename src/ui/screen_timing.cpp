@@ -340,7 +340,7 @@ lv_obj_t *timing_screen_build() {
 
     // Label (centered over bar)
     tw.delta_bar_lbl = lv_label_create(dbar);
-    lv_label_set_text(tw.delta_bar_lbl, "\xC2\xB10.00 s");
+    lv_label_set_text(tw.delta_bar_lbl, "\xC2\xB1" "0.00 s");
     brl_style_label(tw.delta_bar_lbl, &BRL_FONT_14, BRL_CLR_TEXT);
     lv_obj_align(tw.delta_bar_lbl, LV_ALIGN_CENTER, 0, 0);
 

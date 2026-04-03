@@ -1403,7 +1403,7 @@ void timer_live_update(lv_timer_t * /*t*/) {
                                 scale == 10000 ? "[10s]" : "[20s]";
         char dbuf[24];
         if (!g_state.timing.timing_active || d == 0) {
-            snprintf(dbuf, sizeof(dbuf), "\xC2\xB10.00 s  %s", scale_tag);
+            snprintf(dbuf, sizeof(dbuf), "\xC2\xB1" "0.00 s  %s", scale_tag);
         } else {
             snprintf(dbuf, sizeof(dbuf), "%+.2f s  %s", d / 1000.0f, scale_tag);
         }

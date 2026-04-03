@@ -36,8 +36,7 @@
 #define GPS_UART_PORT   2       // ESP32 UART2 = physischer UART2-Stecker
 #define GPS_RX_PIN      19      // UART2-Stecker RX → Tau1201 TX
 #define GPS_TX_PIN      20      // UART2-Stecker TX → Tau1201 RX (optional)
-#define GPS_PPS_PIN     13      // PPS: beliebiger freier GPIO, hier GPIO 13
-                                // (GPIO 11, 12, 15, 16 wären auch frei)
+#define GPS_PPS_PIN     16      // PPS: GPIO 16 (frei; 13 wird von SD-MISO belegt)
 #define GPS_BAUD        115200
 
 // ---- Öffentliche Funktionen ----
