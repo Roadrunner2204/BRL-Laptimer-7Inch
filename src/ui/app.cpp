@@ -1382,30 +1382,26 @@ void timer_live_update(lv_timer_t * /*t*/) {
     if (tw.delta_bar_fill && tw.delta_bar_lbl) {
         int32_t d     = g_state.timing.live_delta_ms;
         int32_t scale = timing_get_delta_scale();
+        int16_t bh    = tw.delta_bar_h > 0 ? tw.delta_bar_h : 80;
         const int HALF = 396;
         int fill_w = (int)(fabsf((float)d) / (float)scale * HALF);
         if (fill_w > HALF) fill_w = HALF;
         if (d == 0 || !g_state.timing.timing_active) {
-            lv_obj_set_size(tw.delta_bar_fill, 0, 22);
+            lv_obj_set_size(tw.delta_bar_fill, 0, bh);
         } else if (d > 0) {
             lv_obj_set_style_bg_color(tw.delta_bar_fill, lv_color_hex(0xFF4444), 0);
-            lv_obj_set_size(tw.delta_bar_fill, fill_w, 22);
+            lv_obj_set_size(tw.delta_bar_fill, fill_w, bh);
             lv_obj_set_pos(tw.delta_bar_fill, 400 - fill_w, 0);
         } else {
             lv_obj_set_style_bg_color(tw.delta_bar_fill, lv_color_hex(0x00CC66), 0);
-            lv_obj_set_size(tw.delta_bar_fill, fill_w, 22);
+            lv_obj_set_size(tw.delta_bar_fill, fill_w, bh);
             lv_obj_set_pos(tw.delta_bar_fill, 400, 0);
         }
-        // Label: delta + scale indicator (e.g. "+1.23 s [5s]")
-        const char *scale_tag = scale == 2000  ? "[2s]"  :
-                                scale == 3000  ? "[3s]"  :
-                                scale == 5000  ? "[5s]"  :
-                                scale == 10000 ? "[10s]" : "[20s]";
-        char dbuf[24];
+        char dbuf[16];
         if (!g_state.timing.timing_active || d == 0) {
-            snprintf(dbuf, sizeof(dbuf), "\xC2\xB1" "0.00 s  %s", scale_tag);
+            snprintf(dbuf, sizeof(dbuf), "\xC2\xB1" "0.00 s");
         } else {
-            snprintf(dbuf, sizeof(dbuf), "%+.2f s  %s", d / 1000.0f, scale_tag);
+            snprintf(dbuf, sizeof(dbuf), "%+.2f s", d / 1000.0f);
         }
         lv_label_set_text(tw.delta_bar_lbl, dbuf);
         lv_obj_set_style_text_color(tw.delta_bar_lbl,

@@ -307,10 +307,19 @@ lv_obj_t *timing_screen_build() {
         lv_obj_set_style_bg_color(start_btn, BRL_CLR_DANGER, LV_STATE_DEFAULT);
     lv_obj_add_event_cb(start_btn, cb_start_stop, LV_EVENT_CLICKED, nullptr);
 
-    // ── Delta bar (y=90, h=22) ─────────────────────────────────────────────
+    // ── Delta bar — sits between header and content with 6px gaps each side ──
+    static lv_obj_t *s_scale_overlay = nullptr;
+
+    const int DBAR_GAP = 6;
+    const int DBAR_H   = 80;   // same visual weight as sector zone
+    const int dbar_y   = 90 + DBAR_GAP;  // below header (y=90) + gap
+    const int cy_start = dbar_y + DBAR_H + DBAR_GAP;
+
+    tw.delta_bar_h = (int16_t)DBAR_H;
+
     lv_obj_t *dbar = lv_obj_create(scr);
-    lv_obj_set_size(dbar, 800, 22);
-    lv_obj_set_pos(dbar, 0, 90);
+    lv_obj_set_size(dbar, 800, DBAR_H);
+    lv_obj_set_pos(dbar, 0, dbar_y);
     lv_obj_set_style_bg_color(dbar, lv_color_hex(0x111111), LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(dbar, LV_OPA_COVER, LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(dbar, 0, LV_STATE_DEFAULT);
@@ -318,9 +327,9 @@ lv_obj_t *timing_screen_build() {
     lv_obj_set_style_pad_all(dbar, 0, LV_STATE_DEFAULT);
     lv_obj_remove_flag(dbar, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Center marker
+    // Center marker (full height)
     lv_obj_t *cmark = lv_obj_create(dbar);
-    lv_obj_set_size(cmark, 2, 22);
+    lv_obj_set_size(cmark, 2, DBAR_H);
     lv_obj_set_pos(cmark, 399, 0);
     lv_obj_set_style_bg_color(cmark, lv_color_hex(0x555555), LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(cmark, LV_OPA_COVER, LV_STATE_DEFAULT);
@@ -328,9 +337,9 @@ lv_obj_t *timing_screen_build() {
     lv_obj_set_style_radius(cmark, 0, LV_STATE_DEFAULT);
     lv_obj_remove_flag(cmark, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Fill rectangle (width/position animated by timer)
+    // Fill rectangle (width/position set by timer)
     tw.delta_bar_fill = lv_obj_create(dbar);
-    lv_obj_set_size(tw.delta_bar_fill, 0, 22);
+    lv_obj_set_size(tw.delta_bar_fill, 0, DBAR_H);
     lv_obj_set_pos(tw.delta_bar_fill, 400, 0);
     lv_obj_set_style_bg_color(tw.delta_bar_fill, lv_color_hex(0x00CC66), LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(tw.delta_bar_fill, LV_OPA_COVER, LV_STATE_DEFAULT);
@@ -338,30 +347,84 @@ lv_obj_t *timing_screen_build() {
     lv_obj_set_style_radius(tw.delta_bar_fill, 0, LV_STATE_DEFAULT);
     lv_obj_remove_flag(tw.delta_bar_fill, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Label (centered over bar)
+    // Delta label — centered, larger font
     tw.delta_bar_lbl = lv_label_create(dbar);
     lv_label_set_text(tw.delta_bar_lbl, "\xC2\xB1" "0.00 s");
-    brl_style_label(tw.delta_bar_lbl, &BRL_FONT_14, BRL_CLR_TEXT);
+    brl_style_label(tw.delta_bar_lbl, &BRL_FONT_24, BRL_CLR_TEXT);
     lv_obj_align(tw.delta_bar_lbl, LV_ALIGN_CENTER, 0, 0);
 
-    // Tap the delta bar to cycle scale: 2s → 3s → 5s → 10s → 20s
+    // Tap delta bar → open scale picker popup
     lv_obj_add_flag(dbar, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(dbar, [](lv_event_t * /*e*/) {
+        if (!s_timing_screen) return;
+        if (s_scale_overlay) { lv_obj_delete(s_scale_overlay); s_scale_overlay = nullptr; return; }
+
+        // Semi-transparent backdrop
+        s_scale_overlay = lv_obj_create(s_timing_screen);
+        lv_obj_set_size(s_scale_overlay, 800, 480);
+        lv_obj_set_pos(s_scale_overlay, 0, 0);
+        lv_obj_set_style_bg_color(s_scale_overlay, lv_color_hex(0x000000), LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_opa(s_scale_overlay, LV_OPA_50, LV_STATE_DEFAULT);
+        lv_obj_set_style_border_width(s_scale_overlay, 0, LV_STATE_DEFAULT);
+        lv_obj_remove_flag(s_scale_overlay, LV_OBJ_FLAG_SCROLLABLE);
+        // Tap backdrop to dismiss
+        lv_obj_add_flag(s_scale_overlay, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(s_scale_overlay, [](lv_event_t * /*e*/) {
+            if (s_scale_overlay) { lv_obj_delete(s_scale_overlay); s_scale_overlay = nullptr; }
+        }, LV_EVENT_CLICKED, nullptr);
+
+        // Picker card — centered
+        lv_obj_t *card = lv_obj_create(s_scale_overlay);
+        lv_obj_set_size(card, 360, 180);
+        lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
+        brl_style_card(card);
+        lv_obj_set_style_pad_all(card, 12, LV_STATE_DEFAULT);
+        lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+        // Stop click from reaching backdrop
+        lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(card, [](lv_event_t *e) { lv_event_stop_bubbling(e); }, LV_EVENT_CLICKED, nullptr);
+
+        // Title
+        lv_obj_t *ttl = lv_label_create(card);
+        lv_label_set_text(ttl, "Delta-Skala");
+        brl_style_label(ttl, &BRL_FONT_16, BRL_CLR_TEXT);
+        lv_obj_align(ttl, LV_ALIGN_TOP_MID, 0, 0);
+
+        // Scale buttons row
+        lv_obj_t *row = lv_obj_create(card);
+        lv_obj_set_size(row, 336, 80);
+        lv_obj_align(row, LV_ALIGN_BOTTOM_MID, 0, 0);
+        brl_style_transparent(row);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_style_pad_column(row, 6, LV_STATE_DEFAULT);
+
         const int32_t scales[] = { 2000, 3000, 5000, 10000, 20000 };
-        const int n = 5;
-        int cur = 0;
-        for (int i = 0; i < n; i++) if (s_delta_scale_ms == scales[i]) { cur = i; break; }
-        s_delta_scale_ms = scales[(cur + 1) % n];
+        const char *labels[]   = { "\xC2\xB1" "2s", "\xC2\xB1" "3s", "\xC2\xB1" "5s", "\xC2\xB1" "10s", "\xC2\xB1" "20s" };
+        for (int i = 0; i < 5; i++) {
+            lv_obj_t *btn = lv_button_create(row);
+            lv_obj_set_size(btn, 62, 70);
+            bool active = (s_delta_scale_ms == scales[i]);
+            brl_style_btn(btn, active ? BRL_CLR_ACCENT : BRL_CLR_SURFACE2);
+            lv_obj_t *lbl = lv_label_create(btn);
+            lv_label_set_text(lbl, labels[i]);
+            brl_style_label(lbl, &BRL_FONT_16, BRL_CLR_TEXT);
+            lv_obj_center(lbl);
+            lv_obj_set_user_data(btn, (void*)(intptr_t)scales[i]);
+            lv_obj_add_event_cb(btn, [](lv_event_t *e) {
+                s_delta_scale_ms = (int32_t)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e));
+                if (s_scale_overlay) { lv_obj_delete(s_scale_overlay); s_scale_overlay = nullptr; }
+            }, LV_EVENT_CLICKED, nullptr);
+        }
     }, LV_EVENT_CLICKED, nullptr);
 
-    // ── Zone 1: Large timing metrics (y=112, h=140) ───────────────────────
+    // ── Content zones ─────────────────────────────────────────────────────
     bool z1 = (mask & (WDGT_SPEED | WDGT_LAPTIME | WDGT_BESTLAP | WDGT_DELTA | WDGT_LAP_NR));
     bool z2 = (mask & (WDGT_SECTOR1 | WDGT_SECTOR2 | WDGT_SECTOR3));
     bool z3 = (mask & (WDGT_RPM | WDGT_THROTTLE | WDGT_BOOST | WDGT_LAMBDA |
                        WDGT_BRAKE | WDGT_COOLANT | WDGT_GEAR | WDGT_STEERING));
 
-    int zones = (z1 ? 1 : 0) + (z2 ? 1 : 0) + (z3 ? 1 : 0);
-    int avail_h = 480 - 112 - 8;
+    int zones   = (z1 ? 1 : 0) + (z2 ? 1 : 0) + (z3 ? 1 : 0);
+    int avail_h = 480 - cy_start - 8;
     int h1 = 140, h2 = 85, h3 = 75;
     if (zones > 0) {
         int total_h = (z1 ? h1 : 0) + (z2 ? h2 : 0) + (z3 ? h3 : 0)
@@ -370,7 +433,7 @@ lv_obj_t *timing_screen_build() {
         if (z1 && slack > 0) h1 += slack;
     }
 
-    int cy = 112;
+    int cy = cy_start;
 
     if (z1) {
         lv_obj_t *row1 = mk_row(scr, cy, h1);

@@ -21,6 +21,7 @@ typedef struct {
     // Delta bar (horizontal bar at top of content area)
     lv_obj_t *delta_bar_fill;
     lv_obj_t *delta_bar_lbl;
+    int16_t   delta_bar_h;   // actual pixel height (for use in timer update)
     // Status bar labels on the timing screen
     lv_obj_t *sb_gps_lbl, *sb_wifi_lbl, *sb_obd_lbl;
 } TimingWidgets;
