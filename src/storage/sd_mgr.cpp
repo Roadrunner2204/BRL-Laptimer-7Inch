@@ -29,10 +29,9 @@ bool sd_mgr_init() {
         return false;
     }
 
-    // Ensure sessions directory exists
-    if (!SD.exists("/sessions")) {
-        SD.mkdir("/sessions");
-    }
+    // Ensure required directories exist
+    if (!SD.exists("/sessions")) SD.mkdir("/sessions");
+    if (!SD.exists("/tracks"))   SD.mkdir("/tracks");
 
     s_available          = true;
     g_state.sd_available = true;

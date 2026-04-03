@@ -135,55 +135,79 @@ void session_store_load_user_tracks() {
     if (!dir) return;
 
     g_user_track_count = 0;
+    static char buf[2048];
     File f = dir.openNextFile();
     while (f && g_user_track_count < MAX_USER_TRACKS) {
         if (!f.isDirectory()) {
-            String name = f.name();
-            if (name.endsWith(".json")) {
-                static char buf[1024];
-                if (!sd_read_file(f.name(), buf, sizeof(buf))) { f = dir.openNextFile(); continue; }
+            // f.name() may return just the filename or the full path depending on SDK version.
+            // Always build a safe absolute path ourselves.
+            String fname = f.name();
 
-                JsonDocument doc;
-                if (deserializeJson(doc, buf) != DeserializationError::Ok) { f = dir.openNextFile(); continue; }
+            // Skip builtin coordinate-override files (builtin_NN.json)
+            // They are stored in the same directory but are NOT user tracks.
+            if (fname.startsWith("builtin_")) { f = dir.openNextFile(); continue; }
+            if (!fname.endsWith(".json"))      { f = dir.openNextFile(); continue; }
 
-                TrackDef &td = g_user_tracks[g_user_track_count];
-                memset(&td, 0, sizeof(td));
-                strncpy(td.name,    doc["name"]    | "", sizeof(td.name) - 1);
-                strncpy(td.country, doc["country"] | "", sizeof(td.country) - 1);
-                td.length_km  = doc["length_km"] | 0.0f;
-                td.is_circuit = doc["is_circuit"] | true;
-                td.user_created = true;
+            // Build full path: strip any leading path component, then prepend /tracks/
+            int slash = fname.lastIndexOf('/');
+            String base = (slash >= 0) ? fname.substring(slash + 1) : fname;
+            char fpath[80];
+            snprintf(fpath, sizeof(fpath), "/tracks/%s", base.c_str());
 
-                td.sf_lat1 = doc["sf"][0] | 0.0;
-                td.sf_lon1 = doc["sf"][1] | 0.0;
-                td.sf_lat2 = doc["sf"][2] | 0.0;
-                td.sf_lon2 = doc["sf"][3] | 0.0;
-
-                if (!td.is_circuit) {
-                    td.fin_lat1 = doc["fin"][0] | 0.0;
-                    td.fin_lon1 = doc["fin"][1] | 0.0;
-                    td.fin_lat2 = doc["fin"][2] | 0.0;
-                    td.fin_lon2 = doc["fin"][3] | 0.0;
-                }
-
-                JsonArray secs = doc["sectors"].as<JsonArray>();
-                td.sector_count = 0;
-                for (JsonObject s : secs) {
-                    if (td.sector_count >= MAX_SECTORS) break;
-                    td.sectors[td.sector_count].lat = s["lat"] | 0.0;
-                    td.sectors[td.sector_count].lon = s["lon"] | 0.0;
-                    strncpy(td.sectors[td.sector_count].name,
-                            s["name"] | "",
-                            SECTOR_NAME_LEN - 1);
-                    td.sector_count++;
-                }
-
-                g_user_track_count++;
+            if (!sd_read_file(fpath, buf, sizeof(buf))) {
+                Serial.printf("[STORE] Failed to read %s\n", fpath);
+                f = dir.openNextFile();
+                continue;
             }
+
+            JsonDocument doc;
+            if (deserializeJson(doc, buf) != DeserializationError::Ok) {
+                Serial.printf("[STORE] JSON parse error: %s\n", fpath);
+                f = dir.openNextFile();
+                continue;
+            }
+
+            // Validate: must have a non-empty name field (builtin overrides don't)
+            const char *tname = doc["name"] | "";
+            if (strlen(tname) == 0) { f = dir.openNextFile(); continue; }
+
+            TrackDef &td = g_user_tracks[g_user_track_count];
+            memset(&td, 0, sizeof(td));
+            strncpy(td.name,    tname,                sizeof(td.name) - 1);
+            strncpy(td.country, doc["country"] | "",  sizeof(td.country) - 1);
+            td.length_km    = doc["length_km"] | 0.0f;
+            td.is_circuit   = doc["is_circuit"] | true;
+            td.user_created = true;
+
+            td.sf_lat1 = doc["sf"][0] | 0.0;
+            td.sf_lon1 = doc["sf"][1] | 0.0;
+            td.sf_lat2 = doc["sf"][2] | 0.0;
+            td.sf_lon2 = doc["sf"][3] | 0.0;
+
+            if (!td.is_circuit) {
+                td.fin_lat1 = doc["fin"][0] | 0.0;
+                td.fin_lon1 = doc["fin"][1] | 0.0;
+                td.fin_lat2 = doc["fin"][2] | 0.0;
+                td.fin_lon2 = doc["fin"][3] | 0.0;
+            }
+
+            JsonArray secs = doc["sectors"].as<JsonArray>();
+            td.sector_count = 0;
+            for (JsonObject s : secs) {
+                if (td.sector_count >= MAX_SECTORS) break;
+                td.sectors[td.sector_count].lat = s["lat"] | 0.0;
+                td.sectors[td.sector_count].lon = s["lon"] | 0.0;
+                strncpy(td.sectors[td.sector_count].name,
+                        s["name"] | "", SECTOR_NAME_LEN - 1);
+                td.sector_count++;
+            }
+
+            g_user_track_count++;
+            Serial.printf("[STORE] Loaded user track: %s\n", td.name);
         }
         f = dir.openNextFile();
     }
-    Serial.printf("[STORE] Loaded %d user tracks\n", g_user_track_count);
+    Serial.printf("[STORE] Total user tracks loaded: %d\n", g_user_track_count);
 }
 
 bool session_store_save_user_track(const TrackDef *td) {
