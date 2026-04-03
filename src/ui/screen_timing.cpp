@@ -14,6 +14,7 @@
 #include "brl_fonts.h"
 #include "dash_config.h"
 #include "theme.h"
+#include "../../include/i18n.h"
 #include "../data/lap_data.h"
 #include "../data/track_db.h"
 #include "../timing/lap_timer.h"
@@ -34,7 +35,7 @@ static lv_obj_t  *s_timing_screen  = nullptr;
 static lv_obj_t  *s_layout_overlay = nullptr;
 
 // ---------------------------------------------------------------------------
-// Helpers shared with layout (defined in theme.h via inline, use same pattern)
+// Helpers
 // ---------------------------------------------------------------------------
 static lv_obj_t *mk_card(lv_obj_t *parent, int w, int h,
                           const char *title,
@@ -72,26 +73,14 @@ static lv_obj_t *mk_row(lv_obj_t *parent, int y, int h) {
 }
 
 // ---------------------------------------------------------------------------
-// Layout editor callbacks
+// Layout editor
 // ---------------------------------------------------------------------------
 #define NUM_WIDGETS 16
-static const char *WIDGET_NAMES[NUM_WIDGETS] = {
-    "Geschwindigkeit (GPS)",
-    "Rundenzeit",
-    "Bestzeit",
-    "Live Delta",
-    "Rundenzähler",
-    "Sektor 1",
-    "Sektor 2",
-    "Sektor 3",
-    "Drehzahl (RPM)",
-    "Gaspedal %",
-    "Ladedruck",
-    "Lambda / AFR",
-    "Bremspedal %",
-    "Kühlmittel Temp",
-    "Gang",
-    "Lenkwinkel",
+static const TrKey WIDGET_NAME_KEYS[NUM_WIDGETS] = {
+    TR_WNAME_SPEED,    TR_WNAME_LAPTIME, TR_WNAME_BESTLAP,  TR_WNAME_DELTA,
+    TR_WNAME_LAPNR,    TR_WNAME_SEC1,    TR_WNAME_SEC2,     TR_WNAME_SEC3,
+    TR_WNAME_RPM,      TR_WNAME_THROTTLE,TR_WNAME_BOOST,    TR_WNAME_LAMBDA,
+    TR_WNAME_BRAKE,    TR_WNAME_COOLANT, TR_WNAME_GEAR,     TR_WNAME_STEERING,
 };
 static const uint32_t WIDGET_BITS[NUM_WIDGETS] = {
     WDGT_SPEED, WDGT_LAPTIME, WDGT_BESTLAP, WDGT_DELTA, WDGT_LAP_NR,
@@ -117,7 +106,6 @@ static void cb_layout_save(lv_event_t * /*e*/) {
     }
     g_dash_cfg.visible_mask = mask ? mask : WDGT_DEFAULT_MASK;
     dash_config_save();
-    // Clear overlay ptr before rebuild (it's a child of timing screen, will be deleted)
     s_layout_overlay = nullptr;
     timing_screen_rebuild();
 }
@@ -125,7 +113,6 @@ static void cb_layout_save(lv_event_t * /*e*/) {
 static void open_layout_editor() {
     if (s_layout_overlay || !s_timing_screen) return;
 
-    // Full-screen dark overlay
     s_layout_overlay = lv_obj_create(s_timing_screen);
     lv_obj_set_size(s_layout_overlay, 800, 480);
     lv_obj_set_pos(s_layout_overlay, 0, 0);
@@ -134,7 +121,6 @@ static void open_layout_editor() {
     lv_obj_set_style_border_width(s_layout_overlay, 0, LV_STATE_DEFAULT);
     lv_obj_remove_flag(s_layout_overlay, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Dialog card
     lv_obj_t *card = lv_obj_create(s_layout_overlay);
     lv_obj_set_size(card, 740, 400);
     lv_obj_center(card);
@@ -143,11 +129,10 @@ static void open_layout_editor() {
     lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *ttl = lv_label_create(card);
-    lv_label_set_text(ttl, LV_SYMBOL_SETTINGS "  LAYOUT ANPASSEN");
+    lv_label_set_text_fmt(ttl, LV_SYMBOL_SETTINGS "  %s", tr(TR_CUSTOMIZE_LAYOUT));
     brl_style_label(ttl, &BRL_FONT_20, BRL_CLR_TEXT);
     lv_obj_align(ttl, LV_ALIGN_TOP_LEFT, 0, 0);
 
-    // 2-column checkbox grid
     lv_obj_t *grid = lv_obj_create(card);
     lv_obj_set_size(grid, 716, 300);
     lv_obj_align(grid, LV_ALIGN_TOP_LEFT, 0, 36);
@@ -158,7 +143,7 @@ static void open_layout_editor() {
 
     for (int i = 0; i < NUM_WIDGETS; i++) {
         lv_obj_t *cb = lv_checkbox_create(grid);
-        lv_checkbox_set_text(cb, WIDGET_NAMES[i]);
+        lv_checkbox_set_text(cb, tr(WIDGET_NAME_KEYS[i]));
         lv_obj_set_width(cb, 340);
         lv_obj_set_style_text_font(cb, &BRL_FONT_14, LV_STATE_DEFAULT);
         lv_obj_set_style_text_color(cb, BRL_CLR_TEXT, LV_STATE_DEFAULT);
@@ -171,7 +156,6 @@ static void open_layout_editor() {
         s_editor_cbs[i] = cb;
     }
 
-    // Buttons
     lv_obj_t *btn_save = lv_button_create(card);
     lv_obj_set_size(btn_save, 150, 40);
     lv_obj_align(btn_save, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
@@ -179,7 +163,7 @@ static void open_layout_editor() {
     lv_obj_set_style_radius(btn_save, 6, LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(btn_save, 0, LV_STATE_DEFAULT);
     lv_obj_t *lsave = lv_label_create(btn_save);
-    lv_label_set_text(lsave, LV_SYMBOL_OK "  SPEICHERN");
+    lv_label_set_text_fmt(lsave, LV_SYMBOL_OK "  %s", tr(TR_SAVE_BTN));
     brl_style_label(lsave, &BRL_FONT_14, BRL_CLR_TEXT);
     lv_obj_center(lsave);
     lv_obj_add_event_cb(btn_save, cb_layout_save, LV_EVENT_CLICKED, nullptr);
@@ -191,7 +175,7 @@ static void open_layout_editor() {
     lv_obj_set_style_radius(btn_cancel, 6, LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(btn_cancel, 0, LV_STATE_DEFAULT);
     lv_obj_t *lcancel = lv_label_create(btn_cancel);
-    lv_label_set_text(lcancel, LV_SYMBOL_CLOSE "  ABBRECHEN");
+    lv_label_set_text_fmt(lcancel, LV_SYMBOL_CLOSE "  %s", tr(TR_CANCEL_BTN));
     brl_style_label(lcancel, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
     lv_obj_center(lcancel);
     lv_obj_add_event_cb(btn_cancel, cb_layout_cancel, LV_EVENT_CLICKED, nullptr);
@@ -209,12 +193,14 @@ static void cb_start_stop(lv_event_t * /*e*/) {
         if (g_state.active_track_idx < 0) return;
         lt.timing_active = true;
         lt.lap_number    = 0;
-        if (tw.start_btn_lbl) lv_label_set_text(tw.start_btn_lbl, LV_SYMBOL_STOP "  STOPPEN");
+        if (tw.start_btn_lbl)
+            lv_label_set_text_fmt(tw.start_btn_lbl, LV_SYMBOL_STOP "  %s", tr(TR_STOP_BTN));
         lv_obj_t *btn = tw.start_btn_lbl ? lv_obj_get_parent(tw.start_btn_lbl) : nullptr;
         if (btn) lv_obj_set_style_bg_color(btn, BRL_CLR_DANGER, LV_STATE_DEFAULT);
     } else {
         lt.timing_active = false;
-        if (tw.start_btn_lbl) lv_label_set_text(tw.start_btn_lbl, LV_SYMBOL_PLAY "  STARTEN");
+        if (tw.start_btn_lbl)
+            lv_label_set_text_fmt(tw.start_btn_lbl, LV_SYMBOL_PLAY "  %s", tr(TR_START_BTN));
         lv_obj_t *btn = tw.start_btn_lbl ? lv_obj_get_parent(tw.start_btn_lbl) : nullptr;
         if (btn) lv_obj_set_style_bg_color(btn, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
     }
@@ -273,7 +259,7 @@ lv_obj_t *timing_screen_build() {
     lv_obj_set_style_radius(back_btn, 6, LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(back_btn, 0, LV_STATE_DEFAULT);
     lv_obj_t *blbl = lv_label_create(back_btn);
-    lv_label_set_text(blbl, LV_SYMBOL_LEFT "  MENÜ");
+    lv_label_set_text_fmt(blbl, LV_SYMBOL_LEFT "  %s", tr(TR_MENU_BTN));
     brl_style_label(blbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, cb_back, LV_EVENT_CLICKED, nullptr);
@@ -281,7 +267,7 @@ lv_obj_t *timing_screen_build() {
     // Track name (center)
     tw.track_name_lbl = lv_label_create(hdr);
     const TrackDef *td = track_get(g_state.active_track_idx);
-    lv_label_set_text(tw.track_name_lbl, td ? td->name : "Keine Strecke");
+    lv_label_set_text(tw.track_name_lbl, td ? td->name : tr(TR_NO_TRACK));
     brl_style_label(tw.track_name_lbl, &BRL_FONT_16, BRL_CLR_TEXT);
     lv_obj_align(tw.track_name_lbl, LV_ALIGN_CENTER, 0, 0);
 
@@ -293,7 +279,7 @@ lv_obj_t *timing_screen_build() {
     lv_obj_set_style_radius(layout_btn, 6, LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(layout_btn, 0, LV_STATE_DEFAULT);
     lv_obj_t *llbl = lv_label_create(layout_btn);
-    lv_label_set_text(llbl, LV_SYMBOL_SETTINGS "  LAYOUT");
+    lv_label_set_text_fmt(llbl, LV_SYMBOL_SETTINGS "  %s", tr(TR_LAYOUT_BTN));
     brl_style_label(llbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
     lv_obj_center(llbl);
     lv_obj_add_event_cb(layout_btn, cb_layout_btn, LV_EVENT_CLICKED, nullptr);
@@ -306,9 +292,10 @@ lv_obj_t *timing_screen_build() {
     lv_obj_set_style_radius(start_btn, 6, LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(start_btn, 0, LV_STATE_DEFAULT);
     tw.start_btn_lbl = lv_label_create(start_btn);
-    lv_label_set_text(tw.start_btn_lbl,
-        g_state.timing.timing_active ? LV_SYMBOL_STOP "  STOPPEN"
-                                      : LV_SYMBOL_PLAY "  STARTEN");
+    lv_label_set_text_fmt(tw.start_btn_lbl,
+        g_state.timing.timing_active
+            ? LV_SYMBOL_STOP "  %s" : LV_SYMBOL_PLAY "  %s",
+        g_state.timing.timing_active ? tr(TR_STOP_BTN) : tr(TR_START_BTN));
     brl_style_label(tw.start_btn_lbl, &BRL_FONT_14, BRL_CLR_TEXT);
     lv_obj_center(tw.start_btn_lbl);
     if (g_state.timing.timing_active)
@@ -321,15 +308,13 @@ lv_obj_t *timing_screen_build() {
     bool z3 = (mask & (WDGT_RPM | WDGT_THROTTLE | WDGT_BOOST | WDGT_LAMBDA |
                        WDGT_BRAKE | WDGT_COOLANT | WDGT_GEAR | WDGT_STEERING));
 
-    // Calculate dynamic y positions based on visible zones
     int zones = (z1 ? 1 : 0) + (z2 ? 1 : 0) + (z3 ? 1 : 0);
-    int avail_h = 480 - 90 - 8;   // below header, 8px bottom padding
+    int avail_h = 480 - 90 - 8;
     int h1 = 140, h2 = 85, h3 = 75;
     if (zones > 0) {
         int total_h = (z1 ? h1 : 0) + (z2 ? h2 : 0) + (z3 ? h3 : 0)
                     + (zones - 1) * 6;
         int slack = avail_h - total_h;
-        // Distribute extra space proportionally to zone heights (simple: add to z1)
         if (z1 && slack > 0) h1 += slack;
     }
 
@@ -337,24 +322,24 @@ lv_obj_t *timing_screen_build() {
 
     if (z1) {
         lv_obj_t *row1 = mk_row(scr, cy, h1);
-        const int CW = 193;  // 1-col width
-        const int WW = 390;  // 2-col wide width
+        const int CW = 193;
+        const int WW = 390;
         const int h  = h1 - 10;
 
         if (mask & WDGT_SPEED)
-            mk_card(row1, WW, h, "GESCHWINDIGKEIT", &BRL_FONT_48,
+            mk_card(row1, WW, h, tr(TR_SPEED), &BRL_FONT_48,
                     BRL_CLR_TEXT, &tw.speed_lbl);
         if (mask & WDGT_LAPTIME)
-            mk_card(row1, WW, h, "RUNDENZEIT", &BRL_FONT_40,
+            mk_card(row1, WW, h, tr(TR_LAPTIME), &BRL_FONT_40,
                     BRL_CLR_ACCENT, &tw.laptime_lbl);
         if (mask & WDGT_BESTLAP)
-            mk_card(row1, CW, h, "BESTZEIT", &BRL_FONT_24,
+            mk_card(row1, CW, h, tr(TR_BESTLAP), &BRL_FONT_24,
                     BRL_CLR_TEXT, &tw.bestlap_lbl);
         if (mask & WDGT_DELTA)
-            mk_card(row1, CW, h, "LIVE DELTA", &BRL_FONT_24,
+            mk_card(row1, CW, h, tr(TR_LIVE_DELTA), &BRL_FONT_24,
                     BRL_CLR_TEXT_DIM, &tw.delta_lbl);
         if (mask & WDGT_LAP_NR)
-            mk_card(row1, CW, h, "RUNDE", &BRL_FONT_32,
+            mk_card(row1, CW, h, tr(TR_LAP), &BRL_FONT_32,
                     BRL_CLR_TEXT, &tw.lap_nr_lbl);
         cy += h1 + 6;
     }
@@ -368,13 +353,13 @@ lv_obj_t *timing_screen_build() {
         int sh = h2 - 10;
 
         if (mask & WDGT_SECTOR1)
-            mk_card(row2, sw, sh, "SEKTOR 1", &BRL_FONT_24,
+            mk_card(row2, sw, sh, tr(TR_SECTOR1), &BRL_FONT_24,
                     BRL_CLR_TEXT, &tw.sec1_lbl);
         if (mask & WDGT_SECTOR2)
-            mk_card(row2, sw, sh, "SEKTOR 2", &BRL_FONT_24,
+            mk_card(row2, sw, sh, tr(TR_SECTOR2), &BRL_FONT_24,
                     BRL_CLR_TEXT, &tw.sec2_lbl);
         if (mask & WDGT_SECTOR3)
-            mk_card(row2, sw, sh, "SEKTOR 3", &BRL_FONT_24,
+            mk_card(row2, sw, sh, tr(TR_SECTOR3), &BRL_FONT_24,
                     BRL_CLR_TEXT, &tw.sec3_lbl);
         cy += h2 + 6;
     }
@@ -389,28 +374,28 @@ lv_obj_t *timing_screen_build() {
         int oh = h3 - 10;
 
         if (mask & WDGT_RPM)
-            mk_card(row3, ow, oh, "RPM", &BRL_FONT_20,
+            mk_card(row3, ow, oh, tr(TR_RPM), &BRL_FONT_20,
                     BRL_CLR_TEXT, &tw.rpm_lbl);
         if (mask & WDGT_THROTTLE)
-            mk_card(row3, ow, oh, "GAS %", &BRL_FONT_20,
+            mk_card(row3, ow, oh, tr(TR_THROTTLE), &BRL_FONT_20,
                     BRL_CLR_TEXT, &tw.throttle_lbl);
         if (mask & WDGT_BOOST)
-            mk_card(row3, ow, oh, "LADEDRUCK", &BRL_FONT_20,
+            mk_card(row3, ow, oh, tr(TR_BOOST), &BRL_FONT_20,
                     BRL_CLR_WARN, &tw.boost_lbl);
         if (mask & WDGT_LAMBDA)
-            mk_card(row3, ow, oh, "LAMBDA", &BRL_FONT_20,
+            mk_card(row3, ow, oh, tr(TR_LAMBDA), &BRL_FONT_20,
                     BRL_CLR_TEXT, &tw.lambda_lbl);
         if (mask & WDGT_BRAKE)
-            mk_card(row3, ow, oh, "BREMSE %", &BRL_FONT_20,
+            mk_card(row3, ow, oh, tr(TR_BRAKE), &BRL_FONT_20,
                     BRL_CLR_DANGER, &tw.brake_lbl);
         if (mask & WDGT_COOLANT)
-            mk_card(row3, ow, oh, "KÜHLMITTEL", &BRL_FONT_20,
+            mk_card(row3, ow, oh, tr(TR_COOLANT), &BRL_FONT_20,
                     BRL_CLR_TEXT, &tw.coolant_lbl);
         if (mask & WDGT_GEAR)
-            mk_card(row3, ow, oh, "GANG", &BRL_FONT_20,
+            mk_card(row3, ow, oh, tr(TR_GEAR), &BRL_FONT_20,
                     BRL_CLR_TEXT, &tw.gear_lbl);
         if (mask & WDGT_STEERING)
-            mk_card(row3, ow, oh, "LENKWINKEL", &BRL_FONT_20,
+            mk_card(row3, ow, oh, tr(TR_STEERING), &BRL_FONT_20,
                     BRL_CLR_TEXT, &tw.steering_lbl);
     }
 
@@ -429,8 +414,8 @@ void timing_screen_open() {
 }
 
 void timing_screen_rebuild() {
-    s_layout_overlay = nullptr;   // child of timing screen, will be deleted
-    tw = {};                      // zero handles BEFORE delete (timer safety)
+    s_layout_overlay = nullptr;
+    tw = {};
     if (s_timing_screen) {
         lv_obj_delete(s_timing_screen);
         s_timing_screen = nullptr;

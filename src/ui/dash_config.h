@@ -33,6 +33,8 @@
 // ---------------------------------------------------------------------------
 typedef struct {
     uint32_t visible_mask;
+    uint8_t  language;   // 0 = Deutsch, 1 = English
+    uint8_t  units;      // 0 = metric (km/h), 1 = imperial (mph)
 } DashConfig;
 
 extern DashConfig g_dash_cfg;
