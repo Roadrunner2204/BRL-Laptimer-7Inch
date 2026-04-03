@@ -27,6 +27,9 @@ typedef struct {
 
 extern TimingWidgets tw;
 
+// Current delta bar scale in ms (cycles on tap: 2000/3000/5000/10000/20000)
+int32_t timing_get_delta_scale();
+
 // Build timing LVGL screen; returns the new screen object (NOT yet loaded).
 lv_obj_t *timing_screen_build();
 

@@ -100,6 +100,11 @@ static const char* const s_str[2][TR_COUNT] = {
     /* TR_STORAGE_TITLE  */ "Festplatte",
     /* TR_STORAGE_UNAVAIL*/ "Nicht verfügbar",
     /* TR_STORAGE_USED   */ "belegt",
+    /* TR_HIST_CURRENT   */ "AKTUELLE SITZUNG",
+    /* TR_HIST_SAVED     */ "GESPEICHERTE SITZUNGEN",
+    /* TR_HIST_NO_SAVED  */ "Keine gespeicherten Sitzungen.",
+    /* TR_HIST_BEST      */ "Beste",
+    /* TR_HIST_LAPS      */ "Runden",
 },
 // ── English ─────────────────────────────────────────────────────────────────
 {
@@ -194,6 +199,11 @@ static const char* const s_str[2][TR_COUNT] = {
     /* TR_STORAGE_TITLE  */ "Storage",
     /* TR_STORAGE_UNAVAIL*/ "Unavailable",
     /* TR_STORAGE_USED   */ "used",
+    /* TR_HIST_CURRENT   */ "CURRENT SESSION",
+    /* TR_HIST_SAVED     */ "SAVED SESSIONS",
+    /* TR_HIST_NO_SAVED  */ "No saved sessions.",
+    /* TR_HIST_BEST      */ "Best",
+    /* TR_HIST_LAPS      */ "laps",
 },
 };
 

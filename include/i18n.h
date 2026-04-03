@@ -108,6 +108,12 @@ enum TrKey : uint8_t {
     TR_STORAGE_TITLE,
     TR_STORAGE_UNAVAIL,
     TR_STORAGE_USED,
+    // History screen sections
+    TR_HIST_CURRENT,
+    TR_HIST_SAVED,
+    TR_HIST_NO_SAVED,
+    TR_HIST_BEST,
+    TR_HIST_LAPS,
     TR_COUNT
 };
 

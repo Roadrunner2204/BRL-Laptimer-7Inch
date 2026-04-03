@@ -34,6 +34,11 @@ TimingWidgets     tw = {};
 static lv_obj_t  *s_timing_screen  = nullptr;
 static lv_obj_t  *s_layout_overlay = nullptr;
 
+// Delta bar scale — persists across screen rebuilds
+static int32_t    s_delta_scale_ms = 3000;  // ±3 s default
+
+int32_t timing_get_delta_scale() { return s_delta_scale_ms; }
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -338,6 +343,16 @@ lv_obj_t *timing_screen_build() {
     lv_label_set_text(tw.delta_bar_lbl, "\xC2\xB10.00 s");
     brl_style_label(tw.delta_bar_lbl, &BRL_FONT_14, BRL_CLR_TEXT);
     lv_obj_align(tw.delta_bar_lbl, LV_ALIGN_CENTER, 0, 0);
+
+    // Tap the delta bar to cycle scale: 2s → 3s → 5s → 10s → 20s
+    lv_obj_add_flag(dbar, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(dbar, [](lv_event_t * /*e*/) {
+        const int32_t scales[] = { 2000, 3000, 5000, 10000, 20000 };
+        const int n = 5;
+        int cur = 0;
+        for (int i = 0; i < n; i++) if (s_delta_scale_ms == scales[i]) { cur = i; break; }
+        s_delta_scale_ms = scales[(cur + 1) % n];
+    }, LV_EVENT_CLICKED, nullptr);
 
     // ── Zone 1: Large timing metrics (y=112, h=140) ───────────────────────
     bool z1 = (mask & (WDGT_SPEED | WDGT_LAPTIME | WDGT_BESTLAP | WDGT_DELTA | WDGT_LAP_NR));

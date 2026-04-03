@@ -35,6 +35,18 @@ void session_store_save_lap(uint8_t lap_idx);
 // Returns number of entries written
 int  session_store_list(char ids[][20], int max_count);
 
+// Compact session summary (no GPS points needed)
+typedef struct {
+    char     id[20];
+    char     track[48];
+    uint8_t  lap_count;
+    uint32_t best_ms;   // 0 = unknown
+} SessionSummary;
+
+// Read summary info (id, track, lap count, best lap) from each session file.
+// Returns number of entries written. Most-recent first (by SD listing order).
+int  session_store_list_summaries(SessionSummary *out, int max_count);
+
 // Load user-created tracks from SD into g_user_tracks
 void session_store_load_user_tracks();
 

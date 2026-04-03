@@ -892,18 +892,30 @@ static void open_track_creator(lv_obj_t *scroll, int edit_idx) {
 // SECTION 6 — HISTORY SCREEN
 // ============================================================================
 
+// Helper: section header label inside content area
+static void hist_section_header(lv_obj_t *parent, const char *text) {
+    lv_obj_t *hdr = lv_label_create(parent);
+    lv_label_set_text(hdr, text);
+    brl_style_label(hdr, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+    lv_obj_set_width(hdr, LV_PCT(100));
+    lv_obj_set_style_pad_top(hdr, 6, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_bottom(hdr, 2, LV_STATE_DEFAULT);
+}
+
 static void open_history_screen() {
     lv_obj_t *scr = make_sub_screen(tr(TR_HISTORY_TITLE), cb_back_to_menu);
     lv_obj_t *content = build_content_area(scr, true);
     lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(content, 4, LV_STATE_DEFAULT);
 
+    // ── Current session ───────────────────────────────────────────────────
+    hist_section_header(content, tr(TR_HIST_CURRENT));
+
     LapSession &sess = g_state.session;
     if (sess.lap_count == 0) {
         lv_obj_t *ph = lv_label_create(content);
         lv_label_set_text(ph, tr(TR_NO_LAPS));
-        brl_style_label(ph, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
-        lv_obj_align(ph, LV_ALIGN_CENTER, 0, 0);
+        brl_style_label(ph, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
     } else {
         for (int i = 0; i < sess.lap_count; i++) {
             RecordedLap &rl = sess.laps[i];
@@ -916,7 +928,7 @@ static void open_history_screen() {
             char lap_buf[64];
             snprintf(lap_buf, sizeof(lap_buf), "%s %d    %s%s",
                      tr(TR_LAP), i+1, lt_buf,
-                     i == (int)sess.best_lap_idx ? "  \u2605 BEST" : "");
+                     i == (int)sess.best_lap_idx ? "  * BEST" : "");
 
             lv_obj_t *lbl = lv_label_create(row);
             lv_label_set_text(lbl, lap_buf);
@@ -928,11 +940,8 @@ static void open_history_screen() {
             lv_obj_t *ref_btn = lv_button_create(row);
             lv_obj_set_size(ref_btn, 130, 34);
             lv_obj_align(ref_btn, LV_ALIGN_RIGHT_MID, 0, 0);
-            lv_obj_set_style_bg_color(ref_btn,
-                i == (int)sess.ref_lap_idx ? BRL_CLR_ACCENT : BRL_CLR_SURFACE2,
-                LV_STATE_DEFAULT);
-            lv_obj_set_style_radius(ref_btn, 6, LV_STATE_DEFAULT);
-            lv_obj_set_style_border_width(ref_btn, 0, LV_STATE_DEFAULT);
+            brl_style_btn(ref_btn,
+                i == (int)sess.ref_lap_idx ? BRL_CLR_ACCENT : BRL_CLR_SURFACE2);
             lv_obj_t *rl2 = lv_label_create(ref_btn);
             lv_label_set_text(rl2, i == (int)sess.ref_lap_idx ? tr(TR_IS_REF) : tr(TR_SET_REF));
             brl_style_label(rl2, &BRL_FONT_14, BRL_CLR_TEXT);
@@ -941,10 +950,71 @@ static void open_history_screen() {
             lv_obj_add_event_cb(ref_btn, [](lv_event_t *e){
                 int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e));
                 lap_timer_set_ref_lap((uint8_t)idx);
-                open_history_screen(); // rebuild to refresh button states
+                open_history_screen();
             }, LV_EVENT_CLICKED, nullptr);
         }
     }
+
+    // ── Saved sessions from SD ────────────────────────────────────────────
+    hist_section_header(content, tr(TR_HIST_SAVED));
+
+    if (!g_state.sd_available) {
+        lv_obj_t *ph = lv_label_create(content);
+        lv_label_set_text(ph, tr(TR_STORAGE_UNAVAIL));
+        brl_style_label(ph, &BRL_FONT_14, BRL_CLR_DANGER);
+    } else {
+        static SessionSummary s_summaries[30];
+        int n = session_store_list_summaries(s_summaries, 30);
+
+        // Filter out current session
+        int shown = 0;
+        for (int i = 0; i < n; i++) {
+            if (strcmp(s_summaries[i].id, sess.session_id) == 0) continue;
+
+            lv_obj_t *row = lv_obj_create(content);
+            lv_obj_set_width(row, LV_PCT(100)); lv_obj_set_height(row, 60);
+            brl_style_card(row);
+            lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+            // Track name + session id (small)
+            lv_obj_t *track_lbl = lv_label_create(row);
+            const char *tname = strlen(s_summaries[i].track) > 0
+                                ? s_summaries[i].track : "?";
+            lv_label_set_text(track_lbl, tname);
+            brl_style_label(track_lbl, &BRL_FONT_16, BRL_CLR_TEXT);
+            lv_obj_align(track_lbl, LV_ALIGN_TOP_LEFT, 0, 0);
+
+            // Session ID as subtitle
+            lv_obj_t *id_lbl = lv_label_create(row);
+            lv_label_set_text(id_lbl, s_summaries[i].id);
+            brl_style_label(id_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+            lv_obj_align(id_lbl, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+
+            // Right side: N laps + best lap
+            char info[48] = {};
+            if (s_summaries[i].best_ms > 0) {
+                char bt[16]; fmt_laptime(bt, sizeof(bt), s_summaries[i].best_ms);
+                snprintf(info, sizeof(info), "%u %s  |  %s %s",
+                         s_summaries[i].lap_count, tr(TR_HIST_LAPS),
+                         tr(TR_HIST_BEST), bt);
+            } else {
+                snprintf(info, sizeof(info), "%u %s",
+                         s_summaries[i].lap_count, tr(TR_HIST_LAPS));
+            }
+            lv_obj_t *info_lbl = lv_label_create(row);
+            lv_label_set_text(info_lbl, info);
+            brl_style_label(info_lbl, &BRL_FONT_14, BRL_CLR_ACCENT);
+            lv_obj_align(info_lbl, LV_ALIGN_RIGHT_MID, 0, 0);
+
+            shown++;
+        }
+        if (shown == 0) {
+            lv_obj_t *ph = lv_label_create(content);
+            lv_label_set_text(ph, tr(TR_HIST_NO_SAVED));
+            brl_style_label(ph, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+        }
+    }
+
     sub_screen_load(scr);
 }
 
@@ -1310,28 +1380,32 @@ void timer_live_update(lv_timer_t * /*t*/) {
                   : (d > 0 ? lv_color_hex(0xFF4444) : lv_color_hex(0xFFFFFF)), 0);
     }
     if (tw.delta_bar_fill && tw.delta_bar_lbl) {
-        int32_t d = g_state.timing.live_delta_ms;
-        const int HALF = 396;  // half bar width in pixels
-        int fill_w = (int)(fabsf((float)d) / 3000.0f * HALF);
+        int32_t d     = g_state.timing.live_delta_ms;
+        int32_t scale = timing_get_delta_scale();
+        const int HALF = 396;
+        int fill_w = (int)(fabsf((float)d) / (float)scale * HALF);
         if (fill_w > HALF) fill_w = HALF;
         if (d == 0 || !g_state.timing.timing_active) {
             lv_obj_set_size(tw.delta_bar_fill, 0, 22);
         } else if (d > 0) {
-            // Slower → red, extends LEFT from center
             lv_obj_set_style_bg_color(tw.delta_bar_fill, lv_color_hex(0xFF4444), 0);
             lv_obj_set_size(tw.delta_bar_fill, fill_w, 22);
             lv_obj_set_pos(tw.delta_bar_fill, 400 - fill_w, 0);
         } else {
-            // Faster → green, extends RIGHT from center
             lv_obj_set_style_bg_color(tw.delta_bar_fill, lv_color_hex(0x00CC66), 0);
             lv_obj_set_size(tw.delta_bar_fill, fill_w, 22);
             lv_obj_set_pos(tw.delta_bar_fill, 400, 0);
         }
-        char dbuf[16];
+        // Label: delta + scale indicator (e.g. "+1.23 s [5s]")
+        const char *scale_tag = scale == 2000  ? "[2s]"  :
+                                scale == 3000  ? "[3s]"  :
+                                scale == 5000  ? "[5s]"  :
+                                scale == 10000 ? "[10s]" : "[20s]";
+        char dbuf[24];
         if (!g_state.timing.timing_active || d == 0) {
-            snprintf(dbuf, sizeof(dbuf), "\xC2\xB10.00 s");
+            snprintf(dbuf, sizeof(dbuf), "\xC2\xB10.00 s  %s", scale_tag);
         } else {
-            snprintf(dbuf, sizeof(dbuf), "%+.2f s", d / 1000.0f);
+            snprintf(dbuf, sizeof(dbuf), "%+.2f s  %s", d / 1000.0f, scale_tag);
         }
         lv_label_set_text(tw.delta_bar_lbl, dbuf);
         lv_obj_set_style_text_color(tw.delta_bar_lbl,
@@ -1343,26 +1417,84 @@ void timer_live_update(lv_timer_t * /*t*/) {
         snprintf(buf, sizeof(buf), "%d", (int)g_state.timing.lap_number);
         lv_label_set_text(tw.lap_nr_lbl, buf);
     }
-    // Sectors — show last completed lap's sector times
-    if (g_state.session.lap_count > 0) {
-        const RecordedLap &last = g_state.session.laps[g_state.session.lap_count - 1];
-        if (tw.sec1_lbl && last.sector_ms[0] > 0) {
-            char buf[16];
-            snprintf(buf, sizeof(buf), "S1 %u.%02u",
-                     last.sector_ms[0] / 1000, (last.sector_ms[0] % 1000) / 10);
-            lv_label_set_text(tw.sec1_lbl, buf);
-        }
-        if (tw.sec2_lbl && last.sector_ms[1] > 0) {
-            char buf[16];
-            snprintf(buf, sizeof(buf), "S2 %u.%02u",
-                     last.sector_ms[1] / 1000, (last.sector_ms[1] % 1000) / 10);
-            lv_label_set_text(tw.sec2_lbl, buf);
-        }
-        if (tw.sec3_lbl && last.sector_ms[2] > 0) {
-            char buf[16];
-            snprintf(buf, sizeof(buf), "S3 %u.%02u",
-                     last.sector_ms[2] / 1000, (last.sector_ms[2] % 1000) / 10);
-            lv_label_set_text(tw.sec3_lbl, buf);
+    // Sectors — live running time for current sector, completed for past, last lap when idle
+    {
+        const LiveTiming &lt  = g_state.timing;
+        const LapSession &sess = g_state.session;
+        uint32_t now = millis();
+
+        // Helper: format sector ms as "S<n> M.CS" (e.g. "S1 1.45")
+        auto sec_fmt = [](char *b, size_t len, uint8_t n, uint32_t ms) {
+            snprintf(b, len, "S%u %u.%02u", (unsigned)n,
+                     ms / 1000, (ms % 1000) / 10);
+        };
+
+        if (lt.in_lap) {
+            // in-progress lap: completed sectors stored at sess.laps[sess.lap_count]
+            const uint32_t *s_ms = sess.laps[sess.lap_count].sector_ms;
+            uint8_t cs      = lt.current_sector;
+            uint32_t run_ms = now - lt.sector_start_ms;
+
+            // Sector 1 (index 0)
+            if (tw.sec1_lbl) {
+                char buf[16];
+                if (cs > 0) {
+                    sec_fmt(buf, sizeof(buf), 1, s_ms[0]);
+                    lv_obj_set_style_text_color(tw.sec1_lbl, BRL_CLR_TEXT_DIM, 0);
+                } else {
+                    snprintf(buf, sizeof(buf), "> %u.%02u", run_ms/1000, (run_ms%1000)/10);
+                    lv_obj_set_style_text_color(tw.sec1_lbl, BRL_CLR_ACCENT, 0);
+                }
+                lv_label_set_text(tw.sec1_lbl, buf);
+            }
+            // Sector 2 (index 1)
+            if (tw.sec2_lbl) {
+                char buf[16];
+                if (cs > 1) {
+                    sec_fmt(buf, sizeof(buf), 2, s_ms[1]);
+                    lv_obj_set_style_text_color(tw.sec2_lbl, BRL_CLR_TEXT_DIM, 0);
+                } else if (cs == 1) {
+                    snprintf(buf, sizeof(buf), "> %u.%02u", run_ms/1000, (run_ms%1000)/10);
+                    lv_obj_set_style_text_color(tw.sec2_lbl, BRL_CLR_ACCENT, 0);
+                } else {
+                    strncpy(buf, "---", sizeof(buf));
+                    lv_obj_set_style_text_color(tw.sec2_lbl, BRL_CLR_TEXT_DIM, 0);
+                }
+                lv_label_set_text(tw.sec2_lbl, buf);
+            }
+            // Sector 3 (index 2)
+            if (tw.sec3_lbl) {
+                char buf[16];
+                if (cs > 2) {
+                    sec_fmt(buf, sizeof(buf), 3, s_ms[2]);
+                    lv_obj_set_style_text_color(tw.sec3_lbl, BRL_CLR_TEXT_DIM, 0);
+                } else if (cs == 2) {
+                    snprintf(buf, sizeof(buf), "> %u.%02u", run_ms/1000, (run_ms%1000)/10);
+                    lv_obj_set_style_text_color(tw.sec3_lbl, BRL_CLR_ACCENT, 0);
+                } else {
+                    strncpy(buf, "---", sizeof(buf));
+                    lv_obj_set_style_text_color(tw.sec3_lbl, BRL_CLR_TEXT_DIM, 0);
+                }
+                lv_label_set_text(tw.sec3_lbl, buf);
+            }
+        } else if (sess.lap_count > 0) {
+            // Not in lap — show last completed lap's sector times
+            const RecordedLap &last = sess.laps[sess.lap_count - 1];
+            if (tw.sec1_lbl && last.sector_ms[0] > 0) {
+                char buf[16]; sec_fmt(buf, sizeof(buf), 1, last.sector_ms[0]);
+                lv_label_set_text(tw.sec1_lbl, buf);
+                lv_obj_set_style_text_color(tw.sec1_lbl, BRL_CLR_TEXT, 0);
+            }
+            if (tw.sec2_lbl && last.sector_ms[1] > 0) {
+                char buf[16]; sec_fmt(buf, sizeof(buf), 2, last.sector_ms[1]);
+                lv_label_set_text(tw.sec2_lbl, buf);
+                lv_obj_set_style_text_color(tw.sec2_lbl, BRL_CLR_TEXT, 0);
+            }
+            if (tw.sec3_lbl && last.sector_ms[2] > 0) {
+                char buf[16]; sec_fmt(buf, sizeof(buf), 3, last.sector_ms[2]);
+                lv_label_set_text(tw.sec3_lbl, buf);
+                lv_obj_set_style_text_color(tw.sec3_lbl, BRL_CLR_TEXT, 0);
+            }
         }
     }
     // OBD widgets
