@@ -5,20 +5,23 @@
 /**
  * sd_mgr — SD card manager (SPI)
  *
- * Pin mapping (free GPIOs on Waveshare 7" board):
+ * Pin mapping (Waveshare ESP32-S3-Touch-LCD-7"):
  *   SD_MOSI = GPIO 11
- *   SD_MISO = GPIO 13  (Note: GPS_PPS moved to GPIO 16 to free 13)
+ *   SD_MISO = GPIO 13
  *   SD_SCLK = GPIO 12
- *   SD_CS   = GPIO 15
+ *   SD_CS   = GPIO  4   ← from Waveshare example library
  *
- * Creates /sessions directory on first use.
- * Uses Arduino SD library (included with espressif32).
+ * Note: GPIO 4 is also the touch INT line in our Pins.h.
+ * TOUCH_INT is set to -1 (polling mode) to free GPIO 4 for SD_CS.
+ * Touch still works — LVGL polls via I2C on every frame.
+ *
+ * Creates /sessions and /tracks directories on first boot.
  */
 
 #define SD_MOSI_PIN  11
 #define SD_MISO_PIN  13
 #define SD_SCLK_PIN  12
-#define SD_CS_PIN    15
+#define SD_CS_PIN     4
 
 bool  sd_mgr_init();                              // returns true if card found
 bool  sd_mgr_available();
