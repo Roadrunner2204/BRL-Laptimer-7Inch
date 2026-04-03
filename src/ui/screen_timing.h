@@ -1,5 +1,24 @@
 #pragma once
 #include <lvgl.h>
+#include <stdint.h>
+
+// ---------------------------------------------------------------------------
+// GPS map data — updated by timer_live_update, consumed by map draw callback.
+// Normalized coords: x/y in [0..1], origin = top-left, y increases downward.
+// ---------------------------------------------------------------------------
+#define MAP_MAX_PTS 500
+
+struct MapDisplayData {
+    struct Pt { float x, y; };
+    Pt   ref[MAP_MAX_PTS];   // reference (best) lap trace — grey
+    int  ref_n;
+    Pt   cur[MAP_MAX_PTS];   // current in-progress lap trace — white
+    int  cur_n;
+    float pos_x, pos_y;      // current GPS position (normalized)
+    bool  has_pos;
+    bool  valid;             // false = no data / no bounding box yet
+};
+extern MapDisplayData g_map_data;
 
 // ---------------------------------------------------------------------------
 // Handles for all timing-screen LVGL labels.
@@ -24,6 +43,8 @@ typedef struct {
     int16_t   delta_bar_h;   // actual pixel height (for use in timer update)
     // Status bar labels on the timing screen
     lv_obj_t *sb_gps_lbl, *sb_wifi_lbl, *sb_obd_lbl;
+    // GPS map widget (draw-event driven)
+    lv_obj_t *map_obj;
 } TimingWidgets;
 
 extern TimingWidgets tw;

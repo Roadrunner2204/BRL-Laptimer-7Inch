@@ -78,20 +78,105 @@ static lv_obj_t *mk_row(lv_obj_t *parent, int y, int h) {
 }
 
 // ---------------------------------------------------------------------------
+// GPS map draw callback (LVGL 9 layer-based draw API)
+// ---------------------------------------------------------------------------
+MapDisplayData g_map_data = {};
+
+static void cb_map_draw(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_DRAW_MAIN) return;
+    lv_layer_t *layer = lv_event_get_layer(e);
+    lv_obj_t   *obj   = lv_event_get_target(e);
+
+    lv_area_t a;
+    lv_obj_get_content_coords(obj, &a);
+    int32_t W = a.x2 - a.x1 + 1;
+    int32_t H = a.y2 - a.y1 + 1;
+    if (W <= 0 || H <= 0) return;
+
+    // Helper: normalized [0..1] → screen pixel
+    auto px = [&](float nx) -> float { return (float)a.x1 + nx * (float)W; };
+    auto py = [&](float ny) -> float { return (float)a.y1 + ny * (float)H; };
+
+    if (!g_map_data.valid || (g_map_data.ref_n < 2 && !g_map_data.has_pos)) {
+        // Placeholder
+        lv_draw_label_dsc_t ldsc;
+        lv_draw_label_dsc_init(&ldsc);
+        ldsc.color = lv_color_hex(0x555555);
+        ldsc.font  = &BRL_FONT_14;
+        lv_area_t ta = a;
+        lv_draw_label(layer, &ldsc, &ta, "GPS...", nullptr);
+        return;
+    }
+
+    // Reference trace — grey
+    if (g_map_data.ref_n > 1) {
+        lv_draw_line_dsc_t dsc;
+        lv_draw_line_dsc_init(&dsc);
+        dsc.color = lv_color_hex(0x3A3A3A);
+        dsc.width = 2;
+        for (int i = 1; i < g_map_data.ref_n; i++) {
+            dsc.p1.x = px(g_map_data.ref[i-1].x);
+            dsc.p1.y = py(g_map_data.ref[i-1].y);
+            dsc.p2.x = px(g_map_data.ref[i].x);
+            dsc.p2.y = py(g_map_data.ref[i].y);
+            lv_draw_line(layer, &dsc);
+        }
+    }
+
+    // Current lap trace — white
+    if (g_map_data.cur_n > 1) {
+        lv_draw_line_dsc_t dsc;
+        lv_draw_line_dsc_init(&dsc);
+        dsc.color = lv_color_hex(0xCCCCCC);
+        dsc.width = 2;
+        for (int i = 1; i < g_map_data.cur_n; i++) {
+            dsc.p1.x = px(g_map_data.cur[i-1].x);
+            dsc.p1.y = py(g_map_data.cur[i-1].y);
+            dsc.p2.x = px(g_map_data.cur[i].x);
+            dsc.p2.y = py(g_map_data.cur[i].y);
+            lv_draw_line(layer, &dsc);
+        }
+    }
+
+    // Current GPS position — bright dot
+    if (g_map_data.has_pos) {
+        int32_t cx = (int32_t)px(g_map_data.pos_x);
+        int32_t cy = (int32_t)py(g_map_data.pos_y);
+        // Outer glow
+        lv_draw_rect_dsc_t rdsc;
+        lv_draw_rect_dsc_init(&rdsc);
+        rdsc.bg_color = lv_color_hex(0x0096FF);
+        rdsc.bg_opa   = LV_OPA_50;
+        rdsc.radius   = LV_RADIUS_CIRCLE;
+        rdsc.border_width = 0;
+        rdsc.shadow_width = 0;
+        lv_area_t ga = {cx-8, cy-8, cx+8, cy+8};
+        lv_draw_rect(layer, &rdsc, &ga);
+        // Inner dot
+        rdsc.bg_color = lv_color_white();
+        rdsc.bg_opa   = LV_OPA_COVER;
+        lv_area_t da = {cx-4, cy-4, cx+4, cy+4};
+        lv_draw_rect(layer, &rdsc, &da);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Layout editor
 // ---------------------------------------------------------------------------
-#define NUM_WIDGETS 16
+#define NUM_WIDGETS 17
 static const TrKey WIDGET_NAME_KEYS[NUM_WIDGETS] = {
     TR_WNAME_SPEED,    TR_WNAME_LAPTIME, TR_WNAME_BESTLAP,  TR_WNAME_DELTA,
     TR_WNAME_LAPNR,    TR_WNAME_SEC1,    TR_WNAME_SEC2,     TR_WNAME_SEC3,
     TR_WNAME_RPM,      TR_WNAME_THROTTLE,TR_WNAME_BOOST,    TR_WNAME_LAMBDA,
     TR_WNAME_BRAKE,    TR_WNAME_COOLANT, TR_WNAME_GEAR,     TR_WNAME_STEERING,
+    TR_WNAME_MAP,
 };
 static const uint32_t WIDGET_BITS[NUM_WIDGETS] = {
     WDGT_SPEED, WDGT_LAPTIME, WDGT_BESTLAP, WDGT_DELTA, WDGT_LAP_NR,
     WDGT_SECTOR1, WDGT_SECTOR2, WDGT_SECTOR3,
     WDGT_RPM, WDGT_THROTTLE, WDGT_BOOST, WDGT_LAMBDA,
     WDGT_BRAKE, WDGT_COOLANT, WDGT_GEAR, WDGT_STEERING,
+    WDGT_MAP,
 };
 static lv_obj_t *s_editor_cbs[NUM_WIDGETS] = {};
 
@@ -418,7 +503,7 @@ lv_obj_t *timing_screen_build() {
     }, LV_EVENT_CLICKED, nullptr);
 
     // ── Content zones ─────────────────────────────────────────────────────
-    bool z1 = (mask & (WDGT_SPEED | WDGT_LAPTIME | WDGT_BESTLAP | WDGT_DELTA | WDGT_LAP_NR));
+    bool z1 = (mask & (WDGT_SPEED | WDGT_LAPTIME | WDGT_BESTLAP | WDGT_DELTA | WDGT_LAP_NR | WDGT_MAP));
     bool z2 = (mask & (WDGT_SECTOR1 | WDGT_SECTOR2 | WDGT_SECTOR3));
     bool z3 = (mask & (WDGT_RPM | WDGT_THROTTLE | WDGT_BOOST | WDGT_LAMBDA |
                        WDGT_BRAKE | WDGT_COOLANT | WDGT_GEAR | WDGT_STEERING));
@@ -456,6 +541,16 @@ lv_obj_t *timing_screen_build() {
         if (mask & WDGT_LAP_NR)
             mk_card(row1, CW, h, tr(TR_LAP), &BRL_FONT_32,
                     BRL_CLR_TEXT, &tw.lap_nr_lbl);
+        if (mask & WDGT_MAP) {
+            // Map takes remaining width, or WW if alone
+            tw.map_obj = lv_obj_create(row1);
+            lv_obj_set_size(tw.map_obj, LV_SIZE_CONTENT, h);
+            lv_obj_set_flex_grow(tw.map_obj, 1);   // fill remaining row space
+            brl_style_card(tw.map_obj);
+            lv_obj_remove_flag(tw.map_obj, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_add_event_cb(tw.map_obj, cb_map_draw, LV_EVENT_DRAW_MAIN, nullptr);
+            lv_obj_add_event_cb(tw.map_obj, cb_map_draw, LV_EVENT_DRAW_POST, nullptr);
+        }
         cy += h1 + 6;
     }
 

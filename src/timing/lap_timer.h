@@ -31,3 +31,8 @@ void lap_timer_set_ref_lap(uint8_t lap_idx);
 
 // Internal: called by storage module after saving
 void lap_timer_mark_saved(uint8_t lap_idx);
+
+// Read-only access to the current in-progress lap GPS buffer.
+// Returns nullptr (and sets count_out=0) when not in a lap.
+// Pointer is valid until the next S/F crossing.
+const TrackPoint* lap_timer_get_cur_points(uint16_t *count_out);

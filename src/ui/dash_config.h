@@ -21,6 +21,7 @@
 #define WDGT_COOLANT     (1UL<<13)  // coolant temp
 #define WDGT_GEAR        (1UL<<14)  // gear
 #define WDGT_STEERING    (1UL<<15)  // steering angle
+#define WDGT_MAP         (1UL<<16)  // GPS track map (zone 1, wide card)
 
 // Default: show the most useful widgets
 #define WDGT_DEFAULT_MASK  (WDGT_SPEED | WDGT_LAPTIME | WDGT_BESTLAP | \

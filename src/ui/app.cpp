@@ -1551,6 +1551,105 @@ void timer_live_update(lv_timer_t * /*t*/) {
                           : LV_SYMBOL_PLAY " START");
     }
 
+    // ---- GPS map widget update (once per second max) ----
+    if (tw.map_obj) {
+        static uint32_t s_map_last_ms = 0;
+        uint32_t now_ms = millis();
+        if (now_ms - s_map_last_ms >= 1000) {
+            s_map_last_ms = now_ms;
+
+            const LapSession &sess = g_state.session;
+
+            // Collect bounding box across ref trace, cur trace, current pos
+            double mn_lat= 1e9, mx_lat=-1e9, mn_lon= 1e9, mx_lon=-1e9;
+            bool   any = false;
+
+            auto expand = [&](double lat, double lon) {
+                if (lat < mn_lat) mn_lat = lat;
+                if (lat > mx_lat) mx_lat = lat;
+                if (lon < mn_lon) mn_lon = lon;
+                if (lon > mx_lon) mx_lon = lon;
+                any = true;
+            };
+
+            // Reference lap points
+            const RecordedLap *ref = nullptr;
+            if (sess.lap_count > 0 && sess.laps[sess.ref_lap_idx].valid)
+                ref = &sess.laps[sess.ref_lap_idx];
+            if (ref) {
+                for (uint16_t i = 0; i < ref->point_count; i++)
+                    expand(ref->points[i].lat, ref->points[i].lon);
+            }
+
+            // Current in-progress lap points
+            uint16_t cur_n = 0;
+            const TrackPoint *cur = lap_timer_get_cur_points(&cur_n);
+            if (cur) {
+                for (uint16_t i = 0; i < cur_n; i++)
+                    expand(cur[i].lat, cur[i].lon);
+            }
+
+            // Current GPS position
+            if (g_state.gps.valid) expand(g_state.gps.lat, g_state.gps.lon);
+
+            if (!any) { g_map_data.valid = false; }
+            else {
+                double lat_r = mx_lat - mn_lat;
+                double lon_r = mx_lon - mn_lon;
+                // Ensure minimum range to avoid division by zero
+                if (lat_r < 1e-6) lat_r = 1e-6;
+                if (lon_r < 1e-6) lon_r = 1e-6;
+                // 5 % padding
+                const double PAD = 0.05;
+                mn_lat -= lat_r * PAD; mx_lat += lat_r * PAD; lat_r *= 1.0 + 2*PAD;
+                mn_lon -= lon_r * PAD; mx_lon += lon_r * PAD; lon_r *= 1.0 + 2*PAD;
+
+                // Normalize: lon → x, lat → y (inverted, north=top)
+                auto norm = [&](double lat, double lon, float &nx, float &ny) {
+                    nx = (float)((lon - mn_lon) / lon_r);
+                    ny = 1.0f - (float)((lat - mn_lat) / lat_r);
+                };
+
+                // Build ref trace (downsample to MAP_MAX_PTS)
+                g_map_data.ref_n = 0;
+                if (ref && ref->point_count > 0) {
+                    int step = (int)ref->point_count / MAP_MAX_PTS;
+                    if (step < 1) step = 1;
+                    for (uint16_t i = 0; i < ref->point_count && g_map_data.ref_n < MAP_MAX_PTS; i += step) {
+                        norm(ref->points[i].lat, ref->points[i].lon,
+                             g_map_data.ref[g_map_data.ref_n].x,
+                             g_map_data.ref[g_map_data.ref_n].y);
+                        g_map_data.ref_n++;
+                    }
+                }
+
+                // Build cur trace (downsample to MAP_MAX_PTS)
+                g_map_data.cur_n = 0;
+                if (cur && cur_n > 0) {
+                    int step = (int)cur_n / MAP_MAX_PTS;
+                    if (step < 1) step = 1;
+                    for (uint16_t i = 0; i < cur_n && g_map_data.cur_n < MAP_MAX_PTS; i += step) {
+                        norm(cur[i].lat, cur[i].lon,
+                             g_map_data.cur[g_map_data.cur_n].x,
+                             g_map_data.cur[g_map_data.cur_n].y);
+                        g_map_data.cur_n++;
+                    }
+                }
+
+                // Current position dot
+                if (g_state.gps.valid) {
+                    norm(g_state.gps.lat, g_state.gps.lon, g_map_data.pos_x, g_map_data.pos_y);
+                    g_map_data.has_pos = true;
+                } else {
+                    g_map_data.has_pos = false;
+                }
+
+                g_map_data.valid = true;
+                lv_obj_invalidate(tw.map_obj);
+            }
+        }
+    }
+
     // ---- Settings screen labels (null-checked) ----
     if (set_obd_status_lbl) {
         bool conn = obd_is_connected();

@@ -47,6 +47,7 @@ enum TrKey : uint8_t {
     TR_WNAME_COOLANT,
     TR_WNAME_GEAR,
     TR_WNAME_STEERING,
+    TR_WNAME_MAP,
     // Main menu tiles
     TR_TILE_TIMING,
     TR_TILE_TIMING_SUB,

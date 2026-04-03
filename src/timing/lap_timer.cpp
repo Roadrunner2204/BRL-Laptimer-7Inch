@@ -313,3 +313,8 @@ void lap_timer_poll() {
 void lap_timer_mark_saved(uint8_t /*lap_idx*/) {
     // placeholder — could set a "saved" flag on RecordedLap
 }
+
+const TrackPoint* lap_timer_get_cur_points(uint16_t *count_out) {
+    if (count_out) *count_out = g_state.timing.in_lap ? s_cur_count : 0;
+    return (g_state.timing.in_lap && s_cur_buf) ? s_cur_buf : nullptr;
+}
