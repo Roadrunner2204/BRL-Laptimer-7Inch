@@ -11,6 +11,7 @@
  */
 
 #include "screen_timing.h"
+#include "brl_fonts.h"
 #include "dash_config.h"
 #include "theme.h"
 #include "../data/lap_data.h"
