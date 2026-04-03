@@ -302,14 +302,51 @@ lv_obj_t *timing_screen_build() {
         lv_obj_set_style_bg_color(start_btn, BRL_CLR_DANGER, LV_STATE_DEFAULT);
     lv_obj_add_event_cb(start_btn, cb_start_stop, LV_EVENT_CLICKED, nullptr);
 
-    // ── Zone 1: Large timing metrics (y=90, h=140) ────────────────────────
+    // ── Delta bar (y=90, h=22) ─────────────────────────────────────────────
+    lv_obj_t *dbar = lv_obj_create(scr);
+    lv_obj_set_size(dbar, 800, 22);
+    lv_obj_set_pos(dbar, 0, 90);
+    lv_obj_set_style_bg_color(dbar, lv_color_hex(0x111111), LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(dbar, LV_OPA_COVER, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(dbar, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(dbar, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_all(dbar, 0, LV_STATE_DEFAULT);
+    lv_obj_remove_flag(dbar, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Center marker
+    lv_obj_t *cmark = lv_obj_create(dbar);
+    lv_obj_set_size(cmark, 2, 22);
+    lv_obj_set_pos(cmark, 399, 0);
+    lv_obj_set_style_bg_color(cmark, lv_color_hex(0x555555), LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(cmark, LV_OPA_COVER, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(cmark, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(cmark, 0, LV_STATE_DEFAULT);
+    lv_obj_remove_flag(cmark, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Fill rectangle (width/position animated by timer)
+    tw.delta_bar_fill = lv_obj_create(dbar);
+    lv_obj_set_size(tw.delta_bar_fill, 0, 22);
+    lv_obj_set_pos(tw.delta_bar_fill, 400, 0);
+    lv_obj_set_style_bg_color(tw.delta_bar_fill, lv_color_hex(0x00CC66), LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(tw.delta_bar_fill, LV_OPA_COVER, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(tw.delta_bar_fill, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(tw.delta_bar_fill, 0, LV_STATE_DEFAULT);
+    lv_obj_remove_flag(tw.delta_bar_fill, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Label (centered over bar)
+    tw.delta_bar_lbl = lv_label_create(dbar);
+    lv_label_set_text(tw.delta_bar_lbl, "\xC2\xB10.00 s");
+    brl_style_label(tw.delta_bar_lbl, &BRL_FONT_14, BRL_CLR_TEXT);
+    lv_obj_align(tw.delta_bar_lbl, LV_ALIGN_CENTER, 0, 0);
+
+    // ── Zone 1: Large timing metrics (y=112, h=140) ───────────────────────
     bool z1 = (mask & (WDGT_SPEED | WDGT_LAPTIME | WDGT_BESTLAP | WDGT_DELTA | WDGT_LAP_NR));
     bool z2 = (mask & (WDGT_SECTOR1 | WDGT_SECTOR2 | WDGT_SECTOR3));
     bool z3 = (mask & (WDGT_RPM | WDGT_THROTTLE | WDGT_BOOST | WDGT_LAMBDA |
                        WDGT_BRAKE | WDGT_COOLANT | WDGT_GEAR | WDGT_STEERING));
 
     int zones = (z1 ? 1 : 0) + (z2 ? 1 : 0) + (z3 ? 1 : 0);
-    int avail_h = 480 - 90 - 8;
+    int avail_h = 480 - 112 - 8;
     int h1 = 140, h2 = 85, h3 = 75;
     if (zones > 0) {
         int total_h = (z1 ? h1 : 0) + (z2 ? h2 : 0) + (z3 ? h3 : 0)
@@ -318,7 +355,7 @@ lv_obj_t *timing_screen_build() {
         if (z1 && slack > 0) h1 += slack;
     }
 
-    int cy = 90;
+    int cy = 112;
 
     if (z1) {
         lv_obj_t *row1 = mk_row(scr, cy, h1);

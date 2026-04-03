@@ -76,12 +76,13 @@ static lv_obj_t *s_tc_sec_lon[MAX_SECTORS] = {};
 static int       s_tc_sec_count = 0;
 static lv_obj_t *s_tc_sec_container = nullptr;
 static lv_obj_t *s_tc_add_sec_btn   = nullptr;
+static int       s_tc_edit_idx      = -1;   // -1 = new, >=0 = editing existing track
 
 // ---------------------------------------------------------------------------
 // Forward declarations
 // ---------------------------------------------------------------------------
 static void open_tracks_screen();
-static void open_track_creator(lv_obj_t *parent_scroll);
+static void open_track_creator(lv_obj_t *parent_scroll, int edit_idx = -1);
 static void open_history_screen();
 static void open_settings_screen();
 
@@ -352,7 +353,13 @@ static void cb_track_select(lv_event_t *e) {
 
 static void cb_open_creator(lv_event_t *e) {
     lv_obj_t *scroll = (lv_obj_t*)lv_event_get_user_data(e);
-    if (scroll) open_track_creator(scroll);
+    if (scroll) open_track_creator(scroll, -1);
+}
+
+static void cb_edit_track(lv_event_t *e) {
+    lv_obj_t *scroll = (lv_obj_t*)lv_event_get_user_data(e);
+    int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e));
+    if (scroll) open_track_creator(scroll, idx);
 }
 
 static void open_tracks_screen() {
@@ -397,23 +404,56 @@ static void open_tracks_screen() {
 
         char label[96];
         if (dist[idx] < 1e8)
-            snprintf(label, sizeof(label), "%s  —  %.0f km  (%s)",
+            snprintf(label, sizeof(label), LV_SYMBOL_RIGHT "  %s  —  %.0f km  (%s)",
                      td->name, dist[idx], td->country);
         else
-            snprintf(label, sizeof(label), "%s  —  %s", td->name, td->country);
+            snprintf(label, sizeof(label), LV_SYMBOL_RIGHT "  %s  —  %s", td->name, td->country);
 
-        lv_obj_t *btn = lv_list_add_button(content, LV_SYMBOL_RIGHT, label);
-        lv_obj_set_height(btn, 48);
-        lv_obj_set_style_bg_color(btn,
+        // Custom row: select area (left) + edit button (right)
+        lv_obj_t *row = lv_obj_create(content);
+        lv_obj_set_width(row, LV_PCT(100));
+        lv_obj_set_height(row, 52);
+        lv_obj_set_style_bg_color(row,
             idx == g_state.active_track_idx ? BRL_CLR_BORDER : BRL_CLR_SURFACE,
             LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_color(btn, BRL_CLR_SURFACE2, LV_STATE_PRESSED);
-        lv_obj_set_style_border_width(btn, 0, LV_STATE_DEFAULT);
-        lv_obj_set_style_radius(btn, 6, LV_STATE_DEFAULT);
-        lv_obj_t *lbl = lv_obj_get_child(btn, 1);
-        if (lbl) brl_style_label(lbl, &BRL_FONT_16, BRL_CLR_TEXT);
-        lv_obj_set_user_data(btn, (void*)(intptr_t)idx);
-        lv_obj_add_event_cb(btn, cb_track_select, LV_EVENT_CLICKED, nullptr);
+        lv_obj_set_style_border_width(row, 0, LV_STATE_DEFAULT);
+        lv_obj_set_style_radius(row, 6, LV_STATE_DEFAULT);
+        lv_obj_set_style_pad_all(row, 0, LV_STATE_DEFAULT);
+        lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+        // Select button
+        lv_obj_t *sel_btn = lv_button_create(row);
+        lv_obj_set_size(sel_btn, 710, 52);
+        lv_obj_set_pos(sel_btn, 0, 0);
+        lv_obj_set_style_bg_color(sel_btn, lv_color_hex(0x000000), LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_opa(sel_btn, LV_OPA_TRANSP, LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(sel_btn, BRL_CLR_SURFACE2, LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(sel_btn, LV_OPA_COVER, LV_STATE_PRESSED);
+        lv_obj_set_style_border_width(sel_btn, 0, LV_STATE_DEFAULT);
+        lv_obj_set_style_radius(sel_btn, 6, LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_width(sel_btn, 0, LV_STATE_DEFAULT);
+        lv_obj_t *sel_lbl = lv_label_create(sel_btn);
+        lv_label_set_text(sel_lbl, label);
+        brl_style_label(sel_lbl, &BRL_FONT_16, BRL_CLR_TEXT);
+        lv_obj_align(sel_lbl, LV_ALIGN_LEFT_MID, 8, 0);
+        lv_obj_set_user_data(sel_btn, (void*)(intptr_t)idx);
+        lv_obj_add_event_cb(sel_btn, cb_track_select, LV_EVENT_CLICKED, nullptr);
+
+        // Edit button
+        lv_obj_t *edit_btn = lv_button_create(row);
+        lv_obj_set_size(edit_btn, 62, 44);
+        lv_obj_set_pos(edit_btn, 720, 4);
+        lv_obj_set_style_bg_color(edit_btn, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(edit_btn, BRL_CLR_ACCENT, LV_STATE_PRESSED);
+        lv_obj_set_style_border_width(edit_btn, 0, LV_STATE_DEFAULT);
+        lv_obj_set_style_radius(edit_btn, 6, LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_width(edit_btn, 0, LV_STATE_DEFAULT);
+        lv_obj_t *edit_lbl = lv_label_create(edit_btn);
+        lv_label_set_text(edit_lbl, LV_SYMBOL_EDIT);
+        brl_style_label(edit_lbl, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
+        lv_obj_center(edit_lbl);
+        lv_obj_set_user_data(edit_btn, (void*)(intptr_t)idx);
+        lv_obj_add_event_cb(edit_btn, cb_edit_track, LV_EVENT_CLICKED, (void*)content);
     }
 
     if (new_btn) lv_obj_add_event_cb(new_btn, cb_open_creator, LV_EVENT_CLICKED, (void*)content);
@@ -511,8 +551,19 @@ static void cb_tc_save(lv_event_t* /*e*/) {
     const char *name = lv_textarea_get_text(s_tc_name);
     if (!name || strlen(name) < 2) return;
 
-    if (g_user_track_count >= MAX_USER_TRACKS) return;
-    TrackDef &td = g_user_tracks[g_user_track_count];
+    // Determine target slot
+    // Editing an existing user track → update in-place
+    // Editing a built-in track or creating new → append new user track
+    int u_slot = -1;  // index into g_user_tracks[]
+    if (s_tc_edit_idx >= TRACK_DB_BUILTIN_COUNT) {
+        u_slot = s_tc_edit_idx - TRACK_DB_BUILTIN_COUNT;
+    }
+    if (u_slot < 0) {
+        if (g_user_track_count >= MAX_USER_TRACKS) return;
+        u_slot = g_user_track_count;
+    }
+
+    TrackDef &td = g_user_tracks[u_slot];
     memset(&td, 0, sizeof(td));
     strncpy(td.name, name, sizeof(td.name)-1);
     strncpy(td.country, tr(TR_CUSTOM_COUNTRY), sizeof(td.country)-1);
@@ -537,22 +588,23 @@ static void cb_tc_save(lv_event_t* /*e*/) {
         snprintf(td.sectors[i].name, SECTOR_NAME_LEN, "S%d", i+1);
     }
     td.sector_count = (uint8_t)s_tc_sec_count;
-
-    // Rough length estimate (straight-line S/F to itself)
     td.length_km = 0.0f;
 
-    g_user_track_count++;
+    // Extend count only if appending
+    if (u_slot == g_user_track_count) g_user_track_count++;
     session_store_save_user_track(&td);
 
-    int new_idx = TRACK_DB_BUILTIN_COUNT + g_user_track_count - 1;
+    int new_idx = TRACK_DB_BUILTIN_COUNT + u_slot;
     g_state.active_track_idx = new_idx;
     lap_timer_set_track(new_idx);
+    s_tc_edit_idx = -1;
     timing_screen_open();
     s_scr_sub = nullptr;
 }
 
-static void open_track_creator(lv_obj_t *scroll) {
+static void open_track_creator(lv_obj_t *scroll, int edit_idx) {
     // Reset creator state
+    s_tc_edit_idx = edit_idx;
     s_tc_name = s_tc_sf1_lat = s_tc_sf1_lon = s_tc_sf2_lat = s_tc_sf2_lon = nullptr;
     s_tc_fin1_lat = s_tc_fin1_lon = s_tc_fin2_lat = s_tc_fin2_lon = nullptr;
     s_tc_fin_box = s_tc_sec_container = s_tc_add_sec_btn = nullptr;
@@ -560,6 +612,8 @@ static void open_track_creator(lv_obj_t *scroll) {
     memset(s_tc_sec_lon, 0, sizeof(s_tc_sec_lon));
     s_tc_sec_count = 0;
     s_tc_is_circuit = true;
+    const TrackDef *edit_td = (edit_idx >= 0) ? track_get(edit_idx) : nullptr;
+    if (edit_td) s_tc_is_circuit = edit_td->is_circuit;
 
     // Clear the existing list and build creator form in place
     lv_obj_clean(scroll);
@@ -670,6 +724,47 @@ static void open_track_creator(lv_obj_t *scroll) {
         lv_obj_add_flag((lv_obj_t*)lv_event_get_target(ev), LV_OBJ_FLAG_HIDDEN);
     }, LV_EVENT_READY, nullptr);
     lv_obj_add_flag(s_tc_kb, LV_OBJ_FLAG_HIDDEN);
+
+    // Pre-fill fields when editing an existing track
+    if (edit_td) {
+        lv_textarea_set_text(s_tc_name, edit_td->name);
+
+        // Circuit/A-B button state
+        if (!edit_td->is_circuit) {
+            lv_obj_set_style_bg_color(s_tc_type_circ_btn, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_color(s_tc_type_ab_btn,   BRL_CLR_ACCENT,   LV_STATE_DEFAULT);
+            if (s_tc_fin_box) lv_obj_remove_flag(s_tc_fin_box, LV_OBJ_FLAG_HIDDEN);
+        }
+
+        // S/F coordinates
+        char buf[24];
+        snprintf(buf, sizeof(buf), "%.7f", edit_td->sf_lat1); lv_textarea_set_text(s_tc_sf1_lat, buf);
+        snprintf(buf, sizeof(buf), "%.7f", edit_td->sf_lon1); lv_textarea_set_text(s_tc_sf1_lon, buf);
+        snprintf(buf, sizeof(buf), "%.7f", edit_td->sf_lat2); lv_textarea_set_text(s_tc_sf2_lat, buf);
+        snprintf(buf, sizeof(buf), "%.7f", edit_td->sf_lon2); lv_textarea_set_text(s_tc_sf2_lon, buf);
+
+        // Finish line (A-B)
+        if (!edit_td->is_circuit && s_tc_fin1_lat) {
+            snprintf(buf, sizeof(buf), "%.7f", edit_td->fin_lat1); lv_textarea_set_text(s_tc_fin1_lat, buf);
+            snprintf(buf, sizeof(buf), "%.7f", edit_td->fin_lon1); lv_textarea_set_text(s_tc_fin1_lon, buf);
+            snprintf(buf, sizeof(buf), "%.7f", edit_td->fin_lat2); lv_textarea_set_text(s_tc_fin2_lat, buf);
+            snprintf(buf, sizeof(buf), "%.7f", edit_td->fin_lon2); lv_textarea_set_text(s_tc_fin2_lon, buf);
+        }
+
+        // Sectors
+        for (int i = 0; i < edit_td->sector_count && i < MAX_SECTORS; i++) {
+            char sec_lbl[8]; snprintf(sec_lbl, sizeof(sec_lbl), "S%d", i+1);
+            mk_coord_row(s_tc_sec_container, sec_lbl,
+                         &s_tc_sec_lat[i], &s_tc_sec_lon[i]);
+            snprintf(buf, sizeof(buf), "%.7f", edit_td->sectors[i].lat);
+            lv_textarea_set_text(s_tc_sec_lat[i], buf);
+            snprintf(buf, sizeof(buf), "%.7f", edit_td->sectors[i].lon);
+            lv_textarea_set_text(s_tc_sec_lon[i], buf);
+            s_tc_sec_count = i + 1;
+        }
+        if (s_tc_sec_count >= MAX_SECTORS && s_tc_add_sec_btn)
+            lv_obj_add_flag(s_tc_add_sec_btn, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 
@@ -1065,6 +1160,35 @@ void timer_live_update(lv_timer_t * /*t*/) {
         snprintf(buf, sizeof(buf), "%+.2f s", d / 1000.0f);
         lv_label_set_text(tw.delta_lbl, buf);
         lv_obj_set_style_text_color(tw.delta_lbl,
+            d < 0 ? lv_color_hex(0x00CC66)
+                  : (d > 0 ? lv_color_hex(0xFF4444) : lv_color_hex(0xFFFFFF)), 0);
+    }
+    if (tw.delta_bar_fill && tw.delta_bar_lbl) {
+        int32_t d = g_state.timing.live_delta_ms;
+        const int HALF = 396;  // half bar width in pixels
+        int fill_w = (int)(fabsf((float)d) / 3000.0f * HALF);
+        if (fill_w > HALF) fill_w = HALF;
+        if (d == 0 || !g_state.timing.timing_active) {
+            lv_obj_set_size(tw.delta_bar_fill, 0, 22);
+        } else if (d > 0) {
+            // Slower → red, extends LEFT from center
+            lv_obj_set_style_bg_color(tw.delta_bar_fill, lv_color_hex(0xFF4444), 0);
+            lv_obj_set_size(tw.delta_bar_fill, fill_w, 22);
+            lv_obj_set_pos(tw.delta_bar_fill, 400 - fill_w, 0);
+        } else {
+            // Faster → green, extends RIGHT from center
+            lv_obj_set_style_bg_color(tw.delta_bar_fill, lv_color_hex(0x00CC66), 0);
+            lv_obj_set_size(tw.delta_bar_fill, fill_w, 22);
+            lv_obj_set_pos(tw.delta_bar_fill, 400, 0);
+        }
+        char dbuf[16];
+        if (!g_state.timing.timing_active || d == 0) {
+            snprintf(dbuf, sizeof(dbuf), "\xC2\xB10.00 s");
+        } else {
+            snprintf(dbuf, sizeof(dbuf), "%+.2f s", d / 1000.0f);
+        }
+        lv_label_set_text(tw.delta_bar_lbl, dbuf);
+        lv_obj_set_style_text_color(tw.delta_bar_lbl,
             d < 0 ? lv_color_hex(0x00CC66)
                   : (d > 0 ? lv_color_hex(0xFF4444) : lv_color_hex(0xFFFFFF)), 0);
     }

@@ -18,6 +18,9 @@ typedef struct {
     lv_obj_t *gear_lbl, *steering_lbl;
     lv_obj_t *start_btn_lbl;
     lv_obj_t *track_name_lbl;
+    // Delta bar (horizontal bar at top of content area)
+    lv_obj_t *delta_bar_fill;
+    lv_obj_t *delta_bar_lbl;
     // Status bar labels on the timing screen
     lv_obj_t *sb_gps_lbl, *sb_wifi_lbl, *sb_obd_lbl;
 } TimingWidgets;
