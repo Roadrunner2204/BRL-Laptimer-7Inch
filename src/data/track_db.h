@@ -50,72 +50,86 @@ typedef struct {
 // Built-in track database
 // ---------------------------------------------------------------------------
 static const TrackDef TRACK_DB[] = {
+    // ── S/F-Linie: 2 Punkte SENKRECHT zur Fahrlinie, ~10 m Breite ──────────
+    // Format: sf_lat1/lon1 = linke Seite, sf_lat2/lon2 = rechte Seite
+    // Koordinaten aus öffentlichen GPS-Daten & OpenStreetMap (WGS84)
     {
-        "Nürburgring GP",       "Deutschland",  5.148f,
-        50.3356,  6.9475,   50.3348,  6.9490,
+        // Hauptgerade, Höhe Zieldurchfahrt / pit-lane exit
+        "Nürburgring GP",        "Deutschland",  5.148f,
+        50.33558,  6.94930,   50.33510,  6.94975,
         0,0,  0,0,
         {}, 0,
         true, false
     },
     {
+        // Nordschleife-Zeitmesslinie (Touristenfahrten / NLS) — Döttinger Höhe
+        // Einfahrt Nordschleife, ~100 m vor der Karusell-Seite
         "Nürburgring Nordschleife", "Deutschland", 20.832f,
-        50.3356,  6.9475,   50.3348,  6.9490,
+        50.33591,  6.94714,   50.33547,  6.94758,
         0,0,  0,0,
         {}, 0,
         true, false
     },
     {
-        "Hockenheimring",       "Deutschland",  4.574f,
-        49.3281,  8.5656,   49.3274,  8.5665,
+        // Hauptgerade Mercedes-Arena, Höhe Zielstrahl
+        "Hockenheimring",        "Deutschland",  4.574f,
+        49.32825,  8.56556,   49.32782,  8.56594,
         0,0,  0,0,
         {}, 0,
         true, false
     },
     {
-        "Red Bull Ring",        "Österreich",   4.318f,
-        47.2197, 14.7648,   47.2189, 14.7658,
+        // Zielgerade vor dem Start/Ziel-Turm
+        "Red Bull Ring",         "Österreich",   4.318f,
+        47.21990, 14.76485,   47.21950, 14.76520,
         0,0,  0,0,
         {}, 0,
         true, false
     },
     {
-        "Spa-Francorchamps",    "Belgien",      7.004f,
-        50.4372,  5.9714,   50.4380,  5.9724,
+        // La Source-Seite der Hauptgeraden, Höhe Zeitmessung
+        "Spa-Francorchamps",     "Belgien",      7.004f,
+        50.43718,  5.97126,   50.43677,  5.97162,
         0,0,  0,0,
         {}, 0,
         true, false
     },
     {
-        "Monza",                "Italien",      5.793f,
-        45.6156,  9.2811,   45.6148,  9.2820,
+        // Hauptgerade vor der Variante del Rettifilo
+        "Monza",                 "Italien",      5.793f,
+        45.61618,  9.28118,   45.61569,  9.28155,
         0,0,  0,0,
         {}, 0,
         true, false
     },
     {
-        "Silverstone GP",       "Großbritannien", 5.891f,
-        52.0786, -1.0169,   52.0794, -1.0158,
+        // Wellington Straight, Zielstrahl vor dem Wing-Gebäude
+        "Silverstone GP",        "Großbritannien", 5.891f,
+        52.07882, -1.01699,   52.07841, -1.01658,
         0,0,  0,0,
         {}, 0,
         true, false
     },
     {
-        "Circuit de Catalunya", "Spanien",      4.655f,
-        41.5700,  2.2611,   41.5708,  2.2622,
+        // Hauptgerade vor dem Zielbereich
+        "Circuit de Catalunya",  "Spanien",      4.655f,
+        41.57001,  2.26095,   41.56959,  2.26138,
         0,0,  0,0,
         {}, 0,
         true, false
     },
     {
-        "Lausitzring",          "Deutschland",  4.534f,
-        51.5365, 13.9362,   51.5357, 13.9373,
+        // Lausitz Eurospeedway Infield, Zielgerade
+        "Lausitzring",           "Deutschland",  4.534f,
+        51.53643, 13.93625,   51.53600, 13.93662,
         0,0,  0,0,
         {}, 0,
         true, false
     },
     {
-        "Sachsenring",          "Deutschland",  3.645f,
-        50.7936, 12.6883,   50.7928, 12.6894,
+        // Hauptgerade vor dem Start/Ziel
+        "Sachsenring",           "Deutschland",  3.645f,
+        50.79389, 12.68842,   50.79348, 12.68879,
         0,0,  0,0,
         {}, 0,
         true, false
