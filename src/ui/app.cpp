@@ -24,6 +24,7 @@
 #include "../obd/obd_bt.h"
 #include "../wifi/wifi_mgr.h"
 #include "../storage/session_store.h"
+#include <SD.h>
 
 // ---------------------------------------------------------------------------
 // Global application state
@@ -1179,11 +1180,37 @@ static void open_settings_screen() {
                               g_state.units == 0 ? "km/h" : "mph");
         }, LV_EVENT_CLICKED, nullptr);
     }
+    // Storage (SD card / Festplatte)
+    {
+        lv_obj_t *r = make_setting_row(content, 0, RH, LV_SYMBOL_SAVE,
+                                        tr(TR_STORAGE_TITLE));
+        lv_obj_t *stlbl = lv_label_create(r);
+        if (!g_state.sd_available) {
+            lv_label_set_text(stlbl, tr(TR_STORAGE_UNAVAIL));
+            brl_style_label(stlbl, &BRL_FONT_14, BRL_CLR_DANGER);
+        } else {
+            uint64_t total_b = SD.totalBytes();
+            uint64_t used_b  = SD.usedBytes();
+            uint64_t free_b  = total_b - used_b;
+            float total_gb   = (float)total_b / 1073741824.0f;
+            float free_gb    = (float)free_b  / 1073741824.0f;
+            int pct_used     = (total_b > 0)
+                               ? (int)((float)used_b / (float)total_b * 100.0f) : 0;
+            char sbuf[64];
+            snprintf(sbuf, sizeof(sbuf), "%.1f GB %s / %.1f GB",
+                     free_gb, tr(TR_STORAGE_USED), total_gb);
+            lv_label_set_text(stlbl, sbuf);
+            brl_style_label(stlbl, &BRL_FONT_14,
+                            pct_used > 90 ? BRL_CLR_DANGER :
+                            pct_used > 70 ? BRL_CLR_WARN : BRL_CLR_TEXT_DIM);
+        }
+        lv_obj_align(stlbl, LV_ALIGN_RIGHT_MID, 0, 0);
+    }
     // Info
     {
         lv_obj_t *r = make_setting_row(content, 0, RH, LV_SYMBOL_GPS, "BRL Laptimer");
         lv_obj_t *ver = lv_label_create(r);
-        lv_label_set_text(ver, "v1.0.0 — Bavarian RaceLabs LLC");
+        lv_label_set_text(ver, "v1.0.0 - Bavarian RaceLabs LLC");
         brl_style_label(ver, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
         lv_obj_align(ver, LV_ALIGN_RIGHT_MID, 0, 0);
     }

@@ -104,6 +104,10 @@ enum TrKey : uint8_t {
     TR_CUSTOM_COUNTRY,
     // Track filter
     TR_ALL_COUNTRIES,
+    // Storage / Disk
+    TR_STORAGE_TITLE,
+    TR_STORAGE_UNAVAIL,
+    TR_STORAGE_USED,
     TR_COUNT
 };
 

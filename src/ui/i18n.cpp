@@ -97,6 +97,9 @@ static const char* const s_str[2][TR_COUNT] = {
     /* TR_CANCEL_DLG      */ "Abbrechen",
     /* TR_CUSTOM_COUNTRY  */ "Benutzerdefiniert",
     /* TR_ALL_COUNTRIES  */ "Alle",
+    /* TR_STORAGE_TITLE  */ "Festplatte",
+    /* TR_STORAGE_UNAVAIL*/ "Nicht verfügbar",
+    /* TR_STORAGE_USED   */ "belegt",
 },
 // ── English ─────────────────────────────────────────────────────────────────
 {
@@ -188,6 +191,9 @@ static const char* const s_str[2][TR_COUNT] = {
     /* TR_CANCEL_DLG      */ "Cancel",
     /* TR_CUSTOM_COUNTRY  */ "Custom",
     /* TR_ALL_COUNTRIES  */ "All",
+    /* TR_STORAGE_TITLE  */ "Storage",
+    /* TR_STORAGE_UNAVAIL*/ "Unavailable",
+    /* TR_STORAGE_USED   */ "used",
 },
 };
 
