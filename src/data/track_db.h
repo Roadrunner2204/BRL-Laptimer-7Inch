@@ -141,15 +141,25 @@ static const int TRACK_DB_BUILTIN_COUNT = (int)(sizeof(TRACK_DB) / sizeof(TRACK_
 // ---------------------------------------------------------------------------
 // User-created tracks (loaded from SD at runtime, max 20)
 // ---------------------------------------------------------------------------
-#define MAX_USER_TRACKS  20
+#define MAX_USER_TRACKS    20
+#define MAX_BUILTIN_TRACKS 32   // upper bound for override arrays
 
 extern TrackDef   g_user_tracks[MAX_USER_TRACKS];
 extern int        g_user_track_count;
 
+// Override storage for built-in tracks (GPS coord edits)
+// Loaded from SD on boot; track_get() returns override if set.
+extern TrackDef   g_builtin_overrides[MAX_BUILTIN_TRACKS];
+extern bool       g_builtin_override_set[MAX_BUILTIN_TRACKS];
+
 // Combined access: idx 0..(BUILTIN-1) = built-in, idx BUILTIN..N = user
 static inline const TrackDef *track_get(int idx) {
     if (idx < 0) return nullptr;
-    if (idx < TRACK_DB_BUILTIN_COUNT) return &TRACK_DB[idx];
+    if (idx < TRACK_DB_BUILTIN_COUNT) {
+        if (idx < MAX_BUILTIN_TRACKS && g_builtin_override_set[idx])
+            return &g_builtin_overrides[idx];
+        return &TRACK_DB[idx];
+    }
     int u = idx - TRACK_DB_BUILTIN_COUNT;
     if (u < g_user_track_count) return &g_user_tracks[u];
     return nullptr;

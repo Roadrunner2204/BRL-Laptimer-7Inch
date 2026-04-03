@@ -78,6 +78,9 @@ static lv_obj_t *s_tc_sec_container = nullptr;
 static lv_obj_t *s_tc_add_sec_btn   = nullptr;
 static int       s_tc_edit_idx      = -1;   // -1 = new, >=0 = editing existing track
 
+// Track list filter
+static char      s_filter_country[32] = {};  // empty = show all
+
 // ---------------------------------------------------------------------------
 // Forward declarations
 // ---------------------------------------------------------------------------
@@ -362,11 +365,25 @@ static void cb_edit_track(lv_event_t *e) {
     if (scroll) open_track_creator(scroll, idx);
 }
 
+static void cb_delete_track(lv_event_t *e) {
+    int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e));
+    if (idx < TRACK_DB_BUILTIN_COUNT) return;   // only user tracks
+    int u_slot = idx - TRACK_DB_BUILTIN_COUNT;
+    // Adjust active track pointer
+    if (g_state.active_track_idx == idx)
+        g_state.active_track_idx = -1;
+    else if (g_state.active_track_idx > idx)
+        g_state.active_track_idx--;
+    session_store_delete_user_track(u_slot);
+    open_tracks_screen();
+}
+
 static void open_tracks_screen() {
-    // Sort by GPS distance
     int n = track_total_count();
-    int sorted[60]; double dist[60];
     if (n > 60) n = 60;
+
+    // ── Collect distances ──────────────────────────────────────────────────
+    int sorted[60]; double dist[60];
     for (int i = 0; i < n; i++) {
         sorted[i] = i;
         const TrackDef *td = track_get(i);
@@ -376,11 +393,25 @@ static void open_tracks_screen() {
             dist[i] = haversine_km(g_state.gps.lat, g_state.gps.lon, mlat, mlon);
         } else dist[i] = 1e9;
     }
-    // Simple insertion sort
+    // Sort by distance
     for (int i = 1; i < n; i++)
         for (int j = i; j > 0 && dist[sorted[j]] < dist[sorted[j-1]]; j--)
             { int t=sorted[j]; sorted[j]=sorted[j-1]; sorted[j-1]=t; }
 
+    // ── Collect unique countries ───────────────────────────────────────────
+    char countries[16][32] = {};
+    int  n_countries = 0;
+    for (int s = 0; s < n; s++) {
+        const TrackDef *td = track_get(sorted[s]);
+        if (!td) continue;
+        bool found = false;
+        for (int c = 0; c < n_countries; c++)
+            if (strcmp(countries[c], td->country) == 0) { found = true; break; }
+        if (!found && n_countries < 16)
+            strncpy(countries[n_countries++], td->country, 31);
+    }
+
+    // ── Build screen ──────────────────────────────────────────────────────
     lv_obj_t *new_btn = nullptr;
     char new_btn_label[48];
     snprintf(new_btn_label, sizeof(new_btn_label), LV_SYMBOL_PLUS " %s", tr(TR_NEW_TRACK));
@@ -390,26 +421,94 @@ static void open_tracks_screen() {
     lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(content, 4, LV_STATE_DEFAULT);
 
-    // Note: GPS hint
+    // ── Country filter row ────────────────────────────────────────────────
+    if (n_countries > 1) {
+        lv_obj_t *frow = lv_obj_create(content);
+        lv_obj_set_width(frow, LV_PCT(100));
+        lv_obj_set_height(frow, LV_SIZE_CONTENT);
+        brl_style_transparent(frow);
+        lv_obj_remove_flag(frow, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_flex_flow(frow, LV_FLEX_FLOW_ROW);
+        lv_obj_set_style_pad_column(frow, 4, LV_STATE_DEFAULT);
+        lv_obj_set_style_pad_bottom(frow, 4, LV_STATE_DEFAULT);
+
+        // "Alle" / "All" button
+        bool all_active = (s_filter_country[0] == '\0');
+        lv_obj_t *all_btn = lv_button_create(frow);
+        lv_obj_set_height(all_btn, 34);
+        lv_obj_set_width(all_btn, LV_SIZE_CONTENT);
+        lv_obj_set_style_pad_hor(all_btn, 12, LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(all_btn,
+            all_active ? BRL_CLR_ACCENT : BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
+        lv_obj_set_style_radius(all_btn, 6, LV_STATE_DEFAULT);
+        lv_obj_set_style_border_width(all_btn, 0, LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_width(all_btn, 0, LV_STATE_DEFAULT);
+        lv_obj_t *all_lbl = lv_label_create(all_btn);
+        lv_label_set_text(all_lbl, tr(TR_ALL_COUNTRIES));
+        brl_style_label(all_lbl, &BRL_FONT_14, all_active ? BRL_CLR_TEXT : BRL_CLR_TEXT_DIM);
+        lv_obj_center(all_lbl);
+        lv_obj_add_event_cb(all_btn, [](lv_event_t* /*e*/){
+            s_filter_country[0] = '\0';
+            open_tracks_screen();
+        }, LV_EVENT_CLICKED, nullptr);
+
+        // One button per country (in distance-first appearance order)
+        for (int c = 0; c < n_countries; c++) {
+            bool active = (strcmp(s_filter_country, countries[c]) == 0);
+            lv_obj_t *cbtn = lv_button_create(frow);
+            lv_obj_set_height(cbtn, 34);
+            lv_obj_set_width(cbtn, LV_SIZE_CONTENT);
+            lv_obj_set_style_pad_hor(cbtn, 12, LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_color(cbtn,
+                active ? BRL_CLR_ACCENT : BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
+            lv_obj_set_style_radius(cbtn, 6, LV_STATE_DEFAULT);
+            lv_obj_set_style_border_width(cbtn, 0, LV_STATE_DEFAULT);
+            lv_obj_set_style_shadow_width(cbtn, 0, LV_STATE_DEFAULT);
+            lv_obj_t *clbl = lv_label_create(cbtn);
+            lv_label_set_text(clbl, countries[c]);
+            brl_style_label(clbl, &BRL_FONT_14, active ? BRL_CLR_TEXT : BRL_CLR_TEXT_DIM);
+            lv_obj_center(clbl);
+            // Store country string in the button's user_data (pointer to our local array copy)
+            // We use a static copy to survive the lambda
+            static char s_country_copy[16][32];
+            strncpy(s_country_copy[c], countries[c], 31);
+            lv_obj_set_user_data(cbtn, (void*)s_country_copy[c]);
+            lv_obj_add_event_cb(cbtn, [](lv_event_t *ev){
+                const char *country = (const char*)lv_obj_get_user_data(
+                    (lv_obj_t*)lv_event_get_target(ev));
+                strncpy(s_filter_country, country, sizeof(s_filter_country)-1);
+                open_tracks_screen();
+            }, LV_EVENT_CLICKED, nullptr);
+        }
+    }
+
+    // ── GPS hint ──────────────────────────────────────────────────────────
     if (!g_state.gps.valid) {
         lv_obj_t *hint = lv_label_create(content);
         lv_label_set_text_fmt(hint, LV_SYMBOL_GPS "  %s", tr(TR_NO_GPS_HINT));
         brl_style_label(hint, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
     }
 
+    // ── Track rows ────────────────────────────────────────────────────────
     for (int s = 0; s < n; s++) {
         int idx = sorted[s];
         const TrackDef *td = track_get(idx);
         if (!td) continue;
 
+        // Apply country filter
+        if (s_filter_country[0] != '\0' && strcmp(td->country, s_filter_country) != 0)
+            continue;
+
+        bool is_user = (idx >= TRACK_DB_BUILTIN_COUNT);
+
         char label[96];
         if (dist[idx] < 1e8)
-            snprintf(label, sizeof(label), LV_SYMBOL_RIGHT "  %s  —  %.0f km  (%s)",
-                     td->name, dist[idx], td->country);
+            snprintf(label, sizeof(label), LV_SYMBOL_RIGHT "  %s  —  %.0f km",
+                     td->name, dist[idx]);
         else
-            snprintf(label, sizeof(label), LV_SYMBOL_RIGHT "  %s  —  %s", td->name, td->country);
+            snprintf(label, sizeof(label), LV_SYMBOL_RIGHT "  %s  —  %s",
+                     td->name, td->country);
 
-        // Custom row: select area (left) + edit button (right)
         lv_obj_t *row = lv_obj_create(content);
         lv_obj_set_width(row, LV_PCT(100));
         lv_obj_set_height(row, 52);
@@ -421,11 +520,17 @@ static void open_tracks_screen() {
         lv_obj_set_style_pad_all(row, 0, LV_STATE_DEFAULT);
         lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
-        // Select button
+        // Right-side buttons: edit [+ delete for user tracks]
+        // Delete button (user tracks only)
+        int right_buttons_w = 66;   // edit button width + gap
+        if (is_user) right_buttons_w += 66;  // + delete button
+
+        // Select button (fills remaining width)
+        int sel_w = 784 - right_buttons_w;
         lv_obj_t *sel_btn = lv_button_create(row);
-        lv_obj_set_size(sel_btn, 710, 52);
+        lv_obj_set_size(sel_btn, sel_w, 52);
         lv_obj_set_pos(sel_btn, 0, 0);
-        lv_obj_set_style_bg_color(sel_btn, lv_color_hex(0x000000), LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(sel_btn, lv_color_hex(0), LV_STATE_DEFAULT);
         lv_obj_set_style_bg_opa(sel_btn, LV_OPA_TRANSP, LV_STATE_DEFAULT);
         lv_obj_set_style_bg_color(sel_btn, BRL_CLR_SURFACE2, LV_STATE_PRESSED);
         lv_obj_set_style_bg_opa(sel_btn, LV_OPA_COVER, LV_STATE_PRESSED);
@@ -441,8 +546,8 @@ static void open_tracks_screen() {
 
         // Edit button
         lv_obj_t *edit_btn = lv_button_create(row);
-        lv_obj_set_size(edit_btn, 62, 44);
-        lv_obj_set_pos(edit_btn, 720, 4);
+        lv_obj_set_size(edit_btn, 58, 44);
+        lv_obj_set_pos(edit_btn, sel_w + 4, 4);
         lv_obj_set_style_bg_color(edit_btn, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
         lv_obj_set_style_bg_color(edit_btn, BRL_CLR_ACCENT, LV_STATE_PRESSED);
         lv_obj_set_style_border_width(edit_btn, 0, LV_STATE_DEFAULT);
@@ -454,6 +559,24 @@ static void open_tracks_screen() {
         lv_obj_center(edit_lbl);
         lv_obj_set_user_data(edit_btn, (void*)(intptr_t)idx);
         lv_obj_add_event_cb(edit_btn, cb_edit_track, LV_EVENT_CLICKED, (void*)content);
+
+        // Delete button (user tracks only)
+        if (is_user) {
+            lv_obj_t *del_btn = lv_button_create(row);
+            lv_obj_set_size(del_btn, 58, 44);
+            lv_obj_set_pos(del_btn, sel_w + 68, 4);
+            lv_obj_set_style_bg_color(del_btn, lv_color_hex(0x5A1A1A), LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_color(del_btn, BRL_CLR_DANGER, LV_STATE_PRESSED);
+            lv_obj_set_style_border_width(del_btn, 0, LV_STATE_DEFAULT);
+            lv_obj_set_style_radius(del_btn, 6, LV_STATE_DEFAULT);
+            lv_obj_set_style_shadow_width(del_btn, 0, LV_STATE_DEFAULT);
+            lv_obj_t *del_lbl = lv_label_create(del_btn);
+            lv_label_set_text(del_lbl, LV_SYMBOL_TRASH);
+            brl_style_label(del_lbl, &BRL_FONT_16, lv_color_hex(0xFF6666));
+            lv_obj_center(del_lbl);
+            lv_obj_set_user_data(del_btn, (void*)(intptr_t)idx);
+            lv_obj_add_event_cb(del_btn, cb_delete_track, LV_EVENT_CLICKED, nullptr);
+        }
     }
 
     if (new_btn) lv_obj_add_event_cb(new_btn, cb_open_creator, LV_EVENT_CLICKED, (void*)content);
@@ -546,57 +669,67 @@ static void cb_tc_add_sector(lv_event_t* /*e*/) {
     if (s_tc_kb) lv_obj_add_flag(s_tc_kb, LV_OBJ_FLAG_HIDDEN);
 }
 
-static void cb_tc_save(lv_event_t* /*e*/) {
-    if (!s_tc_name || !s_tc_sf1_lat || !s_tc_sf1_lon || !s_tc_sf2_lat || !s_tc_sf2_lon) return;
-    const char *name = lv_textarea_get_text(s_tc_name);
-    if (!name || strlen(name) < 2) return;
-
-    // Determine target slot
-    // Editing an existing user track → update in-place
-    // Editing a built-in track or creating new → append new user track
-    int u_slot = -1;  // index into g_user_tracks[]
-    if (s_tc_edit_idx >= TRACK_DB_BUILTIN_COUNT) {
-        u_slot = s_tc_edit_idx - TRACK_DB_BUILTIN_COUNT;
-    }
-    if (u_slot < 0) {
-        if (g_user_track_count >= MAX_USER_TRACKS) return;
-        u_slot = g_user_track_count;
-    }
-
-    TrackDef &td = g_user_tracks[u_slot];
-    memset(&td, 0, sizeof(td));
-    strncpy(td.name, name, sizeof(td.name)-1);
-    strncpy(td.country, tr(TR_CUSTOM_COUNTRY), sizeof(td.country)-1);
-    td.is_circuit   = s_tc_is_circuit;
-    td.user_created = true;
-
+// Fill common coordinate fields from textarea handles into a TrackDef
+static void tc_fill_coords(TrackDef &td) {
     td.sf_lat1 = atof(lv_textarea_get_text(s_tc_sf1_lat));
     td.sf_lon1 = atof(lv_textarea_get_text(s_tc_sf1_lon));
     td.sf_lat2 = atof(lv_textarea_get_text(s_tc_sf2_lat));
     td.sf_lon2 = atof(lv_textarea_get_text(s_tc_sf2_lon));
-
     if (!td.is_circuit && s_tc_fin1_lat) {
         td.fin_lat1 = atof(lv_textarea_get_text(s_tc_fin1_lat));
         td.fin_lon1 = atof(lv_textarea_get_text(s_tc_fin1_lon));
         td.fin_lat2 = atof(lv_textarea_get_text(s_tc_fin2_lat));
         td.fin_lon2 = atof(lv_textarea_get_text(s_tc_fin2_lon));
     }
-
     for (int i = 0; i < s_tc_sec_count && i < MAX_SECTORS; i++) {
         td.sectors[i].lat = atof(lv_textarea_get_text(s_tc_sec_lat[i]));
         td.sectors[i].lon = atof(lv_textarea_get_text(s_tc_sec_lon[i]));
         snprintf(td.sectors[i].name, SECTOR_NAME_LEN, "S%d", i+1);
     }
     td.sector_count = (uint8_t)s_tc_sec_count;
-    td.length_km = 0.0f;
+}
 
-    // Extend count only if appending
-    if (u_slot == g_user_track_count) g_user_track_count++;
-    session_store_save_user_track(&td);
+static void cb_tc_save(lv_event_t* /*e*/) {
+    if (!s_tc_name || !s_tc_sf1_lat || !s_tc_sf1_lon || !s_tc_sf2_lat || !s_tc_sf2_lon) return;
+    const char *name = lv_textarea_get_text(s_tc_name);
+    if (!name || strlen(name) < 2) return;
 
-    int new_idx = TRACK_DB_BUILTIN_COUNT + u_slot;
-    g_state.active_track_idx = new_idx;
-    lap_timer_set_track(new_idx);
+    int save_idx = -1;
+
+    // ── Case A: editing a built-in track → coordinate override ───────────
+    if (s_tc_edit_idx >= 0 && s_tc_edit_idx < TRACK_DB_BUILTIN_COUNT) {
+        // Start from original definition so name/country/length are preserved
+        g_builtin_overrides[s_tc_edit_idx] = TRACK_DB[s_tc_edit_idx];
+        TrackDef &td = g_builtin_overrides[s_tc_edit_idx];
+        td.is_circuit = s_tc_is_circuit;
+        tc_fill_coords(td);
+        g_builtin_override_set[s_tc_edit_idx] = true;
+        session_store_save_builtin_override(s_tc_edit_idx, &td);
+        save_idx = s_tc_edit_idx;
+
+    // ── Case B: new track or editing an existing user track ───────────────
+    } else {
+        int u_slot = -1;
+        if (s_tc_edit_idx >= TRACK_DB_BUILTIN_COUNT)
+            u_slot = s_tc_edit_idx - TRACK_DB_BUILTIN_COUNT;
+        if (u_slot < 0) {
+            if (g_user_track_count >= MAX_USER_TRACKS) return;
+            u_slot = g_user_track_count;
+        }
+        TrackDef &td = g_user_tracks[u_slot];
+        memset(&td, 0, sizeof(td));
+        strncpy(td.name, name, sizeof(td.name)-1);
+        strncpy(td.country, tr(TR_CUSTOM_COUNTRY), sizeof(td.country)-1);
+        td.is_circuit   = s_tc_is_circuit;
+        td.user_created = true;
+        tc_fill_coords(td);
+        if (u_slot == g_user_track_count) g_user_track_count++;
+        session_store_save_user_track(&td);
+        save_idx = TRACK_DB_BUILTIN_COUNT + u_slot;
+    }
+
+    g_state.active_track_idx = save_idx;
+    lap_timer_set_track(save_idx);
     s_tc_edit_idx = -1;
     timing_screen_open();
     s_scr_sub = nullptr;

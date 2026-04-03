@@ -40,3 +40,10 @@ void session_store_load_user_tracks();
 
 // Save a user-created track to SD
 bool session_store_save_user_track(const TrackDef *td);
+
+// Delete a user track from SD and compact the g_user_tracks array (u_slot = index into array)
+bool session_store_delete_user_track(int u_slot);
+
+// Save/load coordinate overrides for built-in tracks
+bool session_store_save_builtin_override(int builtin_idx, const TrackDef *td);
+void session_store_load_builtin_overrides();

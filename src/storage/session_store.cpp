@@ -230,3 +230,112 @@ bool session_store_save_user_track(const TrackDef *td) {
     Serial.printf("[STORE] User track saved: %s\n", fname);
     return true;
 }
+
+bool session_store_delete_user_track(int u_slot) {
+    if (u_slot < 0 || u_slot >= g_user_track_count) return false;
+
+    // Delete file from SD
+    if (g_state.sd_available) {
+        const TrackDef &td = g_user_tracks[u_slot];
+        char fname[80], safe[48];
+        strncpy(safe, td.name, sizeof(safe) - 1);
+        safe[sizeof(safe)-1] = '\0';
+        for (char *p = safe; *p; p++)
+            if (*p == ' ' || *p == '/' || *p == '\\') *p = '_';
+        snprintf(fname, sizeof(fname), "/tracks/%s.json", safe);
+        if (SD.exists(fname)) SD.remove(fname);
+        Serial.printf("[STORE] User track deleted: %s\n", fname);
+    }
+
+    // Compact array
+    for (int i = u_slot; i < g_user_track_count - 1; i++)
+        g_user_tracks[i] = g_user_tracks[i + 1];
+    g_user_track_count--;
+    memset(&g_user_tracks[g_user_track_count], 0, sizeof(TrackDef));
+    return true;
+}
+
+bool session_store_save_builtin_override(int builtin_idx, const TrackDef *td) {
+    if (!g_state.sd_available || !td) return false;
+    if (builtin_idx < 0 || builtin_idx >= MAX_BUILTIN_TRACKS) return false;
+    if (!SD.exists("/tracks")) SD.mkdir("/tracks");
+
+    char fname[48];
+    snprintf(fname, sizeof(fname), "/tracks/builtin_%02d.json", builtin_idx);
+
+    JsonDocument doc;
+    doc["builtin_idx"] = builtin_idx;
+    JsonArray sf = doc["sf"].to<JsonArray>();
+    sf.add(td->sf_lat1); sf.add(td->sf_lon1);
+    sf.add(td->sf_lat2); sf.add(td->sf_lon2);
+
+    if (!td->is_circuit) {
+        JsonArray fin = doc["fin"].to<JsonArray>();
+        fin.add(td->fin_lat1); fin.add(td->fin_lon1);
+        fin.add(td->fin_lat2); fin.add(td->fin_lon2);
+    }
+
+    JsonArray secs = doc["sectors"].to<JsonArray>();
+    for (uint8_t i = 0; i < td->sector_count; i++) {
+        JsonObject s = secs.add<JsonObject>();
+        s["lat"]  = td->sectors[i].lat;
+        s["lon"]  = td->sectors[i].lon;
+        s["name"] = td->sectors[i].name;
+    }
+
+    File f = SD.open(fname, FILE_WRITE);
+    if (!f) return false;
+    serializeJson(doc, f);
+    f.close();
+    Serial.printf("[STORE] Builtin override saved: %s\n", fname);
+    return true;
+}
+
+void session_store_load_builtin_overrides() {
+    if (!g_state.sd_available) return;
+
+    for (int i = 0; i < MAX_BUILTIN_TRACKS && i < TRACK_DB_BUILTIN_COUNT; i++) {
+        char fname[48];
+        snprintf(fname, sizeof(fname), "/tracks/builtin_%02d.json", i);
+        if (!SD.exists(fname)) continue;
+
+        static char buf[1024];
+        if (!sd_read_file(fname, buf, sizeof(buf))) continue;
+
+        JsonDocument doc;
+        if (deserializeJson(doc, buf) != DeserializationError::Ok) continue;
+
+        // Start from original built-in definition, then override coords
+        g_builtin_overrides[i] = TRACK_DB[i];
+        TrackDef &td = g_builtin_overrides[i];
+        td.user_created = false;
+
+        td.sf_lat1 = doc["sf"][0] | td.sf_lat1;
+        td.sf_lon1 = doc["sf"][1] | td.sf_lon1;
+        td.sf_lat2 = doc["sf"][2] | td.sf_lat2;
+        td.sf_lon2 = doc["sf"][3] | td.sf_lon2;
+
+        if (!td.is_circuit) {
+            td.fin_lat1 = doc["fin"][0] | td.fin_lat1;
+            td.fin_lon1 = doc["fin"][1] | td.fin_lon1;
+            td.fin_lat2 = doc["fin"][2] | td.fin_lat2;
+            td.fin_lon2 = doc["fin"][3] | td.fin_lon2;
+        }
+
+        JsonArray secs = doc["sectors"].as<JsonArray>();
+        if (secs) {
+            td.sector_count = 0;
+            for (JsonObject s : secs) {
+                if (td.sector_count >= MAX_SECTORS) break;
+                td.sectors[td.sector_count].lat = s["lat"] | 0.0;
+                td.sectors[td.sector_count].lon = s["lon"] | 0.0;
+                strncpy(td.sectors[td.sector_count].name,
+                        s["name"] | "", SECTOR_NAME_LEN - 1);
+                td.sector_count++;
+            }
+        }
+
+        g_builtin_override_set[i] = true;
+        Serial.printf("[STORE] Builtin override loaded for idx %d\n", i);
+    }
+}

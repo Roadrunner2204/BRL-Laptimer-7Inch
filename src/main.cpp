@@ -257,6 +257,7 @@ void setup()
 
   // Load user-created tracks from SD
   session_store_load_user_tracks();
+  session_store_load_builtin_overrides();
 
   // Lap timer
   lap_timer_init();

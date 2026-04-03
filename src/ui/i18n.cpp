@@ -96,6 +96,7 @@ static const char* const s_str[2][TR_COUNT] = {
     /* TR_CONNECT_DLG     */ "Verbinden",
     /* TR_CANCEL_DLG      */ "Abbrechen",
     /* TR_CUSTOM_COUNTRY  */ "Benutzerdefiniert",
+    /* TR_ALL_COUNTRIES  */ "Alle",
 },
 // ── English ─────────────────────────────────────────────────────────────────
 {
@@ -186,6 +187,7 @@ static const char* const s_str[2][TR_COUNT] = {
     /* TR_CONNECT_DLG     */ "Connect",
     /* TR_CANCEL_DLG      */ "Cancel",
     /* TR_CUSTOM_COUNTRY  */ "Custom",
+    /* TR_ALL_COUNTRIES  */ "All",
 },
 };
 

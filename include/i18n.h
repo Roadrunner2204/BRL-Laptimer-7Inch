@@ -102,6 +102,8 @@ enum TrKey : uint8_t {
     TR_CANCEL_DLG,
     // User-created track
     TR_CUSTOM_COUNTRY,
+    // Track filter
+    TR_ALL_COUNTRIES,
     TR_COUNT
 };
 
