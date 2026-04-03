@@ -132,6 +132,7 @@ static lv_obj_t *build_sub_header(lv_obj_t *scr, const char *title,
     lv_obj_set_style_bg_color(hdr, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(hdr, LV_OPA_COVER, LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(hdr, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_shadow_width(hdr, 0, LV_STATE_DEFAULT);
     lv_obj_set_style_radius(hdr, 0, LV_STATE_DEFAULT);
     lv_obj_set_style_pad_all(hdr, 0, LV_STATE_DEFAULT);
     lv_obj_remove_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
@@ -139,9 +140,7 @@ static lv_obj_t *build_sub_header(lv_obj_t *scr, const char *title,
     lv_obj_t *back = lv_button_create(hdr);
     lv_obj_set_size(back, 110, 38);
     lv_obj_set_pos(back, 6, 6);
-    lv_obj_set_style_bg_color(back, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
-    lv_obj_set_style_radius(back, 6, LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(back, 0, LV_STATE_DEFAULT);
+    brl_style_btn(back, BRL_CLR_SURFACE2);
     lv_obj_t *bl = lv_label_create(back);
     lv_label_set_text_fmt(bl, LV_SYMBOL_LEFT "  %s", tr(TR_MENU_BTN));
     brl_style_label(bl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
@@ -157,9 +156,7 @@ static lv_obj_t *build_sub_header(lv_obj_t *scr, const char *title,
         lv_obj_t *abtn = lv_button_create(hdr);
         lv_obj_set_size(abtn, 140, 38);
         lv_obj_align(abtn, LV_ALIGN_RIGHT_MID, -6, 0);
-        lv_obj_set_style_bg_color(abtn, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
-        lv_obj_set_style_radius(abtn, 6, LV_STATE_DEFAULT);
-        lv_obj_set_style_border_width(abtn, 0, LV_STATE_DEFAULT);
+        brl_style_btn(abtn, BRL_CLR_ACCENT);
         lv_obj_t *al = lv_label_create(abtn);
         lv_label_set_text(al, action_label);
         brl_style_label(al, &BRL_FONT_14, BRL_CLR_TEXT);
@@ -177,6 +174,8 @@ static lv_obj_t *build_content_area(lv_obj_t *scr, bool scrollable = true) {
     lv_obj_set_style_bg_color(area, BRL_CLR_BG, LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(area, LV_OPA_COVER, LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(area, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_shadow_width(area, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_outline_width(area, 0, LV_STATE_DEFAULT);
     lv_obj_set_style_radius(area, 0, LV_STATE_DEFAULT);
     lv_obj_set_style_pad_all(area, 8, LV_STATE_DEFAULT);
     if (!scrollable) lv_obj_remove_flag(area, LV_OBJ_FLAG_SCROLLABLE);
@@ -421,65 +420,52 @@ static void open_tracks_screen() {
     lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(content, 4, LV_STATE_DEFAULT);
 
-    // ── Country filter row ────────────────────────────────────────────────
+    // ── Country filter dropdown ───────────────────────────────────────────
     if (n_countries > 1) {
-        lv_obj_t *frow = lv_obj_create(content);
-        lv_obj_set_width(frow, LV_PCT(100));
-        lv_obj_set_height(frow, LV_SIZE_CONTENT);
-        brl_style_transparent(frow);
-        lv_obj_remove_flag(frow, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_flex_flow(frow, LV_FLEX_FLOW_ROW);
-        lv_obj_set_style_pad_column(frow, 4, LV_STATE_DEFAULT);
-        lv_obj_set_style_pad_bottom(frow, 4, LV_STATE_DEFAULT);
-
-        // "Alle" / "All" button
-        bool all_active = (s_filter_country[0] == '\0');
-        lv_obj_t *all_btn = lv_button_create(frow);
-        lv_obj_set_height(all_btn, 34);
-        lv_obj_set_width(all_btn, LV_SIZE_CONTENT);
-        lv_obj_set_style_pad_hor(all_btn, 12, LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_color(all_btn,
-            all_active ? BRL_CLR_ACCENT : BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
-        lv_obj_set_style_radius(all_btn, 6, LV_STATE_DEFAULT);
-        lv_obj_set_style_border_width(all_btn, 0, LV_STATE_DEFAULT);
-        lv_obj_set_style_shadow_width(all_btn, 0, LV_STATE_DEFAULT);
-        lv_obj_t *all_lbl = lv_label_create(all_btn);
-        lv_label_set_text(all_lbl, tr(TR_ALL_COUNTRIES));
-        brl_style_label(all_lbl, &BRL_FONT_14, all_active ? BRL_CLR_TEXT : BRL_CLR_TEXT_DIM);
-        lv_obj_center(all_lbl);
-        lv_obj_add_event_cb(all_btn, [](lv_event_t* /*e*/){
-            s_filter_country[0] = '\0';
-            open_tracks_screen();
-        }, LV_EVENT_CLICKED, nullptr);
-
-        // One button per country (in distance-first appearance order)
+        // Build options string: "Alle\nDeutschland\nBelgien\n..."
+        static char dd_opts[512];
+        dd_opts[0] = '\0';
+        strncpy(dd_opts, tr(TR_ALL_COUNTRIES), sizeof(dd_opts) - 1);
+        int active_opt = 0;
         for (int c = 0; c < n_countries; c++) {
-            bool active = (strcmp(s_filter_country, countries[c]) == 0);
-            lv_obj_t *cbtn = lv_button_create(frow);
-            lv_obj_set_height(cbtn, 34);
-            lv_obj_set_width(cbtn, LV_SIZE_CONTENT);
-            lv_obj_set_style_pad_hor(cbtn, 12, LV_STATE_DEFAULT);
-            lv_obj_set_style_bg_color(cbtn,
-                active ? BRL_CLR_ACCENT : BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
-            lv_obj_set_style_radius(cbtn, 6, LV_STATE_DEFAULT);
-            lv_obj_set_style_border_width(cbtn, 0, LV_STATE_DEFAULT);
-            lv_obj_set_style_shadow_width(cbtn, 0, LV_STATE_DEFAULT);
-            lv_obj_t *clbl = lv_label_create(cbtn);
-            lv_label_set_text(clbl, countries[c]);
-            brl_style_label(clbl, &BRL_FONT_14, active ? BRL_CLR_TEXT : BRL_CLR_TEXT_DIM);
-            lv_obj_center(clbl);
-            // Store country string in the button's user_data (pointer to our local array copy)
-            // We use a static copy to survive the lambda
-            static char s_country_copy[16][32];
-            strncpy(s_country_copy[c], countries[c], 31);
-            lv_obj_set_user_data(cbtn, (void*)s_country_copy[c]);
-            lv_obj_add_event_cb(cbtn, [](lv_event_t *ev){
-                const char *country = (const char*)lv_obj_get_user_data(
-                    (lv_obj_t*)lv_event_get_target(ev));
-                strncpy(s_filter_country, country, sizeof(s_filter_country)-1);
-                open_tracks_screen();
-            }, LV_EVENT_CLICKED, nullptr);
+            strncat(dd_opts, "\n", sizeof(dd_opts) - strlen(dd_opts) - 1);
+            strncat(dd_opts, countries[c], sizeof(dd_opts) - strlen(dd_opts) - 1);
+            if (s_filter_country[0] != '\0' && strcmp(s_filter_country, countries[c]) == 0)
+                active_opt = c + 1;
         }
+
+        lv_obj_t *dd = lv_dropdown_create(content);
+        lv_dropdown_set_options(dd, dd_opts);
+        lv_dropdown_set_selected(dd, (uint32_t)active_opt);
+        lv_obj_set_width(dd, 280);
+        lv_obj_set_height(dd, 40);
+        lv_obj_set_style_bg_color(dd, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_opa(dd, LV_OPA_COVER, LV_STATE_DEFAULT);
+        lv_obj_set_style_text_color(dd, BRL_CLR_TEXT, LV_STATE_DEFAULT);
+        lv_obj_set_style_text_font(dd, &BRL_FONT_16, LV_STATE_DEFAULT);
+        lv_obj_set_style_border_width(dd, 0, LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_width(dd, 0, LV_STATE_DEFAULT);
+        lv_obj_set_style_pad_hor(dd, 10, LV_STATE_DEFAULT);
+        // Style the dropdown list
+        lv_obj_t *ddlist = lv_dropdown_get_list(dd);
+        if (ddlist) {
+            lv_obj_set_style_bg_color(ddlist, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
+            lv_obj_set_style_text_color(ddlist, BRL_CLR_TEXT, LV_STATE_DEFAULT);
+            lv_obj_set_style_text_font(ddlist, &BRL_FONT_16, LV_STATE_DEFAULT);
+            lv_obj_set_style_border_width(ddlist, 0, LV_STATE_DEFAULT);
+            lv_obj_set_style_shadow_width(ddlist, 0, LV_STATE_DEFAULT);
+        }
+        lv_obj_add_event_cb(dd, [](lv_event_t *e) {
+            lv_obj_t *obj = (lv_obj_t*)lv_event_get_target(e);
+            uint32_t sel = lv_dropdown_get_selected(obj);
+            if (sel == 0) {
+                s_filter_country[0] = '\0';
+            } else {
+                lv_dropdown_get_selected_str(obj, s_filter_country,
+                                             sizeof(s_filter_country));
+            }
+            open_tracks_screen();
+        }, LV_EVENT_VALUE_CHANGED, nullptr);
     }
 
     // ── GPS hint ──────────────────────────────────────────────────────────
@@ -503,10 +489,10 @@ static void open_tracks_screen() {
 
         char label[96];
         if (dist[idx] < 1e8)
-            snprintf(label, sizeof(label), LV_SYMBOL_RIGHT "  %s  —  %.0f km",
+            snprintf(label, sizeof(label), ">  %s  (%.0f km)",
                      td->name, dist[idx]);
         else
-            snprintf(label, sizeof(label), LV_SYMBOL_RIGHT "  %s  —  %s",
+            snprintf(label, sizeof(label), ">  %s  - %s",
                      td->name, td->country);
 
         lv_obj_t *row = lv_obj_create(content);

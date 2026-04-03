@@ -245,6 +245,14 @@ void setup()
   lv_display_set_buffers(disp, disp_draw_buf, disp_draw_buf2,
                          buf_size_in_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
 
+  // Dark theme: removes default borders/shadows from all LVGL widgets
+  lv_theme_t *theme = lv_theme_default_init(disp,
+      lv_color_hex(0x0096FF),   // primary: BRL blue
+      lv_color_hex(0x0060C0),   // secondary
+      true,                      // dark mode
+      &lv_font_montserrat_14);
+  lv_display_set_theme(disp, theme);
+
   indev = lv_indev_create();
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(indev, my_touchpad_read);

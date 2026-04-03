@@ -41,16 +41,19 @@
 static inline void brl_style_card(lv_obj_t *obj) {
     lv_obj_set_style_bg_color(obj, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, LV_STATE_DEFAULT);
-    lv_obj_set_style_border_color(obj, BRL_CLR_BORDER, LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(obj, 1, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(obj, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_shadow_width(obj, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_outline_width(obj, 0, LV_STATE_DEFAULT);
     lv_obj_set_style_radius(obj, 6, LV_STATE_DEFAULT);
     lv_obj_set_style_pad_all(obj, 8, LV_STATE_DEFAULT);
 }
 
-// Helper: transparent background (no border, no bg)
+// Helper: transparent background (no border, no bg, no shadow)
 static inline void brl_style_transparent(lv_obj_t *obj) {
     lv_obj_set_style_bg_opa(obj, LV_OPA_TRANSP, LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(obj, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_shadow_width(obj, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_outline_width(obj, 0, LV_STATE_DEFAULT);
     lv_obj_set_style_pad_all(obj, 0, LV_STATE_DEFAULT);
 }
 
@@ -59,4 +62,15 @@ static inline void brl_style_label(lv_obj_t *label, const lv_font_t *font,
                                     lv_color_t color) {
     lv_obj_set_style_text_font(label, font, LV_STATE_DEFAULT);
     lv_obj_set_style_text_color(label, color, LV_STATE_DEFAULT);
+}
+
+// Helper: apply base button style (no shadow, no border, no outline)
+static inline void brl_style_btn(lv_obj_t *btn, lv_color_t bg,
+                                  int radius = 6) {
+    lv_obj_set_style_bg_color(btn, bg, LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(btn, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_shadow_width(btn, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_outline_width(btn, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(btn, radius, LV_STATE_DEFAULT);
 }
