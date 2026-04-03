@@ -8,7 +8,7 @@
 
 #define TOUCH_SDA 8
 #define TOUCH_SCL 9
-#define TOUCH_INT -1   // GPIO 4 used by SD_CS — touch works via I2C polling
+#define TOUCH_INT 4
 #define TOUCH_RST -1
 
 class LGFX : public lgfx::LGFX_Device {
