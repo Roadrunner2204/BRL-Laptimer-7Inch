@@ -357,7 +357,7 @@ static lv_obj_t *mk_slot_card(lv_obj_t *row, int zone, int slot_idx,
     lv_obj_t *v = lv_label_create(c);
     lv_label_set_text(v, "---");
     brl_style_label(v, field_font(fid, wide), field_color(fid));
-    lv_obj_align(v, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_align(v, LV_ALIGN_BOTTOM_MID, 0, 0);
     return v;
 }
 
@@ -383,54 +383,47 @@ lv_obj_t *timing_screen_build() {
     lv_obj_set_style_pad_all(sb, 0, LV_STATE_DEFAULT);
     lv_obj_remove_flag(sb, LV_OBJ_FLAG_SCROLLABLE);
 
-    tw.sb_gps_lbl = lv_label_create(sb);
-    lv_label_set_text(tw.sb_gps_lbl, LV_SYMBOL_GPS " 0");
-    brl_style_label(tw.sb_gps_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
-    lv_obj_set_pos(tw.sb_gps_lbl, 8, 12);
-
-    tw.sb_wifi_lbl = lv_label_create(sb);
-    lv_label_set_text(tw.sb_wifi_lbl, LV_SYMBOL_WIFI " --");
-    brl_style_label(tw.sb_wifi_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
-    lv_obj_set_pos(tw.sb_wifi_lbl, 120, 12);
-
-    tw.sb_obd_lbl = lv_label_create(sb);
-    lv_label_set_text(tw.sb_obd_lbl, LV_SYMBOL_BLUETOOTH " OBD --");
-    brl_style_label(tw.sb_obd_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
-    lv_obj_set_pos(tw.sb_obd_lbl, 230, 12);
-
-    // ── Header bar (50 px) ────────────────────────────────────────────────
-    lv_obj_t *hdr = lv_obj_create(scr);
-    lv_obj_set_size(hdr, 800, 50);
-    lv_obj_set_pos(hdr, 0, 40);
-    lv_obj_set_style_bg_color(hdr, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(hdr, LV_OPA_COVER, LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(hdr, 0, LV_STATE_DEFAULT);
-    lv_obj_set_style_radius(hdr, 0, LV_STATE_DEFAULT);
-    lv_obj_set_style_pad_all(hdr, 0, LV_STATE_DEFAULT);
-    lv_obj_remove_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t *back_btn = lv_button_create(hdr);
-    lv_obj_set_size(back_btn, 100, 38);
-    lv_obj_set_pos(back_btn, 6, 6);
+    // ← MENÜ button — left side of status bar
+    lv_obj_t *back_btn = lv_button_create(sb);
+    lv_obj_set_size(back_btn, 88, 30);
+    lv_obj_align(back_btn, LV_ALIGN_LEFT_MID, 4, 0);
     brl_style_btn(back_btn, BRL_CLR_SURFACE2);
     lv_obj_t *blbl = lv_label_create(back_btn);
-    lv_label_set_text_fmt(blbl, LV_SYMBOL_LEFT "  %s", tr(TR_MENU_BTN));
+    lv_label_set_text_fmt(blbl, LV_SYMBOL_LEFT " %s", tr(TR_MENU_BTN));
     brl_style_label(blbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, cb_back, LV_EVENT_CLICKED, nullptr);
 
-    tw.track_name_lbl = lv_label_create(hdr);
+    // GPS satellites — left of center
+    tw.sb_gps_lbl = lv_label_create(sb);
+    lv_label_set_text(tw.sb_gps_lbl, LV_SYMBOL_GPS " 0");
+    brl_style_label(tw.sb_gps_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+    lv_obj_set_pos(tw.sb_gps_lbl, 100, 13);
+
+    // Track name — centered
+    tw.track_name_lbl = lv_label_create(sb);
     const TrackDef *td = track_get(g_state.active_track_idx);
     lv_label_set_text(tw.track_name_lbl, td ? td->name : tr(TR_NO_TRACK));
-    brl_style_label(tw.track_name_lbl, &BRL_FONT_16, BRL_CLR_TEXT);
+    brl_style_label(tw.track_name_lbl, &BRL_FONT_14, BRL_CLR_TEXT);
     lv_obj_align(tw.track_name_lbl, LV_ALIGN_CENTER, 0, 0);
+
+    // WiFi + OBD — right side
+    tw.sb_wifi_lbl = lv_label_create(sb);
+    lv_label_set_text(tw.sb_wifi_lbl, LV_SYMBOL_WIFI " --");
+    brl_style_label(tw.sb_wifi_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+    lv_obj_set_pos(tw.sb_wifi_lbl, 590, 13);
+
+    tw.sb_obd_lbl = lv_label_create(sb);
+    lv_label_set_text(tw.sb_obd_lbl, LV_SYMBOL_BLUETOOTH " OBD --");
+    brl_style_label(tw.sb_obd_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+    lv_obj_set_pos(tw.sb_obd_lbl, 685, 13);
 
     // ── Delta bar (80 px, fixed) ──────────────────────────────────────────
     static lv_obj_t *s_scale_overlay = nullptr;
 
     const int DBAR_GAP = 6;
     const int DBAR_H   = 80;
-    const int dbar_y   = 90 + DBAR_GAP;
+    const int dbar_y   = 40 + DBAR_GAP;   // status bar is now 40 px, no separate header
     const int cy_start = dbar_y + DBAR_H + DBAR_GAP;
 
     tw.delta_bar_h = (int16_t)DBAR_H;
@@ -532,7 +525,7 @@ lv_obj_t *timing_screen_build() {
     // ── Content zones ─────────────────────────────────────────────────────
     // Fixed heights: Z1=140, Z2=85, Z3=60 → total = 285, available = 480-cy_start-8
     const int avail_h = 480 - cy_start - 8;
-    const int h3 = 60;
+    const int h3 = 72;   // taller so title label doesn't overlap value
     const int h2 = 85;
     const int h1 = avail_h - h2 - h3 - 12;   // 12 = 2×6 px gaps
 
