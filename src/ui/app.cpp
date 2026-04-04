@@ -69,7 +69,8 @@ static lv_obj_t *s_tc_sf2_lat  = nullptr, *s_tc_sf2_lon = nullptr;
 static lv_obj_t *s_tc_fin_box  = nullptr;  // shown for A-B
 static lv_obj_t *s_tc_fin1_lat = nullptr, *s_tc_fin1_lon = nullptr;
 static lv_obj_t *s_tc_fin2_lat = nullptr, *s_tc_fin2_lon = nullptr;
-static lv_obj_t *s_tc_kb       = nullptr;
+static lv_obj_t *s_tc_kb       = nullptr;   // full text keyboard (track name)
+static lv_obj_t *s_tc_kb_num   = nullptr;   // numeric keyboard (coordinates)
 static lv_obj_t *s_tc_type_circ_btn = nullptr;
 static lv_obj_t *s_tc_type_ab_btn   = nullptr;
 static bool      s_tc_is_circuit    = true;
@@ -214,6 +215,7 @@ void menu_screen_show() {
     set_lang_btn = set_units_btn = nullptr;
     s_wifi_dialog = nullptr;
     s_tc_kb = nullptr;
+    s_tc_kb_num = nullptr;
 
     lv_screen_load(s_scr_menu);
 }
@@ -610,11 +612,12 @@ static lv_obj_t *mk_coord_row(lv_obj_t *parent, const char *label,
     lv_obj_set_style_bg_color(*ta_lon, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
     lv_obj_set_style_text_color(*ta_lon, BRL_CLR_TEXT, LV_STATE_DEFAULT);
 
-    // Focus → show keyboard
+    // Focus → show numeric keyboard, hide text keyboard
     auto kb_focus = [](lv_event_t *ev){
-        if (s_tc_kb) {
-            lv_keyboard_set_textarea(s_tc_kb, (lv_obj_t*)lv_event_get_target(ev));
-            lv_obj_remove_flag(s_tc_kb, LV_OBJ_FLAG_HIDDEN);
+        if (s_tc_kb)     lv_obj_add_flag(s_tc_kb, LV_OBJ_FLAG_HIDDEN);
+        if (s_tc_kb_num) {
+            lv_keyboard_set_textarea(s_tc_kb_num, (lv_obj_t*)lv_event_get_target(ev));
+            lv_obj_remove_flag(s_tc_kb_num, LV_OBJ_FLAG_HIDDEN);
         }
     };
     lv_obj_add_event_cb(*ta_lat, kb_focus, LV_EVENT_FOCUSED, nullptr);
@@ -719,8 +722,19 @@ static void cb_tc_save(lv_event_t* /*e*/) {
     g_state.active_track_idx = save_idx;
     lap_timer_set_track(save_idx);
     s_tc_edit_idx = -1;
-    timing_screen_open();
-    s_scr_sub = nullptr;
+
+    // Null keyboard handles before deleting parent screen
+    s_tc_kb     = nullptr;
+    s_tc_kb_num = nullptr;
+
+    // Delete sub-screen async (safe from within event callback)
+    if (s_scr_sub) {
+        lv_obj_delete_async(s_scr_sub);
+        s_scr_sub = nullptr;
+    }
+
+    // Rebuild timing screen so track name is shown immediately
+    timing_screen_rebuild();
 }
 
 static void open_track_creator(lv_obj_t *scroll, int edit_idx) {
@@ -741,6 +755,7 @@ static void open_track_creator(lv_obj_t *scroll, int edit_idx) {
 
     auto section = [&](const char *t){ mk_section_label(scroll, t); };
     auto kb_focus_name = [](lv_event_t *ev){
+        if (s_tc_kb_num) lv_obj_add_flag(s_tc_kb_num, LV_OBJ_FLAG_HIDDEN);
         if (s_tc_kb) {
             lv_keyboard_set_textarea(s_tc_kb, (lv_obj_t*)lv_event_get_target(ev));
             lv_obj_remove_flag(s_tc_kb, LV_OBJ_FLAG_HIDDEN);
@@ -836,7 +851,7 @@ static void open_track_creator(lv_obj_t *scroll, int edit_idx) {
     lv_obj_center(sl);
     lv_obj_add_event_cb(save_btn, cb_tc_save, LV_EVENT_CLICKED, nullptr);
 
-    // Touch keyboard (shown when textarea focused)
+    // Full text keyboard — bottom, for track name field
     s_tc_kb = lv_keyboard_create(lv_screen_active());
     lv_obj_set_size(s_tc_kb, 800, 200);
     lv_obj_align(s_tc_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
@@ -845,6 +860,17 @@ static void open_track_creator(lv_obj_t *scroll, int edit_idx) {
         lv_obj_add_flag((lv_obj_t*)lv_event_get_target(ev), LV_OBJ_FLAG_HIDDEN);
     }, LV_EVENT_READY, nullptr);
     lv_obj_add_flag(s_tc_kb, LV_OBJ_FLAG_HIDDEN);
+
+    // Numeric keyboard — right side, ¾ screen height, for coordinate fields
+    s_tc_kb_num = lv_keyboard_create(lv_screen_active());
+    lv_keyboard_set_mode(s_tc_kb_num, LV_KEYBOARD_MODE_NUMBER);
+    lv_obj_set_size(s_tc_kb_num, 280, 360);
+    lv_obj_set_pos(s_tc_kb_num, 800 - 280, 40);
+    lv_obj_set_style_bg_color(s_tc_kb_num, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
+    lv_obj_add_event_cb(s_tc_kb_num, [](lv_event_t *ev){
+        lv_obj_add_flag((lv_obj_t*)lv_event_get_target(ev), LV_OBJ_FLAG_HIDDEN);
+    }, LV_EVENT_READY, nullptr);
+    lv_obj_add_flag(s_tc_kb_num, LV_OBJ_FLAG_HIDDEN);
 
     // Pre-fill fields when editing an existing track
     if (edit_td) {
