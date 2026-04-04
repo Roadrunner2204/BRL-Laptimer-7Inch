@@ -240,9 +240,12 @@ void setup()
       i2c_cmd_link_delete(c);
       return e;
     };
-    esp_err_t e1 = i2c_write(0x24, 0x01); // WR_SET: IO_OE=1 (enable output)
-    esp_err_t e2 = i2c_write(0x38, 0xF7); // WR_IO:  IO3(SD_CS)=LOW, rest=HIGH
-    Serial.printf("[CH422G] WR_SET->0x01:%s  WR_IO->0xF7:%s\n",
+    // Write output VALUES first (latch set while still in input mode = no glitch)
+    // THEN enable output mode — pins immediately go to correct values.
+    // Prevents TP_RST/LCD_RST from briefly pulsing LOW during mode switch.
+    esp_err_t e1 = i2c_write(0x38, 0xF7); // WR_IO:  latch IO3(SD_CS)=LOW first
+    esp_err_t e2 = i2c_write(0x24, 0x01); // WR_SET: IO_OE=1 (enable output)
+    Serial.printf("[CH422G] WR_IO->0xF7:%s  WR_SET->0x01:%s\n",
                   e1 == ESP_OK ? "OK" : esp_err_to_name(e1),
                   e2 == ESP_OK ? "OK" : esp_err_to_name(e2));
   }
