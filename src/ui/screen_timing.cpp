@@ -70,13 +70,10 @@ static const char *field_title(uint8_t f) {
 }
 
 // Value font + color per field
-static const lv_font_t *field_font(uint8_t f, bool wide) {
+static const lv_font_t *field_font(uint8_t f, int zone, bool wide) {
+    // Zone 1: always large — wide slots get 48, narrow get 40
+    if (zone == 1) return wide ? &BRL_FONT_48 : &BRL_FONT_40;
     switch (f) {
-        case FIELD_SPEED:     return wide ? &BRL_FONT_48 : &BRL_FONT_32;
-        case FIELD_LAPTIME:   return wide ? &BRL_FONT_40 : &BRL_FONT_32;
-        case FIELD_BESTLAP:   return &BRL_FONT_24;
-        case FIELD_DELTA_NUM: return &BRL_FONT_24;
-        case FIELD_LAP_NR:    return &BRL_FONT_32;
         case FIELD_SECTOR1:
         case FIELD_SECTOR2:
         case FIELD_SECTOR3:   return &BRL_FONT_24;
@@ -357,7 +354,7 @@ static lv_obj_t *mk_slot_card(lv_obj_t *row, int zone, int slot_idx,
     bool wide = (zone == 1 && slot_idx <= 1);
     lv_obj_t *v = lv_label_create(c);
     lv_label_set_text(v, "---");
-    brl_style_label(v, field_font(fid, wide), field_color(fid));
+    brl_style_label(v, field_font(fid, zone, wide), field_color(fid));
     lv_obj_align(v, LV_ALIGN_BOTTOM_MID, 0, 0);
     return v;
 }
@@ -459,7 +456,7 @@ lv_obj_t *timing_screen_build() {
 
     tw.delta_bar_lbl = lv_label_create(dbar);
     lv_label_set_text(tw.delta_bar_lbl, "\xC2\xB1" "0.00 s");
-    brl_style_label(tw.delta_bar_lbl, &BRL_FONT_24, BRL_CLR_TEXT);
+    brl_style_label(tw.delta_bar_lbl, &BRL_FONT_48, BRL_CLR_TEXT);
     lv_obj_align(tw.delta_bar_lbl, LV_ALIGN_CENTER, 0, 0);
 
     // Tap delta bar → scale picker
