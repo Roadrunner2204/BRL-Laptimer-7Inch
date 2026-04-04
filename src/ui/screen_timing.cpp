@@ -341,12 +341,13 @@ static lv_obj_t *mk_slot_card(lv_obj_t *row, int zone, int slot_idx,
     if (fid == FIELD_NONE) return nullptr;
 
     if (fid == FIELD_MAP) {
-        // Map widget fills the card
+        // Map widget fills the card — must NOT consume clicks so picker still opens
         tw.map_obj = lv_obj_create(c);
         lv_obj_set_size(tw.map_obj, w - 16, h - 32);
         lv_obj_align(tw.map_obj, LV_ALIGN_BOTTOM_MID, 0, 0);
         brl_style_transparent(tw.map_obj);
         lv_obj_remove_flag(tw.map_obj, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(tw.map_obj, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(tw.map_obj, cb_map_draw, LV_EVENT_DRAW_MAIN, nullptr);
         lv_obj_add_event_cb(tw.map_obj, cb_map_draw, LV_EVENT_DRAW_POST, nullptr);
         return nullptr;
