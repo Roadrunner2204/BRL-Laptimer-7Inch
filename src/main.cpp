@@ -223,6 +223,30 @@ void setup()
 
   gfx.begin();
 
+  // CH422G: set IO output mode and assert SD_CS (IO3) LOW.
+  // Must run AFTER gfx.begin() so LovyanGFX has installed I2C_NUM_1.
+  // CH422G multi-address protocol (from datasheet):
+  //   WR_SET=0x24: config  — bit0=IO_OE(1=output)  bit2=OD_EN  bit3=SLEEP
+  //   WR_IO =0x38: output data for IO0-IO7
+  // Waveshare pin map: IO0=TP_RST IO1=LCD_BL IO2=LCD_RST IO3=SD_CS IO4=USB_SEL
+  {
+    auto i2c_write = [](uint8_t addr, uint8_t val) -> esp_err_t {
+      i2c_cmd_handle_t c = i2c_cmd_link_create();
+      i2c_master_start(c);
+      i2c_master_write_byte(c, (addr << 1) | I2C_MASTER_WRITE, true);
+      i2c_master_write_byte(c, val, true);
+      i2c_master_stop(c);
+      esp_err_t e = i2c_master_cmd_begin(I2C_NUM_1, c, pdMS_TO_TICKS(50));
+      i2c_cmd_link_delete(c);
+      return e;
+    };
+    esp_err_t e1 = i2c_write(0x24, 0x01); // WR_SET: IO_OE=1 (enable output)
+    esp_err_t e2 = i2c_write(0x38, 0xF7); // WR_IO:  IO3(SD_CS)=LOW, rest=HIGH
+    Serial.printf("[CH422G] WR_SET->0x01:%s  WR_IO->0xF7:%s\n",
+                  e1 == ESP_OK ? "OK" : esp_err_to_name(e1),
+                  e2 == ESP_OK ? "OK" : esp_err_to_name(e2));
+  }
+
   lv_init();
   lv_tick_set_cb(my_tick_function);
 
