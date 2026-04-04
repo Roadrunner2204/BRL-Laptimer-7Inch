@@ -36,8 +36,9 @@ AppState g_state = {};
 // Status bar handles (one set per long-lived screen)
 // ---------------------------------------------------------------------------
 struct SbH { lv_obj_t *gps, *wifi, *obd; };
-static SbH sb_menu = {};   // menu screen — cached, never rebuilt
-static SbH sb_sub  = {};   // tracks / history / settings — cleared on back
+static SbH sb_menu   = {};   // menu screen — cached, never rebuilt
+static SbH sb_sub    = {};   // tracks / history / settings — cleared on back
+static SbH sb_timing = {};   // timing screen — repopulated after every build
 
 // ---------------------------------------------------------------------------
 // Screen pointers
@@ -204,6 +205,7 @@ static lv_obj_t *make_sub_screen(const char *title, lv_event_cb_t back_cb,
 // ============================================================================
 
 void menu_screen_show() {
+    sb_timing = {};  // timing screen labels are gone once menu is shown
     sb_sub = {};   // clear sub-screen handles before possible deletion
     if (s_scr_sub) {
         lv_obj_delete(s_scr_sub);
@@ -245,6 +247,7 @@ static void cb_tile_timing(lv_event_t * /*e*/) {
         open_tracks_screen();
     } else {
         timing_screen_open();
+        sb_timing = {tw.sb_gps_lbl, nullptr, tw.sb_obd_lbl};
     }
 }
 static void cb_tile_tracks (lv_event_t * /*e*/) { open_tracks_screen();  }
@@ -353,6 +356,7 @@ static void cb_track_select(lv_event_t *e) {
     const TrackDef *td = track_get(idx);
     Serial.printf("[APP] Track selected: %s\n", td ? td->name : "?");
     timing_screen_open();
+    sb_timing = {tw.sb_gps_lbl, nullptr, tw.sb_obd_lbl};
     // timing_screen_open loads a new LVGL screen — sub screen will be cleaned up on next menu_show
     s_scr_sub = nullptr;
 }
@@ -735,6 +739,7 @@ static void cb_tc_save(lv_event_t* /*e*/) {
 
     // Rebuild timing screen so track name is shown immediately
     timing_screen_rebuild();
+    sb_timing = {tw.sb_gps_lbl, nullptr, tw.sb_obd_lbl};
 }
 
 static void open_track_creator(lv_obj_t *scroll, int edit_idx) {
@@ -861,11 +866,11 @@ static void open_track_creator(lv_obj_t *scroll, int edit_idx) {
     }, LV_EVENT_READY, nullptr);
     lv_obj_add_flag(s_tc_kb, LV_OBJ_FLAG_HIDDEN);
 
-    // Numeric keyboard — right side, ¾ screen height, for coordinate fields
+    // Numeric keyboard — right side, for coordinate fields
     s_tc_kb_num = lv_keyboard_create(lv_screen_active());
     lv_keyboard_set_mode(s_tc_kb_num, LV_KEYBOARD_MODE_NUMBER);
-    lv_obj_set_size(s_tc_kb_num, 280, 360);
-    lv_obj_set_pos(s_tc_kb_num, 800 - 280, 40);
+    lv_obj_set_size(s_tc_kb_num, 220, 260);
+    lv_obj_align(s_tc_kb_num, LV_ALIGN_TOP_RIGHT, 0, 44);
     lv_obj_set_style_bg_color(s_tc_kb_num, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
     lv_obj_add_event_cb(s_tc_kb_num, [](lv_event_t *ev){
         lv_obj_add_flag((lv_obj_t*)lv_event_get_target(ev), LV_OBJ_FLAG_HIDDEN);
@@ -1365,6 +1370,7 @@ void timer_live_update(lv_timer_t * /*t*/) {
     // Update status bars
     update_sb(sb_menu);
     update_sb(sb_sub);
+    update_sb(sb_timing);
 
     // ---- Timing screen slot updates ----
 

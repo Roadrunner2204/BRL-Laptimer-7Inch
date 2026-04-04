@@ -405,16 +405,11 @@ lv_obj_t *timing_screen_build() {
     brl_style_label(tw.track_name_lbl, &BRL_FONT_14, BRL_CLR_TEXT);
     lv_obj_align(tw.track_name_lbl, LV_ALIGN_CENTER, 0, 0);
 
-    // WiFi + OBD — right side
-    tw.sb_wifi_lbl = lv_label_create(sb);
-    lv_label_set_text(tw.sb_wifi_lbl, LV_SYMBOL_WIFI " --");
-    brl_style_label(tw.sb_wifi_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
-    lv_obj_set_pos(tw.sb_wifi_lbl, 590, 13);
-
+    // OBD — right side
     tw.sb_obd_lbl = lv_label_create(sb);
     lv_label_set_text(tw.sb_obd_lbl, LV_SYMBOL_BLUETOOTH " OBD --");
     brl_style_label(tw.sb_obd_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
-    lv_obj_set_pos(tw.sb_obd_lbl, 685, 13);
+    lv_obj_set_pos(tw.sb_obd_lbl, 700, 13);
 
     // ── Delta bar (80 px, fixed) ──────────────────────────────────────────
     static lv_obj_t *s_scale_overlay = nullptr;
