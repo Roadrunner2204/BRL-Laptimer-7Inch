@@ -115,6 +115,8 @@ enum TrKey : uint8_t {
     TR_HIST_NO_SAVED,
     TR_HIST_BEST,
     TR_HIST_LAPS,
+    // OBD — intake air temp
+    TR_INTAKE,
     TR_COUNT
 };
 

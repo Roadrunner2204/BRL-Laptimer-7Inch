@@ -106,6 +106,7 @@ static const char* const s_str[2][TR_COUNT] = {
     /* TR_HIST_NO_SAVED  */ "Keine gespeicherten Sitzungen.",
     /* TR_HIST_BEST      */ "Beste",
     /* TR_HIST_LAPS      */ "Runden",
+    /* TR_INTAKE         */ "ANSAUGTEMP",
 },
 // ── English ─────────────────────────────────────────────────────────────────
 {
@@ -206,6 +207,7 @@ static const char* const s_str[2][TR_COUNT] = {
     /* TR_HIST_NO_SAVED  */ "No saved sessions.",
     /* TR_HIST_BEST      */ "Best",
     /* TR_HIST_LAPS      */ "laps",
+    /* TR_INTAKE         */ "INTAKE TEMP",
 },
 };
 

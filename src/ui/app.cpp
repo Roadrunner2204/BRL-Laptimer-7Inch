@@ -1340,45 +1340,121 @@ void timer_live_update(lv_timer_t * /*t*/) {
     update_sb(sb_menu);
     update_sb(sb_sub);
 
-    // ---- Timing screen widgets (all null-checked) ----
-    if (tw.speed_lbl) {
-        char buf[16];
-        float spd = g_state.units == 0
-                    ? g_state.gps.speed_kmh
-                    : g_state.gps.speed_kmh * 0.621371f;
-        snprintf(buf, sizeof(buf), "%.0f", spd);
-        lv_label_set_text(tw.speed_lbl, buf);
-    }
-    if (tw.laptime_lbl) {
-        uint32_t ms = 0;
-        if (g_state.timing.timing_active) {
-            ms = millis() - g_state.timing.lap_start_ms;
-        } else if (g_state.session.lap_count > 0) {
-            ms = g_state.session.laps[g_state.session.lap_count - 1].total_ms;
+    // ---- Timing screen slot updates ----
+
+    // Helper: format a single FieldId → text, write into lv label (null-safe)
+    auto update_slot = [&](lv_obj_t *lbl, uint8_t fid) {
+        if (!lbl) return;
+        char buf[24];
+        const LiveTiming  &lt   = g_state.timing;
+        const LapSession  &sess = g_state.session;
+        const ObdData     &obd  = g_state.obd;
+
+        switch (fid) {
+            case FIELD_SPEED: {
+                float spd = g_state.units == 0
+                            ? g_state.gps.speed_kmh
+                            : g_state.gps.speed_kmh * 0.621371f;
+                snprintf(buf, sizeof(buf), "%.0f", spd);
+                break;
+            }
+            case FIELD_LAPTIME: {
+                uint32_t ms = 0;
+                if (lt.timing_active) ms = millis() - lt.lap_start_ms;
+                else if (sess.lap_count > 0) ms = sess.laps[sess.lap_count - 1].total_ms;
+                snprintf(buf, sizeof(buf), "%u:%05.2f",
+                         ms / 60000, fmod(ms / 1000.0f, 60.0f));
+                break;
+            }
+            case FIELD_BESTLAP: {
+                if (sess.lap_count > 0) {
+                    uint32_t ms = sess.laps[sess.best_lap_idx].total_ms;
+                    snprintf(buf, sizeof(buf), "%u:%05.2f",
+                             ms / 60000, fmod(ms / 1000.0f, 60.0f));
+                } else strncpy(buf, "---", sizeof(buf));
+                break;
+            }
+            case FIELD_DELTA_NUM: {
+                int32_t d = lt.live_delta_ms;
+                snprintf(buf, sizeof(buf), "%+.2f s", d / 1000.0f);
+                lv_obj_set_style_text_color(lbl,
+                    d < 0 ? lv_color_hex(0x00CC66)
+                          : (d > 0 ? lv_color_hex(0xFF4444) : lv_color_hex(0xFFFFFF)), 0);
+                lv_label_set_text(lbl, buf);
+                return;
+            }
+            case FIELD_LAP_NR:
+                snprintf(buf, sizeof(buf), "%d", (int)lt.lap_number);
+                break;
+            case FIELD_SECTOR1:
+            case FIELD_SECTOR2:
+            case FIELD_SECTOR3: {
+                int si = fid - FIELD_SECTOR1;  // 0-based sector index
+                uint32_t now_ms = millis();
+                auto sec_fmt = [](char *b, size_t len, uint8_t n, uint32_t ms) {
+                    snprintf(b, len, "S%u %u.%02u", (unsigned)n,
+                             ms / 1000, (ms % 1000) / 10);
+                };
+                if (lt.in_lap) {
+                    const uint32_t *s_ms = sess.laps[sess.lap_count].sector_ms;
+                    uint8_t cs      = lt.current_sector;
+                    uint32_t run_ms = now_ms - lt.sector_start_ms;
+                    if ((int)cs > si) {
+                        sec_fmt(buf, sizeof(buf), si+1, s_ms[si]);
+                        lv_obj_set_style_text_color(lbl, BRL_CLR_TEXT_DIM, 0);
+                    } else if ((int)cs == si) {
+                        snprintf(buf, sizeof(buf), "> %u.%02u", run_ms/1000, (run_ms%1000)/10);
+                        lv_obj_set_style_text_color(lbl, BRL_CLR_ACCENT, 0);
+                    } else {
+                        strncpy(buf, "---", sizeof(buf));
+                        lv_obj_set_style_text_color(lbl, BRL_CLR_TEXT_DIM, 0);
+                    }
+                } else if (sess.lap_count > 0) {
+                    const RecordedLap &last = sess.laps[sess.lap_count - 1];
+                    if (last.sector_ms[si] > 0) {
+                        sec_fmt(buf, sizeof(buf), si+1, last.sector_ms[si]);
+                        lv_obj_set_style_text_color(lbl, BRL_CLR_TEXT, 0);
+                    } else strncpy(buf, "---", sizeof(buf));
+                } else strncpy(buf, "---", sizeof(buf));
+                lv_label_set_text(lbl, buf);
+                return;
+            }
+            case FIELD_RPM:
+                snprintf(buf, sizeof(buf), "%.0f rpm", obd.rpm);
+                break;
+            case FIELD_THROTTLE:
+                snprintf(buf, sizeof(buf), "%.0f %%", obd.throttle_pct);
+                break;
+            case FIELD_BOOST: {
+                float boost = obd.boost_kpa - 101.3f;
+                snprintf(buf, sizeof(buf), "%+.0f kPa", boost);
+                break;
+            }
+            case FIELD_COOLANT:
+                snprintf(buf, sizeof(buf), "%.0f °C", obd.coolant_temp_c);
+                break;
+            case FIELD_INTAKE:
+                snprintf(buf, sizeof(buf), "%.0f °C", obd.intake_temp_c);
+                break;
+            case FIELD_LAMBDA:
+                snprintf(buf, sizeof(buf), "%.2f \xCE\xBB", obd.lambda);
+                break;
+            case FIELD_BRAKE:
+                snprintf(buf, sizeof(buf), "%.0f %%", obd.brake_pct);
+                break;
+            case FIELD_STEERING:
+                snprintf(buf, sizeof(buf), "%+.0f°", obd.steering_angle);
+                break;
+            default:
+                return;
         }
-        char buf[16];
-        snprintf(buf, sizeof(buf), "%u:%05.2f",
-                 ms / 60000, fmod(ms / 1000.0f, 60.0f));
-        lv_label_set_text(tw.laptime_lbl, buf);
-    }
-    if (tw.bestlap_lbl && g_state.session.lap_count > 0) {
-        uint32_t ms = g_state.session.laps[g_state.session.best_lap_idx].total_ms;
-        if (ms > 0) {
-            char buf[16];
-            snprintf(buf, sizeof(buf), "%u:%05.2f",
-                     ms / 60000, fmod(ms / 1000.0f, 60.0f));
-            lv_label_set_text(tw.bestlap_lbl, buf);
-        }
-    }
-    if (tw.delta_lbl) {
-        int32_t d = g_state.timing.live_delta_ms;
-        char buf[16];
-        snprintf(buf, sizeof(buf), "%+.2f s", d / 1000.0f);
-        lv_label_set_text(tw.delta_lbl, buf);
-        lv_obj_set_style_text_color(tw.delta_lbl,
-            d < 0 ? lv_color_hex(0x00CC66)
-                  : (d > 0 ? lv_color_hex(0xFF4444) : lv_color_hex(0xFFFFFF)), 0);
-    }
+        lv_label_set_text(lbl, buf);
+    };
+
+    for (int i = 0; i < Z1_SLOTS; i++) update_slot(tw.z1_val[i], g_dash_cfg.z1[i]);
+    for (int i = 0; i < Z2_SLOTS; i++) update_slot(tw.z2_val[i], g_dash_cfg.z2[i]);
+    for (int i = 0; i < Z3_SLOTS; i++) update_slot(tw.z3_val[i], g_dash_cfg.z3[i]);
+
     if (tw.delta_bar_fill && tw.delta_bar_lbl) {
         int32_t d     = g_state.timing.live_delta_ms;
         int32_t scale = timing_get_delta_scale();
@@ -1408,134 +1484,7 @@ void timer_live_update(lv_timer_t * /*t*/) {
             d < 0 ? lv_color_hex(0x00CC66)
                   : (d > 0 ? lv_color_hex(0xFF4444) : lv_color_hex(0xFFFFFF)), 0);
     }
-    if (tw.lap_nr_lbl) {
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%d", (int)g_state.timing.lap_number);
-        lv_label_set_text(tw.lap_nr_lbl, buf);
-    }
-    // Sectors — live running time for current sector, completed for past, last lap when idle
-    {
-        const LiveTiming &lt  = g_state.timing;
-        const LapSession &sess = g_state.session;
-        uint32_t now = millis();
 
-        // Helper: format sector ms as "S<n> M.CS" (e.g. "S1 1.45")
-        auto sec_fmt = [](char *b, size_t len, uint8_t n, uint32_t ms) {
-            snprintf(b, len, "S%u %u.%02u", (unsigned)n,
-                     ms / 1000, (ms % 1000) / 10);
-        };
-
-        if (lt.in_lap) {
-            // in-progress lap: completed sectors stored at sess.laps[sess.lap_count]
-            const uint32_t *s_ms = sess.laps[sess.lap_count].sector_ms;
-            uint8_t cs      = lt.current_sector;
-            uint32_t run_ms = now - lt.sector_start_ms;
-
-            // Sector 1 (index 0)
-            if (tw.sec1_lbl) {
-                char buf[16];
-                if (cs > 0) {
-                    sec_fmt(buf, sizeof(buf), 1, s_ms[0]);
-                    lv_obj_set_style_text_color(tw.sec1_lbl, BRL_CLR_TEXT_DIM, 0);
-                } else {
-                    snprintf(buf, sizeof(buf), "> %u.%02u", run_ms/1000, (run_ms%1000)/10);
-                    lv_obj_set_style_text_color(tw.sec1_lbl, BRL_CLR_ACCENT, 0);
-                }
-                lv_label_set_text(tw.sec1_lbl, buf);
-            }
-            // Sector 2 (index 1)
-            if (tw.sec2_lbl) {
-                char buf[16];
-                if (cs > 1) {
-                    sec_fmt(buf, sizeof(buf), 2, s_ms[1]);
-                    lv_obj_set_style_text_color(tw.sec2_lbl, BRL_CLR_TEXT_DIM, 0);
-                } else if (cs == 1) {
-                    snprintf(buf, sizeof(buf), "> %u.%02u", run_ms/1000, (run_ms%1000)/10);
-                    lv_obj_set_style_text_color(tw.sec2_lbl, BRL_CLR_ACCENT, 0);
-                } else {
-                    strncpy(buf, "---", sizeof(buf));
-                    lv_obj_set_style_text_color(tw.sec2_lbl, BRL_CLR_TEXT_DIM, 0);
-                }
-                lv_label_set_text(tw.sec2_lbl, buf);
-            }
-            // Sector 3 (index 2)
-            if (tw.sec3_lbl) {
-                char buf[16];
-                if (cs > 2) {
-                    sec_fmt(buf, sizeof(buf), 3, s_ms[2]);
-                    lv_obj_set_style_text_color(tw.sec3_lbl, BRL_CLR_TEXT_DIM, 0);
-                } else if (cs == 2) {
-                    snprintf(buf, sizeof(buf), "> %u.%02u", run_ms/1000, (run_ms%1000)/10);
-                    lv_obj_set_style_text_color(tw.sec3_lbl, BRL_CLR_ACCENT, 0);
-                } else {
-                    strncpy(buf, "---", sizeof(buf));
-                    lv_obj_set_style_text_color(tw.sec3_lbl, BRL_CLR_TEXT_DIM, 0);
-                }
-                lv_label_set_text(tw.sec3_lbl, buf);
-            }
-        } else if (sess.lap_count > 0) {
-            // Not in lap — show last completed lap's sector times
-            const RecordedLap &last = sess.laps[sess.lap_count - 1];
-            if (tw.sec1_lbl && last.sector_ms[0] > 0) {
-                char buf[16]; sec_fmt(buf, sizeof(buf), 1, last.sector_ms[0]);
-                lv_label_set_text(tw.sec1_lbl, buf);
-                lv_obj_set_style_text_color(tw.sec1_lbl, BRL_CLR_TEXT, 0);
-            }
-            if (tw.sec2_lbl && last.sector_ms[1] > 0) {
-                char buf[16]; sec_fmt(buf, sizeof(buf), 2, last.sector_ms[1]);
-                lv_label_set_text(tw.sec2_lbl, buf);
-                lv_obj_set_style_text_color(tw.sec2_lbl, BRL_CLR_TEXT, 0);
-            }
-            if (tw.sec3_lbl && last.sector_ms[2] > 0) {
-                char buf[16]; sec_fmt(buf, sizeof(buf), 3, last.sector_ms[2]);
-                lv_label_set_text(tw.sec3_lbl, buf);
-                lv_obj_set_style_text_color(tw.sec3_lbl, BRL_CLR_TEXT, 0);
-            }
-        }
-    }
-    // OBD widgets
-    if (tw.rpm_lbl) {
-        char buf[16];
-        snprintf(buf, sizeof(buf), "%.0f rpm", g_state.obd.rpm);
-        lv_label_set_text(tw.rpm_lbl, buf);
-    }
-    if (tw.throttle_lbl) {
-        char buf[12];
-        snprintf(buf, sizeof(buf), "%.0f %%", g_state.obd.throttle_pct);
-        lv_label_set_text(tw.throttle_lbl, buf);
-    }
-    if (tw.boost_lbl) {
-        // boost_kpa is MAP absolute; show as boost (subtract ~101 kPa)
-        float boost = g_state.obd.boost_kpa - 101.3f;
-        char buf[16];
-        snprintf(buf, sizeof(buf), "%+.0f kPa", boost);
-        lv_label_set_text(tw.boost_lbl, buf);
-    }
-    if (tw.lambda_lbl) {
-        char buf[12];
-        snprintf(buf, sizeof(buf), "%.2f λ", g_state.obd.lambda);
-        lv_label_set_text(tw.lambda_lbl, buf);
-    }
-    if (tw.brake_lbl) {
-        char buf[12];
-        snprintf(buf, sizeof(buf), "%.0f %%", g_state.obd.brake_pct);
-        lv_label_set_text(tw.brake_lbl, buf);
-    }
-    if (tw.coolant_lbl) {
-        char buf[12];
-        snprintf(buf, sizeof(buf), "%.0f °C", g_state.obd.coolant_temp_c);
-        lv_label_set_text(tw.coolant_lbl, buf);
-    }
-    // gear_lbl and steering_lbl: ObdData has no gear field; use steering_angle
-    if (tw.gear_lbl) {
-        // Gear not in ObdData — show placeholder
-        lv_label_set_text(tw.gear_lbl, "-");
-    }
-    if (tw.steering_lbl) {
-        char buf[12];
-        snprintf(buf, sizeof(buf), "%+.0f°", g_state.obd.steering_angle);
-        lv_label_set_text(tw.steering_lbl, buf);
-    }
     // Track name
     if (tw.track_name_lbl) {
         if (g_state.active_track_idx >= 0 && g_state.active_track_idx < track_total_count()) {

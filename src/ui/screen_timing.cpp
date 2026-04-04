@@ -1,13 +1,17 @@
 /**
- * screen_timing.cpp — Timing screen with configurable widget grid
+ * screen_timing.cpp — Timing screen with configurable data slots
  *
  * Layout (800×480):
- *   y=  0  Status bar  (40px)
- *   y= 40  Header bar  (50px): ← MENÜ | track name | START/STOP | ⚙
- *   y= 90  Zone 1      (140px): SPEED (wide), LAPTIME (wide), BESTLAP, DELTA, LAP_NR
- *   y=234  Zone 2      ( 85px): S1, S2, S3
- *   y=323  Zone 3      ( 75px): RPM, THROTTLE, BOOST, LAMBDA, BRAKE, COOLANT, GEAR, STEERING
- *   (zones hidden if all their widgets are disabled)
+ *   y=  0  Status bar  (40 px)
+ *   y= 40  Header bar  (50 px): ← MENÜ | track name | START/STOP
+ *   y= 90  Delta bar   (80 px, fixed — not configurable)
+ *   y=176  Zone 1     (≈140 px): 5 slots — 0-1 wide (390 px), 2-4 narrow (193 px)
+ *   y=322  Zone 2     (≈ 85 px): 3 equal-width sector slots
+ *   y=413  Zone 3     (≈ 60 px): 5 equal-width OBD slots
+ *
+ * Tapping any slot card opens a field-picker popup filtered to:
+ *   Zone 1 & 2 → laptimer / GPS fields only
+ *   Zone 3     → OBD fields only
  */
 
 #include "screen_timing.h"
@@ -32,7 +36,7 @@ extern void menu_screen_show();
 // ---------------------------------------------------------------------------
 TimingWidgets     tw = {};
 static lv_obj_t  *s_timing_screen  = nullptr;
-static lv_obj_t  *s_layout_overlay = nullptr;
+static lv_obj_t  *s_picker_overlay = nullptr;
 
 // Delta bar scale — persists across screen rebuilds
 static int32_t    s_delta_scale_ms = 3000;  // ±3 s default
@@ -40,41 +44,54 @@ static int32_t    s_delta_scale_ms = 3000;  // ±3 s default
 int32_t timing_get_delta_scale() { return s_delta_scale_ms; }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Field metadata
 // ---------------------------------------------------------------------------
-static lv_obj_t *mk_card(lv_obj_t *parent, int w, int h,
-                          const char *title,
-                          const lv_font_t *vfont, lv_color_t vcol,
-                          lv_obj_t **val_out) {
-    lv_obj_t *c = lv_obj_create(parent);
-    lv_obj_set_size(c, w, h);
-    brl_style_card(c);
-    lv_obj_remove_flag(c, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t *t = lv_label_create(c);
-    lv_label_set_text(t, title);
-    brl_style_label(t, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
-    lv_obj_align(t, LV_ALIGN_TOP_LEFT, 0, 0);
-
-    lv_obj_t *v = lv_label_create(c);
-    lv_label_set_text(v, "---");
-    brl_style_label(v, vfont, vcol);
-    lv_obj_align(v, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-
-    if (val_out) *val_out = v;
-    return c;
+static const char *field_title(uint8_t f) {
+    switch (f) {
+        case FIELD_SPEED:     return tr(TR_SPEED);
+        case FIELD_LAPTIME:   return tr(TR_LAPTIME);
+        case FIELD_BESTLAP:   return tr(TR_BESTLAP);
+        case FIELD_DELTA_NUM: return tr(TR_LIVE_DELTA);
+        case FIELD_LAP_NR:    return tr(TR_LAP);
+        case FIELD_SECTOR1:   return tr(TR_SECTOR1);
+        case FIELD_SECTOR2:   return tr(TR_SECTOR2);
+        case FIELD_SECTOR3:   return tr(TR_SECTOR3);
+        case FIELD_MAP:       return "MAP";
+        case FIELD_RPM:       return tr(TR_RPM);
+        case FIELD_THROTTLE:  return tr(TR_THROTTLE);
+        case FIELD_BOOST:     return tr(TR_BOOST);
+        case FIELD_LAMBDA:    return tr(TR_LAMBDA);
+        case FIELD_BRAKE:     return tr(TR_BRAKE);
+        case FIELD_COOLANT:   return tr(TR_COOLANT);
+        case FIELD_INTAKE:    return tr(TR_INTAKE);
+        case FIELD_STEERING:  return tr(TR_STEERING);
+        default:              return "---";
+    }
 }
 
-// Row container — flex row, no scroll, transparent bg
-static lv_obj_t *mk_row(lv_obj_t *parent, int y, int h) {
-    lv_obj_t *r = lv_obj_create(parent);
-    lv_obj_set_size(r, 784, h);
-    lv_obj_set_pos(r, 8, y);
-    brl_style_transparent(r);
-    lv_obj_remove_flag(r, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_flex_flow(r, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(r, 4, LV_STATE_DEFAULT);
-    return r;
+// Value font + color per field
+static const lv_font_t *field_font(uint8_t f, bool wide) {
+    switch (f) {
+        case FIELD_SPEED:     return wide ? &BRL_FONT_48 : &BRL_FONT_32;
+        case FIELD_LAPTIME:   return wide ? &BRL_FONT_40 : &BRL_FONT_32;
+        case FIELD_BESTLAP:   return &BRL_FONT_24;
+        case FIELD_DELTA_NUM: return &BRL_FONT_24;
+        case FIELD_LAP_NR:    return &BRL_FONT_32;
+        case FIELD_SECTOR1:
+        case FIELD_SECTOR2:
+        case FIELD_SECTOR3:   return &BRL_FONT_24;
+        default:              return &BRL_FONT_20;
+    }
+}
+
+static lv_color_t field_color(uint8_t f) {
+    switch (f) {
+        case FIELD_LAPTIME:   return BRL_CLR_ACCENT;
+        case FIELD_DELTA_NUM: return BRL_CLR_TEXT_DIM;
+        case FIELD_BOOST:     return BRL_CLR_WARN;
+        case FIELD_BRAKE:     return BRL_CLR_DANGER;
+        default:              return BRL_CLR_TEXT;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -93,12 +110,10 @@ static void cb_map_draw(lv_event_t *e) {
     int32_t H = a.y2 - a.y1 + 1;
     if (W <= 0 || H <= 0) return;
 
-    // Helper: normalized [0..1] → screen pixel
     auto px = [&](float nx) -> float { return (float)a.x1 + nx * (float)W; };
     auto py = [&](float ny) -> float { return (float)a.y1 + ny * (float)H; };
 
     if (!g_map_data.valid || (g_map_data.ref_n < 2 && !g_map_data.has_pos)) {
-        // Placeholder
         lv_draw_label_dsc_t ldsc;
         lv_draw_label_dsc_init(&ldsc);
         ldsc.color = lv_color_hex(0x555555);
@@ -139,11 +154,10 @@ static void cb_map_draw(lv_event_t *e) {
         }
     }
 
-    // Current GPS position — bright dot
+    // Current GPS position dot
     if (g_map_data.has_pos) {
         int32_t cx = (int32_t)px(g_map_data.pos_x);
         int32_t cy = (int32_t)py(g_map_data.pos_y);
-        // Outer glow
         lv_draw_rect_dsc_t rdsc;
         lv_draw_rect_dsc_init(&rdsc);
         rdsc.bg_color = lv_color_hex(0x0096FF);
@@ -153,7 +167,6 @@ static void cb_map_draw(lv_event_t *e) {
         rdsc.shadow_width = 0;
         lv_area_t ga = {cx-8, cy-8, cx+8, cy+8};
         lv_draw_rect(layer, &rdsc, &ga);
-        // Inner dot
         rdsc.bg_color = lv_color_white();
         rdsc.bg_opa   = LV_OPA_COVER;
         lv_area_t da = {cx-4, cy-4, cx+4, cy+4};
@@ -162,121 +175,196 @@ static void cb_map_draw(lv_event_t *e) {
 }
 
 // ---------------------------------------------------------------------------
-// Layout editor
+// Field picker popup
 // ---------------------------------------------------------------------------
-#define NUM_WIDGETS 17
-static const TrKey WIDGET_NAME_KEYS[NUM_WIDGETS] = {
-    TR_WNAME_SPEED,    TR_WNAME_LAPTIME, TR_WNAME_BESTLAP,  TR_WNAME_DELTA,
-    TR_WNAME_LAPNR,    TR_WNAME_SEC1,    TR_WNAME_SEC2,     TR_WNAME_SEC3,
-    TR_WNAME_RPM,      TR_WNAME_THROTTLE,TR_WNAME_BOOST,    TR_WNAME_LAMBDA,
-    TR_WNAME_BRAKE,    TR_WNAME_COOLANT, TR_WNAME_GEAR,     TR_WNAME_STEERING,
-    TR_WNAME_MAP,
-};
-static const uint32_t WIDGET_BITS[NUM_WIDGETS] = {
-    WDGT_SPEED, WDGT_LAPTIME, WDGT_BESTLAP, WDGT_DELTA, WDGT_LAP_NR,
-    WDGT_SECTOR1, WDGT_SECTOR2, WDGT_SECTOR3,
-    WDGT_RPM, WDGT_THROTTLE, WDGT_BOOST, WDGT_LAMBDA,
-    WDGT_BRAKE, WDGT_COOLANT, WDGT_GEAR, WDGT_STEERING,
-    WDGT_MAP,
-};
-static lv_obj_t *s_editor_cbs[NUM_WIDGETS] = {};
 
-static void cb_layout_cancel(lv_event_t * /*e*/) {
-    if (s_layout_overlay) {
-        lv_obj_delete(s_layout_overlay);
-        s_layout_overlay = nullptr;
+// Encode zone+slot into a single pointer-sized token
+#define PICKER_TOKEN(zone, slot) ((void*)(intptr_t)(((zone) << 8) | (slot)))
+#define PICKER_ZONE(tok)         (((int)(intptr_t)(tok)) >> 8)
+#define PICKER_SLOT(tok)         (((int)(intptr_t)(tok)) & 0xFF)
+
+static void close_picker() {
+    if (s_picker_overlay) {
+        lv_obj_delete(s_picker_overlay);
+        s_picker_overlay = nullptr;
     }
 }
 
-static void cb_layout_save(lv_event_t * /*e*/) {
-    uint32_t mask = 0;
-    for (int i = 0; i < NUM_WIDGETS; i++) {
-        if (s_editor_cbs[i] && lv_obj_has_state(s_editor_cbs[i], LV_STATE_CHECKED)) {
-            mask |= WIDGET_BITS[i];
-        }
+// Called when user taps a field button in the picker
+static void cb_pick_field(lv_event_t *e) {
+    // user_data on the button encodes the FieldId
+    uint8_t fid = (uint8_t)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e));
+    // zone+slot encoded in the event user_data (via lv_obj_add_event_cb)
+    int token = (int)(intptr_t)lv_event_get_user_data(e);
+    int zone  = token >> 8;
+    int slot  = token & 0xFF;
+
+    switch (zone) {
+        case 1: g_dash_cfg.z1[slot] = fid; break;
+        case 2: g_dash_cfg.z2[slot] = fid; break;
+        case 3: g_dash_cfg.z3[slot] = fid; break;
     }
-    g_dash_cfg.visible_mask = mask ? mask : WDGT_DEFAULT_MASK;
     dash_config_save();
-    s_layout_overlay = nullptr;
+    close_picker();
     timing_screen_rebuild();
 }
 
-static void open_layout_editor() {
-    if (s_layout_overlay || !s_timing_screen) return;
+// Laptimer-side field list (Zone 1 & 2)
+static const uint8_t LAPTIME_FIELDS[] = {
+    FIELD_SPEED, FIELD_LAPTIME, FIELD_BESTLAP, FIELD_DELTA_NUM,
+    FIELD_LAP_NR, FIELD_SECTOR1, FIELD_SECTOR2, FIELD_SECTOR3,
+    FIELD_MAP, FIELD_NONE,
+};
+// OBD field list (Zone 3)
+static const uint8_t OBD_FIELDS[] = {
+    FIELD_RPM, FIELD_THROTTLE, FIELD_BOOST, FIELD_COOLANT,
+    FIELD_INTAKE, FIELD_LAMBDA, FIELD_BRAKE, FIELD_STEERING,
+    FIELD_NONE,
+};
 
-    s_layout_overlay = lv_obj_create(s_timing_screen);
-    lv_obj_set_size(s_layout_overlay, 800, 480);
-    lv_obj_set_pos(s_layout_overlay, 0, 0);
-    lv_obj_set_style_bg_color(s_layout_overlay, lv_color_hex(0x000000), LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(s_layout_overlay, LV_OPA_80, LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(s_layout_overlay, 0, LV_STATE_DEFAULT);
-    lv_obj_remove_flag(s_layout_overlay, LV_OBJ_FLAG_SCROLLABLE);
+static void open_field_picker(int zone, int slot, uint8_t current_field) {
+    if (!s_timing_screen) return;
+    close_picker();  // dismiss any existing picker
 
-    lv_obj_t *card = lv_obj_create(s_layout_overlay);
-    lv_obj_set_size(card, 740, 400);
-    lv_obj_center(card);
+    s_picker_overlay = lv_obj_create(s_timing_screen);
+    lv_obj_set_size(s_picker_overlay, 800, 480);
+    lv_obj_set_pos(s_picker_overlay, 0, 0);
+    lv_obj_set_style_bg_color(s_picker_overlay, lv_color_hex(0x000000), LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(s_picker_overlay, LV_OPA_80, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(s_picker_overlay, 0, LV_STATE_DEFAULT);
+    lv_obj_remove_flag(s_picker_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    // Tap backdrop to dismiss
+    lv_obj_add_flag(s_picker_overlay, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_picker_overlay, [](lv_event_t * /*e*/) { close_picker(); },
+                        LV_EVENT_CLICKED, nullptr);
+
+    // Card
+    lv_obj_t *card = lv_obj_create(s_picker_overlay);
+    lv_obj_set_size(card, 680, 260);
+    lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
     brl_style_card(card);
     lv_obj_set_style_pad_all(card, 12, LV_STATE_DEFAULT);
     lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    // Prevent clicks from reaching backdrop
+    lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(card, [](lv_event_t *ev) { lv_event_stop_bubbling(ev); },
+                        LV_EVENT_CLICKED, nullptr);
 
+    // Title
     lv_obj_t *ttl = lv_label_create(card);
-    lv_label_set_text_fmt(ttl, LV_SYMBOL_SETTINGS "  %s", tr(TR_CUSTOMIZE_LAYOUT));
-    brl_style_label(ttl, &BRL_FONT_20, BRL_CLR_TEXT);
+    lv_label_set_text_fmt(ttl, "Datenfeld wählen (Zone %d · Slot %d)", zone, slot + 1);
+    brl_style_label(ttl, &BRL_FONT_16, BRL_CLR_TEXT);
     lv_obj_align(ttl, LV_ALIGN_TOP_LEFT, 0, 0);
 
+    // Button grid
     lv_obj_t *grid = lv_obj_create(card);
-    lv_obj_set_size(grid, 716, 300);
-    lv_obj_align(grid, LV_ALIGN_TOP_LEFT, 0, 36);
+    lv_obj_set_size(grid, 656, 190);
+    lv_obj_align(grid, LV_ALIGN_BOTTOM_MID, 0, 0);
     brl_style_transparent(grid);
     lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_style_pad_column(grid, 8, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_column(grid, 6, LV_STATE_DEFAULT);
     lv_obj_set_style_pad_row(grid, 6, LV_STATE_DEFAULT);
+    lv_obj_remove_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
 
-    for (int i = 0; i < NUM_WIDGETS; i++) {
-        lv_obj_t *cb = lv_checkbox_create(grid);
-        lv_checkbox_set_text(cb, tr(WIDGET_NAME_KEYS[i]));
-        lv_obj_set_width(cb, 340);
-        lv_obj_set_style_text_font(cb, &BRL_FONT_14, LV_STATE_DEFAULT);
-        lv_obj_set_style_text_color(cb, BRL_CLR_TEXT, LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_color(cb, BRL_CLR_ACCENT,
-            LV_STATE_CHECKED | LV_PART_INDICATOR);
-        lv_obj_set_style_border_color(cb, BRL_CLR_BORDER,
-            LV_PART_INDICATOR | LV_STATE_DEFAULT);
-        if (g_dash_cfg.visible_mask & WIDGET_BITS[i])
-            lv_obj_add_state(cb, LV_STATE_CHECKED);
-        s_editor_cbs[i] = cb;
+    const uint8_t *fields = (zone == 3) ? OBD_FIELDS : LAPTIME_FIELDS;
+    int n_fields = (zone == 3) ? (int)sizeof(OBD_FIELDS) : (int)sizeof(LAPTIME_FIELDS);
+
+    int token = (zone << 8) | slot;
+
+    for (int i = 0; i < n_fields; i++) {
+        uint8_t fid = fields[i];
+        lv_obj_t *btn = lv_button_create(grid);
+        lv_obj_set_size(btn, 148, 50);
+        bool active = (fid == current_field);
+        brl_style_btn(btn, active ? BRL_CLR_ACCENT : BRL_CLR_SURFACE2);
+        lv_obj_set_user_data(btn, (void*)(intptr_t)fid);
+        lv_obj_add_event_cb(btn, cb_pick_field, LV_EVENT_CLICKED, (void*)(intptr_t)token);
+
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_label_set_text(lbl, fid == FIELD_NONE ? "AUS" : field_title(fid));
+        brl_style_label(lbl, &BRL_FONT_14, BRL_CLR_TEXT);
+        lv_obj_center(lbl);
+    }
+}
+
+// Slot click callback — zone+slot encoded in user_data of card object
+static void cb_slot_click(lv_event_t *e) {
+    lv_obj_t *card = (lv_obj_t*)lv_event_get_current_target(e);
+    int token = (int)(intptr_t)lv_obj_get_user_data(card);
+    int zone  = token >> 8;
+    int slot  = token & 0xFF;
+    uint8_t cur = 0;
+    switch (zone) {
+        case 1: cur = g_dash_cfg.z1[slot]; break;
+        case 2: cur = g_dash_cfg.z2[slot]; break;
+        case 3: cur = g_dash_cfg.z3[slot]; break;
+    }
+    open_field_picker(zone, slot, cur);
+}
+
+// ---------------------------------------------------------------------------
+// Card builder helper
+// ---------------------------------------------------------------------------
+static lv_obj_t *mk_row(lv_obj_t *parent, int y, int h) {
+    lv_obj_t *r = lv_obj_create(parent);
+    lv_obj_set_size(r, 784, h);
+    lv_obj_set_pos(r, 8, y);
+    brl_style_transparent(r);
+    lv_obj_remove_flag(r, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(r, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(r, 4, LV_STATE_DEFAULT);
+    return r;
+}
+
+// Build one slot card. Returns the value label (or null for MAP / NONE).
+// title_out receives the title label so it can be updated on rebuild.
+static lv_obj_t *mk_slot_card(lv_obj_t *row, int zone, int slot_idx,
+                               uint8_t fid, int w, int h,
+                               lv_obj_t **title_out) {
+    lv_obj_t *c = lv_obj_create(row);
+    lv_obj_set_size(c, w, h);
+    brl_style_card(c);
+    lv_obj_remove_flag(c, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(c, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_user_data(c, PICKER_TOKEN(zone, slot_idx));
+    lv_obj_add_event_cb(c, cb_slot_click, LV_EVENT_CLICKED, nullptr);
+    // Pressed highlight
+    lv_obj_set_style_bg_color(c, BRL_CLR_SURFACE2, LV_STATE_PRESSED);
+
+    // Title label
+    lv_obj_t *t = lv_label_create(c);
+    lv_label_set_text(t, fid == FIELD_NONE ? "---" : field_title(fid));
+    brl_style_label(t, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+    lv_obj_align(t, LV_ALIGN_TOP_LEFT, 0, 0);
+    if (title_out) *title_out = t;
+
+    if (fid == FIELD_NONE) return nullptr;
+
+    if (fid == FIELD_MAP) {
+        // Map widget fills the card
+        tw.map_obj = lv_obj_create(c);
+        lv_obj_set_size(tw.map_obj, w - 16, h - 32);
+        lv_obj_align(tw.map_obj, LV_ALIGN_BOTTOM_MID, 0, 0);
+        brl_style_transparent(tw.map_obj);
+        lv_obj_remove_flag(tw.map_obj, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_event_cb(tw.map_obj, cb_map_draw, LV_EVENT_DRAW_MAIN, nullptr);
+        lv_obj_add_event_cb(tw.map_obj, cb_map_draw, LV_EVENT_DRAW_POST, nullptr);
+        return nullptr;
     }
 
-    lv_obj_t *btn_save = lv_button_create(card);
-    lv_obj_set_size(btn_save, 150, 40);
-    lv_obj_align(btn_save, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
-    lv_obj_set_style_bg_color(btn_save, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
-    lv_obj_set_style_radius(btn_save, 6, LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(btn_save, 0, LV_STATE_DEFAULT);
-    lv_obj_t *lsave = lv_label_create(btn_save);
-    lv_label_set_text_fmt(lsave, LV_SYMBOL_OK "  %s", tr(TR_SAVE_BTN));
-    brl_style_label(lsave, &BRL_FONT_14, BRL_CLR_TEXT);
-    lv_obj_center(lsave);
-    lv_obj_add_event_cb(btn_save, cb_layout_save, LV_EVENT_CLICKED, nullptr);
-
-    lv_obj_t *btn_cancel = lv_button_create(card);
-    lv_obj_set_size(btn_cancel, 130, 40);
-    lv_obj_align(btn_cancel, LV_ALIGN_BOTTOM_RIGHT, -160, 0);
-    lv_obj_set_style_bg_color(btn_cancel, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
-    lv_obj_set_style_radius(btn_cancel, 6, LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(btn_cancel, 0, LV_STATE_DEFAULT);
-    lv_obj_t *lcancel = lv_label_create(btn_cancel);
-    lv_label_set_text_fmt(lcancel, LV_SYMBOL_CLOSE "  %s", tr(TR_CANCEL_BTN));
-    brl_style_label(lcancel, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
-    lv_obj_center(lcancel);
-    lv_obj_add_event_cb(btn_cancel, cb_layout_cancel, LV_EVENT_CLICKED, nullptr);
+    // Value label
+    bool wide = (zone == 1 && slot_idx <= 1);
+    lv_obj_t *v = lv_label_create(c);
+    lv_label_set_text(v, "---");
+    brl_style_label(v, field_font(fid, wide), field_color(fid));
+    lv_obj_align(v, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    return v;
 }
 
 // ---------------------------------------------------------------------------
 // Build
 // ---------------------------------------------------------------------------
 static void cb_back(lv_event_t * /*e*/) { menu_screen_show(); }
-static void cb_layout_btn(lv_event_t * /*e*/) { open_layout_editor(); }
 
 static void cb_start_stop(lv_event_t * /*e*/) {
     LiveTiming &lt = g_state.timing;
@@ -298,14 +386,12 @@ static void cb_start_stop(lv_event_t * /*e*/) {
 }
 
 lv_obj_t *timing_screen_build() {
-    const uint32_t mask = g_dash_cfg.visible_mask;
-
     lv_obj_t *scr = lv_obj_create(nullptr);
     lv_obj_set_style_bg_color(scr, BRL_CLR_BG, LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_STATE_DEFAULT);
     lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
-    // ── Status bar (40px) ──────────────────────────────────────────────────
+    // ── Status bar (40 px) ────────────────────────────────────────────────
     lv_obj_t *sb = lv_obj_create(scr);
     lv_obj_set_size(sb, 800, 40);
     lv_obj_set_pos(sb, 0, 0);
@@ -331,7 +417,7 @@ lv_obj_t *timing_screen_build() {
     brl_style_label(tw.sb_obd_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
     lv_obj_set_pos(tw.sb_obd_lbl, 230, 12);
 
-    // ── Header bar (50px) ──────────────────────────────────────────────────
+    // ── Header bar (50 px) ────────────────────────────────────────────────
     lv_obj_t *hdr = lv_obj_create(scr);
     lv_obj_set_size(hdr, 800, 50);
     lv_obj_set_pos(hdr, 0, 40);
@@ -342,46 +428,26 @@ lv_obj_t *timing_screen_build() {
     lv_obj_set_style_pad_all(hdr, 0, LV_STATE_DEFAULT);
     lv_obj_remove_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Back button
     lv_obj_t *back_btn = lv_button_create(hdr);
     lv_obj_set_size(back_btn, 100, 38);
     lv_obj_set_pos(back_btn, 6, 6);
-    lv_obj_set_style_bg_color(back_btn, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
-    lv_obj_set_style_radius(back_btn, 6, LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(back_btn, 0, LV_STATE_DEFAULT);
+    brl_style_btn(back_btn, BRL_CLR_SURFACE2);
     lv_obj_t *blbl = lv_label_create(back_btn);
     lv_label_set_text_fmt(blbl, LV_SYMBOL_LEFT "  %s", tr(TR_MENU_BTN));
     brl_style_label(blbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, cb_back, LV_EVENT_CLICKED, nullptr);
 
-    // Track name (center)
     tw.track_name_lbl = lv_label_create(hdr);
     const TrackDef *td = track_get(g_state.active_track_idx);
     lv_label_set_text(tw.track_name_lbl, td ? td->name : tr(TR_NO_TRACK));
     brl_style_label(tw.track_name_lbl, &BRL_FONT_16, BRL_CLR_TEXT);
     lv_obj_align(tw.track_name_lbl, LV_ALIGN_CENTER, 0, 0);
 
-    // Layout editor button
-    lv_obj_t *layout_btn = lv_button_create(hdr);
-    lv_obj_set_size(layout_btn, 120, 38);
-    lv_obj_align(layout_btn, LV_ALIGN_RIGHT_MID, -140, 0);
-    lv_obj_set_style_bg_color(layout_btn, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
-    lv_obj_set_style_radius(layout_btn, 6, LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(layout_btn, 0, LV_STATE_DEFAULT);
-    lv_obj_t *llbl = lv_label_create(layout_btn);
-    lv_label_set_text_fmt(llbl, LV_SYMBOL_SETTINGS "  %s", tr(TR_LAYOUT_BTN));
-    brl_style_label(llbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
-    lv_obj_center(llbl);
-    lv_obj_add_event_cb(layout_btn, cb_layout_btn, LV_EVENT_CLICKED, nullptr);
-
-    // Start/Stop button
     lv_obj_t *start_btn = lv_button_create(hdr);
     lv_obj_set_size(start_btn, 130, 38);
-    lv_obj_align(start_btn, LV_ALIGN_RIGHT_MID, -4, 0);
-    lv_obj_set_style_bg_color(start_btn, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
-    lv_obj_set_style_radius(start_btn, 6, LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(start_btn, 0, LV_STATE_DEFAULT);
+    lv_obj_align(start_btn, LV_ALIGN_RIGHT_MID, -6, 0);
+    brl_style_btn(start_btn, g_state.timing.timing_active ? BRL_CLR_DANGER : BRL_CLR_ACCENT);
     tw.start_btn_lbl = lv_label_create(start_btn);
     lv_label_set_text_fmt(tw.start_btn_lbl,
         g_state.timing.timing_active
@@ -389,16 +455,14 @@ lv_obj_t *timing_screen_build() {
         g_state.timing.timing_active ? tr(TR_STOP_BTN) : tr(TR_START_BTN));
     brl_style_label(tw.start_btn_lbl, &BRL_FONT_14, BRL_CLR_TEXT);
     lv_obj_center(tw.start_btn_lbl);
-    if (g_state.timing.timing_active)
-        lv_obj_set_style_bg_color(start_btn, BRL_CLR_DANGER, LV_STATE_DEFAULT);
     lv_obj_add_event_cb(start_btn, cb_start_stop, LV_EVENT_CLICKED, nullptr);
 
-    // ── Delta bar — sits between header and content with 6px gaps each side ──
+    // ── Delta bar (80 px, fixed) ──────────────────────────────────────────
     static lv_obj_t *s_scale_overlay = nullptr;
 
     const int DBAR_GAP = 6;
-    const int DBAR_H   = 80;   // same visual weight as sector zone
-    const int dbar_y   = 90 + DBAR_GAP;  // below header (y=90) + gap
+    const int DBAR_H   = 80;
+    const int dbar_y   = 90 + DBAR_GAP;
     const int cy_start = dbar_y + DBAR_H + DBAR_GAP;
 
     tw.delta_bar_h = (int16_t)DBAR_H;
@@ -413,7 +477,6 @@ lv_obj_t *timing_screen_build() {
     lv_obj_set_style_pad_all(dbar, 0, LV_STATE_DEFAULT);
     lv_obj_remove_flag(dbar, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Center marker (full height)
     lv_obj_t *cmark = lv_obj_create(dbar);
     lv_obj_set_size(cmark, 2, DBAR_H);
     lv_obj_set_pos(cmark, 399, 0);
@@ -423,7 +486,6 @@ lv_obj_t *timing_screen_build() {
     lv_obj_set_style_radius(cmark, 0, LV_STATE_DEFAULT);
     lv_obj_remove_flag(cmark, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Fill rectangle (width/position set by timer)
     tw.delta_bar_fill = lv_obj_create(dbar);
     lv_obj_set_size(tw.delta_bar_fill, 0, DBAR_H);
     lv_obj_set_pos(tw.delta_bar_fill, 400, 0);
@@ -433,19 +495,17 @@ lv_obj_t *timing_screen_build() {
     lv_obj_set_style_radius(tw.delta_bar_fill, 0, LV_STATE_DEFAULT);
     lv_obj_remove_flag(tw.delta_bar_fill, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Delta label — centered, larger font
     tw.delta_bar_lbl = lv_label_create(dbar);
     lv_label_set_text(tw.delta_bar_lbl, "\xC2\xB1" "0.00 s");
     brl_style_label(tw.delta_bar_lbl, &BRL_FONT_24, BRL_CLR_TEXT);
     lv_obj_align(tw.delta_bar_lbl, LV_ALIGN_CENTER, 0, 0);
 
-    // Tap delta bar → open scale picker popup
+    // Tap delta bar → scale picker
     lv_obj_add_flag(dbar, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(dbar, [](lv_event_t * /*e*/) {
         if (!s_timing_screen) return;
         if (s_scale_overlay) { lv_obj_delete(s_scale_overlay); s_scale_overlay = nullptr; return; }
 
-        // Semi-transparent backdrop
         s_scale_overlay = lv_obj_create(s_timing_screen);
         lv_obj_set_size(s_scale_overlay, 800, 480);
         lv_obj_set_pos(s_scale_overlay, 0, 0);
@@ -453,30 +513,26 @@ lv_obj_t *timing_screen_build() {
         lv_obj_set_style_bg_opa(s_scale_overlay, LV_OPA_50, LV_STATE_DEFAULT);
         lv_obj_set_style_border_width(s_scale_overlay, 0, LV_STATE_DEFAULT);
         lv_obj_remove_flag(s_scale_overlay, LV_OBJ_FLAG_SCROLLABLE);
-        // Tap backdrop to dismiss
         lv_obj_add_flag(s_scale_overlay, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(s_scale_overlay, [](lv_event_t * /*e*/) {
             if (s_scale_overlay) { lv_obj_delete(s_scale_overlay); s_scale_overlay = nullptr; }
         }, LV_EVENT_CLICKED, nullptr);
 
-        // Picker card — centered
         lv_obj_t *card = lv_obj_create(s_scale_overlay);
         lv_obj_set_size(card, 360, 180);
         lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
         brl_style_card(card);
         lv_obj_set_style_pad_all(card, 12, LV_STATE_DEFAULT);
         lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-        // Stop click from reaching backdrop
         lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(card, [](lv_event_t *e) { lv_event_stop_bubbling(e); }, LV_EVENT_CLICKED, nullptr);
+        lv_obj_add_event_cb(card, [](lv_event_t *ev) { lv_event_stop_bubbling(ev); },
+                            LV_EVENT_CLICKED, nullptr);
 
-        // Title
         lv_obj_t *ttl = lv_label_create(card);
         lv_label_set_text(ttl, "Delta-Skala");
         brl_style_label(ttl, &BRL_FONT_16, BRL_CLR_TEXT);
         lv_obj_align(ttl, LV_ALIGN_TOP_MID, 0, 0);
 
-        // Scale buttons row
         lv_obj_t *row = lv_obj_create(card);
         lv_obj_set_size(row, 336, 80);
         lv_obj_align(row, LV_ALIGN_BOTTOM_MID, 0, 0);
@@ -485,7 +541,8 @@ lv_obj_t *timing_screen_build() {
         lv_obj_set_style_pad_column(row, 6, LV_STATE_DEFAULT);
 
         const int32_t scales[] = { 2000, 3000, 5000, 10000, 20000 };
-        const char *labels[]   = { "\xC2\xB1" "2s", "\xC2\xB1" "3s", "\xC2\xB1" "5s", "\xC2\xB1" "10s", "\xC2\xB1" "20s" };
+        const char *labels[]   = { "\xC2\xB1" "2s", "\xC2\xB1" "3s", "\xC2\xB1" "5s",
+                                   "\xC2\xB1" "10s", "\xC2\xB1" "20s" };
         for (int i = 0; i < 5; i++) {
             lv_obj_t *btn = lv_button_create(row);
             lv_obj_set_size(btn, 62, 70);
@@ -497,117 +554,60 @@ lv_obj_t *timing_screen_build() {
             lv_obj_center(lbl);
             lv_obj_set_user_data(btn, (void*)(intptr_t)scales[i]);
             lv_obj_add_event_cb(btn, [](lv_event_t *e) {
-                s_delta_scale_ms = (int32_t)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e));
+                s_delta_scale_ms = (int32_t)(intptr_t)lv_obj_get_user_data(
+                    (lv_obj_t*)lv_event_get_target(e));
                 if (s_scale_overlay) { lv_obj_delete(s_scale_overlay); s_scale_overlay = nullptr; }
             }, LV_EVENT_CLICKED, nullptr);
         }
     }, LV_EVENT_CLICKED, nullptr);
 
     // ── Content zones ─────────────────────────────────────────────────────
-    bool z1 = (mask & (WDGT_SPEED | WDGT_LAPTIME | WDGT_BESTLAP | WDGT_DELTA | WDGT_LAP_NR | WDGT_MAP));
-    bool z2 = (mask & (WDGT_SECTOR1 | WDGT_SECTOR2 | WDGT_SECTOR3));
-    bool z3 = (mask & (WDGT_RPM | WDGT_THROTTLE | WDGT_BOOST | WDGT_LAMBDA |
-                       WDGT_BRAKE | WDGT_COOLANT | WDGT_GEAR | WDGT_STEERING));
-
-    int zones   = (z1 ? 1 : 0) + (z2 ? 1 : 0) + (z3 ? 1 : 0);
-    int avail_h = 480 - cy_start - 8;
-    int h1 = 140, h2 = 85, h3 = 75;
-    if (zones > 0) {
-        int total_h = (z1 ? h1 : 0) + (z2 ? h2 : 0) + (z3 ? h3 : 0)
-                    + (zones - 1) * 6;
-        int slack = avail_h - total_h;
-        if (z1 && slack > 0) h1 += slack;
-    }
+    // Fixed heights: Z1=140, Z2=85, Z3=60 → total = 285, available = 480-cy_start-8
+    const int avail_h = 480 - cy_start - 8;
+    const int h3 = 60;
+    const int h2 = 85;
+    const int h1 = avail_h - h2 - h3 - 12;   // 12 = 2×6 px gaps
 
     int cy = cy_start;
 
-    if (z1) {
-        lv_obj_t *row1 = mk_row(scr, cy, h1);
-        const int CW = 193;
-        const int WW = 390;
-        const int h  = h1 - 10;
+    // ── Zone 1 ────────────────────────────────────────────────────────────
+    {
+        lv_obj_t *row = mk_row(scr, cy, h1);
+        const int ch = h1 - 10;
+        const int WW = 390;    // wide slot
+        const int NW = 193;    // narrow slot
 
-        if (mask & WDGT_SPEED)
-            mk_card(row1, WW, h, tr(TR_SPEED), &BRL_FONT_48,
-                    BRL_CLR_TEXT, &tw.speed_lbl);
-        if (mask & WDGT_LAPTIME)
-            mk_card(row1, WW, h, tr(TR_LAPTIME), &BRL_FONT_40,
-                    BRL_CLR_ACCENT, &tw.laptime_lbl);
-        if (mask & WDGT_BESTLAP)
-            mk_card(row1, CW, h, tr(TR_BESTLAP), &BRL_FONT_24,
-                    BRL_CLR_TEXT, &tw.bestlap_lbl);
-        if (mask & WDGT_DELTA)
-            mk_card(row1, CW, h, tr(TR_LIVE_DELTA), &BRL_FONT_24,
-                    BRL_CLR_TEXT_DIM, &tw.delta_lbl);
-        if (mask & WDGT_LAP_NR)
-            mk_card(row1, CW, h, tr(TR_LAP), &BRL_FONT_32,
-                    BRL_CLR_TEXT, &tw.lap_nr_lbl);
-        if (mask & WDGT_MAP) {
-            // Map takes remaining width, or WW if alone
-            tw.map_obj = lv_obj_create(row1);
-            lv_obj_set_size(tw.map_obj, LV_SIZE_CONTENT, h);
-            lv_obj_set_flex_grow(tw.map_obj, 1);   // fill remaining row space
-            brl_style_card(tw.map_obj);
-            lv_obj_remove_flag(tw.map_obj, LV_OBJ_FLAG_SCROLLABLE);
-            lv_obj_add_event_cb(tw.map_obj, cb_map_draw, LV_EVENT_DRAW_MAIN, nullptr);
-            lv_obj_add_event_cb(tw.map_obj, cb_map_draw, LV_EVENT_DRAW_POST, nullptr);
+        for (int s = 0; s < Z1_SLOTS; s++) {
+            int w = (s <= 1) ? WW : NW;
+            tw.z1_val[s] = mk_slot_card(row, 1, s, g_dash_cfg.z1[s], w, ch,
+                                        &tw.z1_title[s]);
         }
         cy += h1 + 6;
     }
 
-    if (z2) {
-        lv_obj_t *row2 = mk_row(scr, cy, h2);
-        int visible = ((mask & WDGT_SECTOR1) ? 1 : 0) +
-                      ((mask & WDGT_SECTOR2) ? 1 : 0) +
-                      ((mask & WDGT_SECTOR3) ? 1 : 0);
-        int sw = visible ? (784 - (visible - 1) * 4) / visible : 258;
-        int sh = h2 - 10;
+    // ── Zone 2 ────────────────────────────────────────────────────────────
+    {
+        lv_obj_t *row = mk_row(scr, cy, h2);
+        const int sw = (784 - (Z2_SLOTS - 1) * 4) / Z2_SLOTS;
+        const int sh = h2 - 10;
 
-        if (mask & WDGT_SECTOR1)
-            mk_card(row2, sw, sh, tr(TR_SECTOR1), &BRL_FONT_24,
-                    BRL_CLR_TEXT, &tw.sec1_lbl);
-        if (mask & WDGT_SECTOR2)
-            mk_card(row2, sw, sh, tr(TR_SECTOR2), &BRL_FONT_24,
-                    BRL_CLR_TEXT, &tw.sec2_lbl);
-        if (mask & WDGT_SECTOR3)
-            mk_card(row2, sw, sh, tr(TR_SECTOR3), &BRL_FONT_24,
-                    BRL_CLR_TEXT, &tw.sec3_lbl);
+        for (int s = 0; s < Z2_SLOTS; s++) {
+            tw.z2_val[s] = mk_slot_card(row, 2, s, g_dash_cfg.z2[s], sw, sh,
+                                        &tw.z2_title[s]);
+        }
         cy += h2 + 6;
     }
 
-    if (z3) {
-        lv_obj_t *row3 = mk_row(scr, cy, h3);
-        int visible = 0;
-        uint32_t obd_bits[] = { WDGT_RPM, WDGT_THROTTLE, WDGT_BOOST, WDGT_LAMBDA,
-                                 WDGT_BRAKE, WDGT_COOLANT, WDGT_GEAR, WDGT_STEERING };
-        for (auto b : obd_bits) if (mask & b) visible++;
-        int ow = visible ? (784 - (visible - 1) * 4) / visible : 93;
-        int oh = h3 - 10;
+    // ── Zone 3 ────────────────────────────────────────────────────────────
+    {
+        lv_obj_t *row = mk_row(scr, cy, h3);
+        const int ow = (784 - (Z3_SLOTS - 1) * 4) / Z3_SLOTS;
+        const int oh = h3 - 10;
 
-        if (mask & WDGT_RPM)
-            mk_card(row3, ow, oh, tr(TR_RPM), &BRL_FONT_20,
-                    BRL_CLR_TEXT, &tw.rpm_lbl);
-        if (mask & WDGT_THROTTLE)
-            mk_card(row3, ow, oh, tr(TR_THROTTLE), &BRL_FONT_20,
-                    BRL_CLR_TEXT, &tw.throttle_lbl);
-        if (mask & WDGT_BOOST)
-            mk_card(row3, ow, oh, tr(TR_BOOST), &BRL_FONT_20,
-                    BRL_CLR_WARN, &tw.boost_lbl);
-        if (mask & WDGT_LAMBDA)
-            mk_card(row3, ow, oh, tr(TR_LAMBDA), &BRL_FONT_20,
-                    BRL_CLR_TEXT, &tw.lambda_lbl);
-        if (mask & WDGT_BRAKE)
-            mk_card(row3, ow, oh, tr(TR_BRAKE), &BRL_FONT_20,
-                    BRL_CLR_DANGER, &tw.brake_lbl);
-        if (mask & WDGT_COOLANT)
-            mk_card(row3, ow, oh, tr(TR_COOLANT), &BRL_FONT_20,
-                    BRL_CLR_TEXT, &tw.coolant_lbl);
-        if (mask & WDGT_GEAR)
-            mk_card(row3, ow, oh, tr(TR_GEAR), &BRL_FONT_20,
-                    BRL_CLR_TEXT, &tw.gear_lbl);
-        if (mask & WDGT_STEERING)
-            mk_card(row3, ow, oh, tr(TR_STEERING), &BRL_FONT_20,
-                    BRL_CLR_TEXT, &tw.steering_lbl);
+        for (int s = 0; s < Z3_SLOTS; s++) {
+            tw.z3_val[s] = mk_slot_card(row, 3, s, g_dash_cfg.z3[s], ow, oh,
+                                        &tw.z3_title[s]);
+        }
     }
 
     return scr;
@@ -625,13 +625,12 @@ void timing_screen_open() {
 }
 
 void timing_screen_rebuild() {
-    s_layout_overlay = nullptr;
+    s_picker_overlay = nullptr;
     tw = {};
     if (s_timing_screen) {
         lv_obj_delete(s_timing_screen);
         s_timing_screen = nullptr;
     }
-    tw = {};
     s_timing_screen = timing_screen_build();
     lv_screen_load(s_timing_screen);
 }
