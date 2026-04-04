@@ -285,26 +285,34 @@ void setup()
   lv_indev_set_read_cb(indev, my_touchpad_read);
 
   // GPS: Tau1201 on UART2 (GPIO 19 RX, GPIO 20 TX)
+  Serial.println("[SETUP] gps_init"); Serial.flush();
   gps_init();
 
   // SD card (SPI: MOSI=11, MISO=13, SCLK=12, CS=15)
+  Serial.println("[SETUP] sd_mgr_init"); Serial.flush();
   sd_mgr_init();
 
   // Load user-created tracks from SD
+  Serial.println("[SETUP] session_store_load"); Serial.flush();
   session_store_load_user_tracks();
   session_store_load_builtin_overrides();
 
   // Lap timer
+  Serial.println("[SETUP] lap_timer_init"); Serial.flush();
   lap_timer_init();
 
   // OBD Bluetooth BLE
+  Serial.println("[SETUP] obd_bt_init"); Serial.flush();
   obd_bt_init();
 
   // WiFi manager (off by default, user enables from settings)
+  Serial.println("[SETUP] wifi_mgr_init"); Serial.flush();
   wifi_mgr_init();
 
   // Build the UI (Splash → Haupt-UI)
+  Serial.println("[SETUP] lv_my_setup"); Serial.flush();
   lv_my_setup();
+  Serial.println("[SETUP] lv_my_setup done"); Serial.flush();
 
   // I2C scan + CH422G diagnostic — runs late so USB-CDC is connected
   Serial.println("[I2C scan on I2C_NUM_1]");
