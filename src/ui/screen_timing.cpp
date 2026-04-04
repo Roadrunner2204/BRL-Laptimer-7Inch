@@ -37,6 +37,7 @@ extern void menu_screen_show();
 TimingWidgets     tw = {};
 static lv_obj_t  *s_timing_screen  = nullptr;
 static lv_obj_t  *s_picker_overlay = nullptr;
+static lv_obj_t  *s_scale_overlay  = nullptr;  // delta-bar scale picker
 
 // Delta bar scale — persists across screen rebuilds
 static int32_t    s_delta_scale_ms = 3000;  // ±3 s default
@@ -412,8 +413,6 @@ lv_obj_t *timing_screen_build() {
     lv_obj_set_pos(tw.sb_obd_lbl, 700, 13);
 
     // ── Delta bar (80 px, fixed) ──────────────────────────────────────────
-    static lv_obj_t *s_scale_overlay = nullptr;
-
     const int DBAR_GAP = 6;
     const int DBAR_H   = 80;
     const int dbar_y   = 40 + DBAR_GAP;   // status bar is now 40 px, no separate header
@@ -580,6 +579,7 @@ void timing_screen_open() {
 
 void timing_screen_rebuild() {
     s_picker_overlay = nullptr;
+    s_scale_overlay  = nullptr;   // was child of old screen — now freed with it
     tw = {};
     if (s_timing_screen) {
         lv_obj_delete(s_timing_screen);

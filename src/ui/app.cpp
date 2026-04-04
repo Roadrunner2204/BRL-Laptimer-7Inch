@@ -727,19 +727,23 @@ static void cb_tc_save(lv_event_t* /*e*/) {
     lap_timer_set_track(save_idx);
     s_tc_edit_idx = -1;
 
-    // Null keyboard handles before deleting parent screen
+    // Null keyboard handles — parent (s_scr_sub) will be deleted in deferred timer
     s_tc_kb     = nullptr;
     s_tc_kb_num = nullptr;
 
-    // Delete sub-screen async (safe from within event callback)
-    if (s_scr_sub) {
-        lv_obj_delete_async(s_scr_sub);
-        s_scr_sub = nullptr;
-    }
-
-    // Rebuild timing screen so track name is shown immediately
-    timing_screen_rebuild();
-    sb_timing = {tw.sb_gps_lbl, nullptr, tw.sb_obd_lbl};
+    // Defer screen transition: returning from the event callback first prevents
+    // stack overflow (timing_screen_build is heavy) and watchdog issues from the
+    // SD write above. The one-shot timer fires in the next LVGL cycle.
+    lv_timer_t *tmr = lv_timer_create([](lv_timer_t *t) {
+        lv_timer_delete(t);
+        if (s_scr_sub) {
+            lv_obj_delete(s_scr_sub);
+            s_scr_sub = nullptr;
+        }
+        timing_screen_rebuild();
+        sb_timing = {tw.sb_gps_lbl, nullptr, tw.sb_obd_lbl};
+    }, 50, nullptr);
+    lv_timer_set_repeat_count(tmr, 1);
 }
 
 static void open_track_creator(lv_obj_t *scroll, int edit_idx) {
