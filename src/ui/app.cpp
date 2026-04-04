@@ -24,6 +24,7 @@
 #include "../obd/obd_bt.h"
 #include "../wifi/wifi_mgr.h"
 #include "../storage/session_store.h"
+#include "../storage/sd_mgr.h"
 #include <SD_MMC.h>
 
 // ---------------------------------------------------------------------------
@@ -1693,8 +1694,10 @@ void timer_live_update(lv_timer_t * /*t*/) {
 // Section 9: app_init() and app_tick()
 // ---------------------------------------------------------------------------
 void app_init() {
+    bool sd_was_available = sd_mgr_available(); // preserve across g_state reset
     g_state = {};
     g_state.active_track_idx = -1;
+    g_state.sd_available     = sd_was_available;
 
     dash_config_load();
     g_state.language = g_dash_cfg.language;
