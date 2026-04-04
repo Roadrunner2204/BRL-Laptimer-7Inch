@@ -1262,14 +1262,13 @@ static void open_settings_screen() {
         } else {
             uint64_t total_b = SD_MMC.totalBytes();
             uint64_t used_b  = SD_MMC.usedBytes();
-            uint64_t free_b  = total_b - used_b;
             float total_gb   = (float)total_b / 1073741824.0f;
-            float free_gb    = (float)free_b  / 1073741824.0f;
+            float used_gb    = (float)used_b  / 1073741824.0f;
             int pct_used     = (total_b > 0)
                                ? (int)((float)used_b / (float)total_b * 100.0f) : 0;
             char sbuf[64];
             snprintf(sbuf, sizeof(sbuf), "%.1f GB %s / %.1f GB",
-                     free_gb, tr(TR_STORAGE_USED), total_gb);
+                     used_gb, tr(TR_STORAGE_USED), total_gb);
             lv_label_set_text(stlbl, sbuf);
             brl_style_label(stlbl, &BRL_FONT_14,
                             pct_used > 90 ? BRL_CLR_DANGER :
