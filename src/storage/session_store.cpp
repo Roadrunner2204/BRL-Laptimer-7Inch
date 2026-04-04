@@ -8,7 +8,7 @@
 #include "../data/track_db.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include <SD.h>
+#include <SD_MMC.h>
 
 static char s_session_path[48] = {};
 static char s_track_name[48]   = {};
@@ -90,7 +90,7 @@ void session_store_save_lap(uint8_t lap_idx) {
     }
 
     // Serialize back to file
-    File f = SD.open(s_session_path, FILE_WRITE);
+    File f = SD_MMC.open(s_session_path, FILE_WRITE);
     if (!f) {
         Serial.println("[STORE] Write failed");
         return;
@@ -103,7 +103,7 @@ void session_store_save_lap(uint8_t lap_idx) {
 int session_store_list_summaries(SessionSummary *out, int max_count) {
     if (!g_state.sd_available || !out || max_count <= 0) return 0;
 
-    File dir = SD.open("/sessions");
+    File dir = SD_MMC.open("/sessions");
     if (!dir) return 0;
 
     int count = 0;
@@ -152,7 +152,7 @@ int session_store_list_summaries(SessionSummary *out, int max_count) {
 int session_store_list(char ids[][20], int max_count) {
     if (!g_state.sd_available) return 0;
 
-    File dir = SD.open("/sessions");
+    File dir = SD_MMC.open("/sessions");
     if (!dir) return 0;
 
     int count = 0;
@@ -180,7 +180,7 @@ int session_store_list(char ids[][20], int max_count) {
 void session_store_load_user_tracks() {
     if (!g_state.sd_available) return;
 
-    File dir = SD.open("/tracks");
+    File dir = SD_MMC.open("/tracks");
     if (!dir) return;
 
     g_user_track_count = 0;
@@ -261,7 +261,7 @@ void session_store_load_user_tracks() {
 
 bool session_store_save_user_track(const TrackDef *td) {
     if (!g_state.sd_available || !td) return false;
-    if (!SD.exists("/tracks")) SD.mkdir("/tracks");
+    if (!SD_MMC.exists("/tracks")) SD_MMC.mkdir("/tracks");
 
     // Sanitize name for filename
     char fname[80];
@@ -296,7 +296,7 @@ bool session_store_save_user_track(const TrackDef *td) {
         s["name"] = td->sectors[i].name;
     }
 
-    File f = SD.open(fname, FILE_WRITE);
+    File f = SD_MMC.open(fname, FILE_WRITE);
     if (!f) return false;
     serializeJson(doc, f);
     f.close();
@@ -316,7 +316,7 @@ bool session_store_delete_user_track(int u_slot) {
         for (char *p = safe; *p; p++)
             if (*p == ' ' || *p == '/' || *p == '\\') *p = '_';
         snprintf(fname, sizeof(fname), "/tracks/%s.json", safe);
-        if (SD.exists(fname)) SD.remove(fname);
+        if (SD_MMC.exists(fname)) SD_MMC.remove(fname);
         Serial.printf("[STORE] User track deleted: %s\n", fname);
     }
 
@@ -331,7 +331,7 @@ bool session_store_delete_user_track(int u_slot) {
 bool session_store_save_builtin_override(int builtin_idx, const TrackDef *td) {
     if (!g_state.sd_available || !td) return false;
     if (builtin_idx < 0 || builtin_idx >= MAX_BUILTIN_TRACKS) return false;
-    if (!SD.exists("/tracks")) SD.mkdir("/tracks");
+    if (!SD_MMC.exists("/tracks")) SD_MMC.mkdir("/tracks");
 
     char fname[48];
     snprintf(fname, sizeof(fname), "/tracks/builtin_%02d.json", builtin_idx);
@@ -356,7 +356,7 @@ bool session_store_save_builtin_override(int builtin_idx, const TrackDef *td) {
         s["name"] = td->sectors[i].name;
     }
 
-    File f = SD.open(fname, FILE_WRITE);
+    File f = SD_MMC.open(fname, FILE_WRITE);
     if (!f) return false;
     serializeJson(doc, f);
     f.close();
@@ -370,7 +370,7 @@ void session_store_load_builtin_overrides() {
     for (int i = 0; i < MAX_BUILTIN_TRACKS && i < TRACK_DB_BUILTIN_COUNT; i++) {
         char fname[48];
         snprintf(fname, sizeof(fname), "/tracks/builtin_%02d.json", i);
-        if (!SD.exists(fname)) continue;
+        if (!SD_MMC.exists(fname)) continue;
 
         static char buf[1024];
         if (!sd_read_file(fname, buf, sizeof(buf))) continue;

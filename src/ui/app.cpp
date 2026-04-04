@@ -24,7 +24,7 @@
 #include "../obd/obd_bt.h"
 #include "../wifi/wifi_mgr.h"
 #include "../storage/session_store.h"
-#include <SD.h>
+#include <SD_MMC.h>
 
 // ---------------------------------------------------------------------------
 // Global application state
@@ -1259,8 +1259,8 @@ static void open_settings_screen() {
             lv_label_set_text(stlbl, tr(TR_STORAGE_UNAVAIL));
             brl_style_label(stlbl, &BRL_FONT_14, BRL_CLR_DANGER);
         } else {
-            uint64_t total_b = SD.totalBytes();
-            uint64_t used_b  = SD.usedBytes();
+            uint64_t total_b = SD_MMC.totalBytes();
+            uint64_t used_b  = SD_MMC.usedBytes();
             uint64_t free_b  = total_b - used_b;
             float total_gb   = (float)total_b / 1073741824.0f;
             float free_gb    = (float)free_b  / 1073741824.0f;

@@ -7,7 +7,7 @@
 #include "../data/lap_data.h"
 #include <Arduino.h>
 #include <WebServer.h>
-#include <SD.h>
+#include <SD_MMC.h>
 
 static WebServer s_server(80);
 static bool      s_running = false;
@@ -34,7 +34,7 @@ static void handle_sessions() {
     }
 
     // List files in /sessions directory
-    File dir = SD.open("/sessions");
+    File dir = SD_MMC.open("/sessions");
     if (!dir) {
         s_server.send(200, "application/json", "[]");
         return;
@@ -69,11 +69,11 @@ static void handle_session_get() {
         return;
     }
     String path = "/sessions/" + id + ".json";
-    if (!SD.exists(path)) {
+    if (!SD_MMC.exists(path)) {
         s_server.send(404, "application/json", "{\"error\":\"not found\"}");
         return;
     }
-    File f = SD.open(path);
+    File f = SD_MMC.open(path);
     if (!f) {
         s_server.send(500, "application/json", "{\"error\":\"open failed\"}");
         return;
@@ -89,11 +89,11 @@ static void handle_session_delete() {
         return;
     }
     String path = "/sessions/" + id + ".json";
-    if (!SD.exists(path)) {
+    if (!SD_MMC.exists(path)) {
         s_server.send(404, "application/json", "{\"error\":\"not found\"}");
         return;
     }
-    SD.remove(path);
+    SD_MMC.remove(path);
     s_server.send(200, "application/json", "{\"ok\":true}");
 }
 
