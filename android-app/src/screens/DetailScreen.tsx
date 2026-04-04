@@ -1,0 +1,134 @@
+import React, { useEffect, useState } from 'react';
+import {
+  View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator,
+} from 'react-native';
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { RouteProp } from '@react-navigation/native';
+import { RootStackParamList } from '../App';
+import { loadSession } from '../storage';
+import { Session, Lap } from '../types';
+import { fmtTime, fmtDelta } from '../utils';
+import { C } from '../theme';
+
+type Props = {
+  navigation: NativeStackNavigationProp<RootStackParamList, 'Detail'>;
+  route: RouteProp<RootStackParamList, 'Detail'>;
+};
+
+export default function DetailScreen({ navigation, route }: Props) {
+  const [session, setSession] = useState<Session | null>(null);
+
+  useEffect(() => {
+    loadSession(route.params.sessionId).then(setSession);
+  }, [route.params.sessionId]);
+
+  if (!session) return (
+    <View style={{ flex:1, backgroundColor: C.bg, justifyContent:'center', alignItems:'center' }}>
+      <ActivityIndicator color={C.accent} size="large" />
+    </View>
+  );
+
+  const best = session.laps[session.best_lap_idx];
+  const validLaps = session.laps.filter(l => l.total_ms > 0);
+  const avgMs = validLaps.length > 0
+    ? validLaps.reduce((s, l) => s + l.total_ms, 0) / validLaps.length : 0;
+
+  const sectorCount = best?.sectors?.length ?? 0;
+
+  return (
+    <View style={s.root}>
+      {/* Header */}
+      <View style={s.hdr}>
+        <View style={{ flex:1 }}>
+          <Text style={s.trackName}>{session.track}</Text>
+          <Text style={s.sessionId}>{session.id}</Text>
+        </View>
+        <TouchableOpacity
+          style={s.mapBtn}
+          onPress={() => navigation.navigate('Map', { sessionId: session.id })}
+        >
+          <Text style={s.mapBtnTxt}>Karte</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Stats */}
+      <View style={s.statsRow}>
+        <StatCard label="Bestzeit" value={fmtTime(best?.total_ms ?? 0)} accent />
+        <StatCard label="Runden" value={String(session.laps.length)} />
+        <StatCard label="Durchschnitt" value={fmtTime(avgMs)} />
+      </View>
+
+      {/* Lap table */}
+      <ScrollView contentContainerStyle={{ padding: 12 }}>
+        {/* Table header */}
+        <View style={s.tableHdr}>
+          <Text style={[s.col0, s.hdrTxt]}>#</Text>
+          <Text style={[s.col1, s.hdrTxt]}>Zeit</Text>
+          <Text style={[s.col2, s.hdrTxt]}>Delta</Text>
+          {sectorCount > 0 && Array.from({length: sectorCount}, (_,i) =>
+            <Text key={i} style={[s.colS, s.hdrTxt]}>S{i+1}</Text>
+          )}
+        </View>
+
+        {session.laps.map((lap, idx) => {
+          const isBest = idx === session.best_lap_idx;
+          const delta  = lap.total_ms - (best?.total_ms ?? 0);
+          return (
+            <View key={idx} style={[s.lapRow, isBest && s.lapBest]}>
+              <Text style={[s.col0, s.lapTxt, isBest && s.lapBestTxt]}>{lap.lap}</Text>
+              <Text style={[s.col1, s.lapTxt, isBest && { color: C.accent, fontWeight:'700' }]}>
+                {fmtTime(lap.total_ms)}
+              </Text>
+              <Text style={[s.col2, s.lapTxt, delta < 0 ? s.faster : delta > 0 ? s.slower : s.lapTxt]}>
+                {idx === session.best_lap_idx ? '★ BEST' : fmtDelta(delta)}
+              </Text>
+              {lap.sectors?.map((sec, si) => (
+                <Text key={si} style={[s.colS, s.lapTxt, s.secTxt]}>
+                  {fmtTime(sec)}
+                </Text>
+              ))}
+            </View>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+}
+
+function StatCard({ label, value, accent }: { label:string; value:string; accent?:boolean }) {
+  return (
+    <View style={sc.card}>
+      <Text style={[sc.val, accent && { color: C.accent }]}>{value}</Text>
+      <Text style={sc.lbl}>{label}</Text>
+    </View>
+  );
+}
+
+const sc = StyleSheet.create({
+  card: { flex:1, backgroundColor: C.surface, borderRadius:10, padding:12, alignItems:'center', margin:4 },
+  val:  { color: C.text, fontSize:16, fontWeight:'700' },
+  lbl:  { color: C.dim, fontSize:11, marginTop:3 },
+});
+
+const s = StyleSheet.create({
+  root:       { flex:1, backgroundColor: C.bg },
+  hdr:        { flexDirection:'row', alignItems:'center', padding:16, paddingBottom:8 },
+  trackName:  { color: C.text, fontSize:20, fontWeight:'700' },
+  sessionId:  { color: C.dim, fontSize:12, marginTop:2 },
+  mapBtn:     { backgroundColor: C.accent, borderRadius:8, paddingHorizontal:16, paddingVertical:10 },
+  mapBtnTxt:  { color:'#000', fontWeight:'700', fontSize:14 },
+  statsRow:   { flexDirection:'row', padding:8 },
+  tableHdr:   { flexDirection:'row', paddingVertical:8, borderBottomWidth:1, borderColor:'#333', marginBottom:4 },
+  hdrTxt:     { color: C.dim, fontSize:11, fontWeight:'600', textTransform:'uppercase' },
+  lapRow:     { flexDirection:'row', paddingVertical:10, borderBottomWidth:1, borderColor:'#1a1a1a', alignItems:'center' },
+  lapBest:    { backgroundColor:'#0a1a0f', borderRadius:6 },
+  lapTxt:     { color: C.text, fontSize:14 },
+  lapBestTxt: { color: C.text, fontWeight:'700' },
+  faster:     { color: C.accent },
+  slower:     { color: C.danger },
+  secTxt:     { color: C.dim, fontSize:12 },
+  col0:       { width:28, marginRight:4 },
+  col1:       { width:88 },
+  col2:       { width:72 },
+  colS:       { flex:1 },
+});
