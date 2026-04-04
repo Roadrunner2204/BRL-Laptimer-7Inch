@@ -1492,13 +1492,6 @@ void timer_live_update(lv_timer_t * /*t*/) {
                               track_get(g_state.active_track_idx)->name);
         }
     }
-    // Start/stop button label
-    if (tw.start_btn_lbl) {
-        lv_label_set_text(tw.start_btn_lbl,
-                          g_state.timing.timing_active
-                          ? LV_SYMBOL_STOP " STOP"
-                          : LV_SYMBOL_PLAY " START");
-    }
 
     // ---- GPS map widget update (once per second max) ----
     if (tw.map_obj) {

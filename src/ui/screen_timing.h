@@ -42,7 +42,6 @@ typedef struct {
     lv_obj_t *sb_gps_lbl, *sb_wifi_lbl, *sb_obd_lbl;
     // Header
     lv_obj_t *track_name_lbl;
-    lv_obj_t *start_btn_lbl;
     // GPS map widget (shown when a slot has FIELD_MAP)
     lv_obj_t *map_obj;
 } TimingWidgets;

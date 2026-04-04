@@ -366,25 +366,6 @@ static lv_obj_t *mk_slot_card(lv_obj_t *row, int zone, int slot_idx,
 // ---------------------------------------------------------------------------
 static void cb_back(lv_event_t * /*e*/) { menu_screen_show(); }
 
-static void cb_start_stop(lv_event_t * /*e*/) {
-    LiveTiming &lt = g_state.timing;
-    if (!lt.timing_active) {
-        if (g_state.active_track_idx < 0) return;
-        lt.timing_active = true;
-        lt.lap_number    = 0;
-        if (tw.start_btn_lbl)
-            lv_label_set_text_fmt(tw.start_btn_lbl, LV_SYMBOL_STOP "  %s", tr(TR_STOP_BTN));
-        lv_obj_t *btn = tw.start_btn_lbl ? lv_obj_get_parent(tw.start_btn_lbl) : nullptr;
-        if (btn) lv_obj_set_style_bg_color(btn, BRL_CLR_DANGER, LV_STATE_DEFAULT);
-    } else {
-        lt.timing_active = false;
-        if (tw.start_btn_lbl)
-            lv_label_set_text_fmt(tw.start_btn_lbl, LV_SYMBOL_PLAY "  %s", tr(TR_START_BTN));
-        lv_obj_t *btn = tw.start_btn_lbl ? lv_obj_get_parent(tw.start_btn_lbl) : nullptr;
-        if (btn) lv_obj_set_style_bg_color(btn, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
-    }
-}
-
 lv_obj_t *timing_screen_build() {
     lv_obj_t *scr = lv_obj_create(nullptr);
     lv_obj_set_style_bg_color(scr, BRL_CLR_BG, LV_STATE_DEFAULT);
@@ -443,19 +424,6 @@ lv_obj_t *timing_screen_build() {
     lv_label_set_text(tw.track_name_lbl, td ? td->name : tr(TR_NO_TRACK));
     brl_style_label(tw.track_name_lbl, &BRL_FONT_16, BRL_CLR_TEXT);
     lv_obj_align(tw.track_name_lbl, LV_ALIGN_CENTER, 0, 0);
-
-    lv_obj_t *start_btn = lv_button_create(hdr);
-    lv_obj_set_size(start_btn, 130, 38);
-    lv_obj_align(start_btn, LV_ALIGN_RIGHT_MID, -6, 0);
-    brl_style_btn(start_btn, g_state.timing.timing_active ? BRL_CLR_DANGER : BRL_CLR_ACCENT);
-    tw.start_btn_lbl = lv_label_create(start_btn);
-    lv_label_set_text_fmt(tw.start_btn_lbl,
-        g_state.timing.timing_active
-            ? LV_SYMBOL_STOP "  %s" : LV_SYMBOL_PLAY "  %s",
-        g_state.timing.timing_active ? tr(TR_STOP_BTN) : tr(TR_START_BTN));
-    brl_style_label(tw.start_btn_lbl, &BRL_FONT_14, BRL_CLR_TEXT);
-    lv_obj_center(tw.start_btn_lbl);
-    lv_obj_add_event_cb(start_btn, cb_start_stop, LV_EVENT_CLICKED, nullptr);
 
     // ── Delta bar (80 px, fixed) ──────────────────────────────────────────
     static lv_obj_t *s_scale_overlay = nullptr;
