@@ -273,7 +273,7 @@ void obd_bt_poll() {
             break;
 
         case OBD_ERROR:
-            do_disconnect();
+            // do_disconnect() was already called when entering ERROR state
             if (now - s_retry_ts >= RETRY_INTERVAL) {
                 s_state    = OBD_IDLE;
                 s_retry_ts = now;
