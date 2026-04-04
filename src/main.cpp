@@ -245,9 +245,9 @@ void setup()
     // Prevents TP_RST/LCD_RST from briefly pulsing LOW during mode switch.
     esp_err_t e1 = i2c_write(0x38, 0xF7); // WR_IO:  latch IO3(SD_CS)=LOW first
     esp_err_t e2 = i2c_write(0x24, 0x01); // WR_SET: IO_OE=1 (enable output)
-    Serial.printf("[CH422G] WR_IO->0xF7:%s  WR_SET->0x01:%s\n",
-                  e1 == ESP_OK ? "OK" : esp_err_to_name(e1),
-                  e2 == ESP_OK ? "OK" : esp_err_to_name(e2));
+    log_e("[CH422G] WR_IO->0xF7:%s  WR_SET->0x01:%s",
+          e1 == ESP_OK ? "OK" : esp_err_to_name(e1),
+          e2 == ESP_OK ? "OK" : esp_err_to_name(e2));
   }
 
   lv_init();
@@ -285,47 +285,47 @@ void setup()
   lv_indev_set_read_cb(indev, my_touchpad_read);
 
   // GPS: Tau1201 on UART2 (GPIO 19 RX, GPIO 20 TX)
-  Serial.println("[SETUP] gps_init"); Serial.flush();
+  log_e("[SETUP] gps_init");
   gps_init();
 
   // SD card (SPI: MOSI=11, MISO=13, SCLK=12, CS=15)
-  Serial.println("[SETUP] sd_mgr_init"); Serial.flush();
+  log_e("[SETUP] sd_mgr_init");
   sd_mgr_init();
 
   // Load user-created tracks from SD
-  Serial.println("[SETUP] session_store_load"); Serial.flush();
+  log_e("[SETUP] session_store_load");
   session_store_load_user_tracks();
   session_store_load_builtin_overrides();
 
   // Lap timer
-  Serial.println("[SETUP] lap_timer_init"); Serial.flush();
+  log_e("[SETUP] lap_timer_init");
   lap_timer_init();
 
   // OBD Bluetooth BLE
-  Serial.println("[SETUP] obd_bt_init"); Serial.flush();
+  log_e("[SETUP] obd_bt_init");
   obd_bt_init();
 
   // WiFi manager (off by default, user enables from settings)
-  Serial.println("[SETUP] wifi_mgr_init"); Serial.flush();
+  log_e("[SETUP] wifi_mgr_init");
   wifi_mgr_init();
 
   // Build the UI (Splash → Haupt-UI)
-  Serial.println("[SETUP] lv_my_setup"); Serial.flush();
+  log_e("[SETUP] lv_my_setup");
   lv_my_setup();
-  Serial.println("[SETUP] lv_my_setup done"); Serial.flush();
+  log_e("[SETUP] lv_my_setup DONE");
 
-  // I2C scan + CH422G diagnostic — runs late so USB-CDC is connected
-  Serial.println("[I2C scan on I2C_NUM_1]");
+  // I2C scan + CH422G diagnostic — runs on UART0 (same as ESP-IDF logs)
+  log_e("[I2C scan on I2C_NUM_1]");
   for (uint8_t addr = 1; addr < 127; addr++) {
     i2c_cmd_handle_t sc = i2c_cmd_link_create();
     i2c_master_start(sc);
     i2c_master_write_byte(sc, (addr << 1) | I2C_MASTER_WRITE, true);
     i2c_master_stop(sc);
     if (i2c_master_cmd_begin(I2C_NUM_1, sc, pdMS_TO_TICKS(10)) == ESP_OK)
-      Serial.printf("  0x%02X\n", addr);
+      log_e("  I2C found: 0x%02X", addr);
     i2c_cmd_link_delete(sc);
   }
-  Serial.println("[I2C scan done]");
+  log_e("[I2C scan done]");
 
   // Spawn logic task pinned to Core 0 (PRO_CPU)
   // Stack: 8 kB is sufficient for GPS/OBD/WiFi poll loops
