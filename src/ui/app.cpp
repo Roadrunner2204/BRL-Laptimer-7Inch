@@ -736,6 +736,9 @@ static void cb_tc_save(lv_event_t* /*e*/) {
     // SD write above. The one-shot timer fires in the next LVGL cycle.
     lv_timer_t *tmr = lv_timer_create([](lv_timer_t *t) {
         lv_timer_delete(t);
+        sb_sub = {};   // clear BEFORE delete — labels are children of s_scr_sub
+        set_obd_status_lbl = set_obd_btn = nullptr;
+        set_wifi_ap_sw = set_wifi_ap_status_lbl = set_wifi_sta_status_lbl = nullptr;
         if (s_scr_sub) {
             lv_obj_delete(s_scr_sub);
             s_scr_sub = nullptr;
