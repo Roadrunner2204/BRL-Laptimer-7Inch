@@ -284,6 +284,19 @@ void setup()
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(indev, my_touchpad_read);
 
+  // I2C bus scan — find all responding addresses on I2C_NUM_1 (SDA=8, SCL=9)
+  Serial.println("[I2C scan]");
+  for (uint8_t addr = 1; addr < 127; addr++) {
+    i2c_cmd_handle_t sc = i2c_cmd_link_create();
+    i2c_master_start(sc);
+    i2c_master_write_byte(sc, (addr << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_stop(sc);
+    if (i2c_master_cmd_begin(I2C_NUM_1, sc, pdMS_TO_TICKS(10)) == ESP_OK)
+      Serial.printf("  found: 0x%02X\n", addr);
+    i2c_cmd_link_delete(sc);
+  }
+  Serial.println("[I2C scan done]");
+
   // GPS: Tau1201 on UART2 (GPIO 19 RX, GPIO 20 TX)
   gps_init();
 
