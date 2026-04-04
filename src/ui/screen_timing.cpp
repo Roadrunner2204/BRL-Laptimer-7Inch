@@ -85,7 +85,7 @@ MapDisplayData g_map_data = {};
 static void cb_map_draw(lv_event_t *e) {
     if (lv_event_get_code(e) != LV_EVENT_DRAW_MAIN) return;
     lv_layer_t *layer = lv_event_get_layer(e);
-    lv_obj_t   *obj   = lv_event_get_target(e);
+    lv_obj_t   *obj   = (lv_obj_t*)lv_event_get_target(e);
 
     lv_area_t a;
     lv_obj_get_content_coords(obj, &a);
@@ -103,8 +103,9 @@ static void cb_map_draw(lv_event_t *e) {
         lv_draw_label_dsc_init(&ldsc);
         ldsc.color = lv_color_hex(0x555555);
         ldsc.font  = &BRL_FONT_14;
+        ldsc.text = "GPS...";
         lv_area_t ta = a;
-        lv_draw_label(layer, &ldsc, &ta, "GPS...", nullptr);
+        lv_draw_label(layer, &ldsc, &ta);
         return;
     }
 
