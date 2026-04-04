@@ -88,6 +88,7 @@
   #define BRL_FONT_32  brl_font_montserrat_32
   #define BRL_FONT_40  brl_font_montserrat_40
   #define BRL_FONT_48  brl_font_montserrat_48
+  #define BRL_FONT_64  brl_font_montserrat_64
 #else
   /* Fall back to built-in ASCII-only Montserrat */
   #define BRL_FONT_14  lv_font_montserrat_14
@@ -97,6 +98,7 @@
   #define BRL_FONT_32  lv_font_montserrat_32
   #define BRL_FONT_40  lv_font_montserrat_40
   #define BRL_FONT_48  lv_font_montserrat_48
+  #define BRL_FONT_64  lv_font_montserrat_48  /* no 64 built-in, fallback to 48 */
 #endif
 
 /* Enable extra drawing capabilities */

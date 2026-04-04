@@ -13,4 +13,5 @@
   LV_FONT_DECLARE(brl_font_montserrat_32)
   LV_FONT_DECLARE(brl_font_montserrat_40)
   LV_FONT_DECLARE(brl_font_montserrat_48)
+  LV_FONT_DECLARE(brl_font_montserrat_64)
 #endif

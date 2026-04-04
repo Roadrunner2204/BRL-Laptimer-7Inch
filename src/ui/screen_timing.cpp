@@ -71,8 +71,8 @@ static const char *field_title(uint8_t f) {
 
 // Value font + color per field
 static const lv_font_t *field_font(uint8_t f, int zone, bool wide) {
-    // Zone 1: always large — wide slots get 48, narrow get 40
-    if (zone == 1) return wide ? &BRL_FONT_48 : &BRL_FONT_40;
+    // Zone 1: always large — wide slots get 64, narrow get 48
+    if (zone == 1) return wide ? &BRL_FONT_64 : &BRL_FONT_48;
     switch (f) {
         case FIELD_SECTOR1:
         case FIELD_SECTOR2:
@@ -208,7 +208,7 @@ static void cb_pick_field(lv_event_t *e) {
 
 // Laptimer-side field list (Zone 1 & 2)
 static const uint8_t LAPTIME_FIELDS[] = {
-    FIELD_SPEED, FIELD_LAPTIME, FIELD_BESTLAP, FIELD_DELTA_NUM,
+    FIELD_SPEED, FIELD_LAPTIME, FIELD_BESTLAP,
     FIELD_LAP_NR, FIELD_SECTOR1, FIELD_SECTOR2, FIELD_SECTOR3,
     FIELD_MAP, FIELD_NONE,
 };

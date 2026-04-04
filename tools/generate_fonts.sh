@@ -46,7 +46,7 @@ mkdir -p "$OUTPUT_DIR"
 #   0xA0-0xFF  Latin-1 Supplement (includes Ä Ö Ü ä ö ü ß À Ã Ñ etc.)
 RANGES="0x20-0x7E,0xA0-0xFF"
 
-for SIZE in 14 16 20 24 32 40 48; do
+for SIZE in 14 16 20 24 32 40 48 64; do
     OUT="${OUTPUT_DIR}/brl_font_montserrat_${SIZE}.c"
     echo "  Generating size ${SIZE} → ${OUT}"
     lv_font_conv \
