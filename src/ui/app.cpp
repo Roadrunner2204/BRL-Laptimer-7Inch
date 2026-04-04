@@ -866,11 +866,11 @@ static void open_track_creator(lv_obj_t *scroll, int edit_idx) {
     }, LV_EVENT_READY, nullptr);
     lv_obj_add_flag(s_tc_kb, LV_OBJ_FLAG_HIDDEN);
 
-    // Numeric keyboard — right side, for coordinate fields
+    // Numeric keyboard — bottom-right, for coordinate fields
     s_tc_kb_num = lv_keyboard_create(lv_screen_active());
     lv_keyboard_set_mode(s_tc_kb_num, LV_KEYBOARD_MODE_NUMBER);
-    lv_obj_set_size(s_tc_kb_num, 220, 260);
-    lv_obj_align(s_tc_kb_num, LV_ALIGN_TOP_RIGHT, 0, 44);
+    lv_obj_set_size(s_tc_kb_num, 260, 300);
+    lv_obj_align(s_tc_kb_num, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
     lv_obj_set_style_bg_color(s_tc_kb_num, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
     lv_obj_add_event_cb(s_tc_kb_num, [](lv_event_t *ev){
         lv_obj_add_flag((lv_obj_t*)lv_event_get_target(ev), LV_OBJ_FLAG_HIDDEN);
