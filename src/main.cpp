@@ -243,9 +243,12 @@ void setup()
     // Write output VALUES first (latch set while still in input mode = no glitch)
     // THEN enable output mode — pins immediately go to correct values.
     // Prevents TP_RST/LCD_RST from briefly pulsing LOW during mode switch.
-    esp_err_t e1 = i2c_write(0x38, 0xF7); // WR_IO:  latch IO3(SD_CS)=LOW first
+    // WR_IO=0xFF: all pins HIGH (IO0=TP_RST, IO1=LCD_BL, IO2=LCD_RST all un-reset)
+    // IO3=HIGH keeps SD card D3 line HIGH → SD bus mode (not SPI mode)
+    // Must latch output values BEFORE enabling output mode (prevents reset glitch)
+    esp_err_t e1 = i2c_write(0x38, 0xFF); // WR_IO:  all HIGH, incl. IO3(SD D3)=HIGH
     esp_err_t e2 = i2c_write(0x24, 0x01); // WR_SET: IO_OE=1 (enable output)
-    log_e("[CH422G] WR_IO->0xF7:%s  WR_SET->0x01:%s",
+    log_e("[CH422G] WR_IO->0xFF:%s  WR_SET->0x01:%s",
           e1 == ESP_OK ? "OK" : esp_err_to_name(e1),
           e2 == ESP_OK ? "OK" : esp_err_to_name(e2));
   }

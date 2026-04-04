@@ -3,25 +3,25 @@
 #include <stddef.h>
 
 /**
- * sd_mgr — SD card manager (SPI)
+ * sd_mgr — SD card manager (SDMMC 1-bit mode)
  *
  * Pin mapping (Waveshare ESP32-S3-Touch-LCD-7"):
- *   SD_MOSI = GPIO 11
- *   SD_MISO = GPIO 13
- *   SD_SCLK = GPIO 12
- *   SD_CS   = GPIO 15   ← free GPIO, not used by display/touch
+ *   SD_CLK  = GPIO 12  (SDMMC CLK / was SPI SCLK)
+ *   SD_CMD  = GPIO 11  (SDMMC CMD / was SPI MOSI)
+ *   SD_D0   = GPIO 13  (SDMMC D0  / was SPI MISO)
+ *   SD_D3   = CH422G IO3 (held HIGH via I2C expander in main.cpp)
  *
- * GPIO 4 = TOUCH_INT (GT911) — must NOT be used for SD_CS.
- * The Waveshare SD example with SD_CS=4 is for a different (non-touch)
- * board variant.
+ * Note: SD_CS/D3 line is driven HIGH by the CH422G I/O expander (WR_IO=0xFF).
+ * HIGH on D3 during power-up tells the SD card to use SD bus mode, not SPI mode.
+ * SD_MMC in 1-bit mode does NOT require a CS pin — card selection is handled
+ * by the CMD protocol.
  *
  * Creates /sessions and /tracks directories on first boot.
  */
 
-#define SD_MOSI_PIN  11
-#define SD_MISO_PIN  13
-#define SD_SCLK_PIN  12
-#define SD_CS_PIN    15
+#define SD_CLK_PIN   12
+#define SD_CMD_PIN   11
+#define SD_D0_PIN    13
 
 bool  sd_mgr_init();                              // returns true if card found
 bool  sd_mgr_available();
