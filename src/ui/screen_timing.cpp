@@ -473,6 +473,11 @@ static void timing_show_session_name_dialog() {
     lv_obj_set_style_border_color(s_name_ta, lv_color_hex(0x00CC66), LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(s_name_ta, 2, LV_STATE_DEFAULT);
     lv_obj_set_style_text_color(s_name_ta, lv_color_hex(0xFFFFFF), LV_STATE_DEFAULT);
+    // Stop countdown the moment the user taps the textarea — no time pressure
+    lv_obj_add_event_cb(s_name_ta, [](lv_event_t * /*e*/) {
+        if (s_name_tmr) { lv_timer_delete(s_name_tmr); s_name_tmr = nullptr; }
+        if (s_name_count_lbl) lv_label_set_text(s_name_count_lbl, "Manuell starten");
+    }, LV_EVENT_FOCUSED, nullptr);
 
     // Button row
     lv_obj_t *btn_row = lv_obj_create(card);
