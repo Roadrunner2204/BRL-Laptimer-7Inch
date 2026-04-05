@@ -53,6 +53,48 @@ static int         s_last_track_idx = -2;  // track last opened; -2 = never
 // Delta bar scale — persists across screen rebuilds
 static int32_t    s_delta_scale_ms = 3000;  // ±3 s default
 
+// ── QWERTZ keyboard maps (static lifetime required by LVGL) ─────────────────
+static const char * const s_qwertz_lc[] = {
+    "1","2","3","4","5","6","7","8","9","0",LV_SYMBOL_BACKSPACE,"\n",
+    "q","w","e","r","t","z","u","i","o","p","\n",
+    "a","s","d","f","g","h","j","k","l",LV_SYMBOL_NEW_LINE,"\n",
+    LV_SYMBOL_SHIFT,"y","x","c","v","b","n","m",".",",",LV_SYMBOL_SHIFT,"\n",
+    "1#"," ",LV_SYMBOL_LEFT,LV_SYMBOL_RIGHT,""
+};
+static const char * const s_qwertz_uc[] = {
+    "1","2","3","4","5","6","7","8","9","0",LV_SYMBOL_BACKSPACE,"\n",
+    "Q","W","E","R","T","Z","U","I","O","P","\n",
+    "A","S","D","F","G","H","J","K","L",LV_SYMBOL_NEW_LINE,"\n",
+    LV_SYMBOL_SHIFT,"Y","X","C","V","B","N","M",".",",",LV_SYMBOL_SHIFT,"\n",
+    "abc"," ",LV_SYMBOL_LEFT,LV_SYMBOL_RIGHT,""
+};
+// ctrl: same structure for LC and UC (widths unchanged between modes)
+static const lv_btnmatrix_ctrl_t s_qwertz_ctrl[] = {
+    // Row 1: 10 digits + Backspace(wide)
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|7,
+    // Row 2: 10 letters
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    // Row 3: 9 letters + Enter(wide)
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|7,
+    // Row 4: Shift(wide) + 9 letters/punct + Shift(wide)
+    LV_KEYBOARD_CTRL_BTN_FLAGS|7,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|7,
+    // Row 5: 1# + Space(wide) + Left + Right
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|7,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+};
+
 int32_t timing_get_delta_scale() { return s_delta_scale_ms; }
 
 // ---------------------------------------------------------------------------
@@ -519,12 +561,15 @@ static void timing_show_session_name_dialog() {
     }, LV_EVENT_CLICKED, nullptr);
 
     // ── Keyboard: child of overlay (NOT card), full-width, anchored at bottom
-    // Overlay is 800×480; keyboard at y=214 gives 266px height to screen bottom.
+    // Use LV_ALIGN_BOTTOM_LEFT so LVGL computes position from parent bounds,
+    // which is more reliable than lv_obj_set_pos when the theme has implicit padding.
     s_name_kb = lv_keyboard_create(s_name_dlg);
     lv_keyboard_set_mode(s_name_kb, LV_KEYBOARD_MODE_TEXT_LOWER);
+    lv_keyboard_set_map(s_name_kb, LV_KEYBOARD_MODE_TEXT_LOWER, s_qwertz_lc, s_qwertz_ctrl);
+    lv_keyboard_set_map(s_name_kb, LV_KEYBOARD_MODE_TEXT_UPPER, s_qwertz_uc, s_qwertz_ctrl);
     lv_keyboard_set_textarea(s_name_kb, s_name_ta);
     lv_obj_set_size(s_name_kb, 800, 266);
-    lv_obj_set_pos(s_name_kb, 0, 214);
+    lv_obj_align(s_name_kb, LV_ALIGN_BOTTOM_LEFT, 0, 0);
     lv_obj_set_style_bg_color(s_name_kb, lv_color_hex(0x111111), LV_STATE_DEFAULT);
     lv_obj_remove_flag(s_name_kb, LV_OBJ_FLAG_SCROLLABLE);
 

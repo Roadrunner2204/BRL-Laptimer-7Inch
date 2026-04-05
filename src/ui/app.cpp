@@ -46,6 +46,42 @@ static SbH sb_timing = {};   // timing screen — repopulated after every build
 static lv_obj_t *s_scr_menu  = nullptr;   // cached forever
 static lv_obj_t *s_scr_sub   = nullptr;   // rebuilt each time
 
+// ── QWERTZ keyboard maps (must have static lifetime) ────────────────────────
+static const char * const s_qwertz_lc[] = {
+    "1","2","3","4","5","6","7","8","9","0",LV_SYMBOL_BACKSPACE,"\n",
+    "q","w","e","r","t","z","u","i","o","p","\n",
+    "a","s","d","f","g","h","j","k","l",LV_SYMBOL_NEW_LINE,"\n",
+    LV_SYMBOL_SHIFT,"y","x","c","v","b","n","m",".",",",LV_SYMBOL_SHIFT,"\n",
+    "1#"," ",LV_SYMBOL_LEFT,LV_SYMBOL_RIGHT,""
+};
+static const char * const s_qwertz_uc[] = {
+    "1","2","3","4","5","6","7","8","9","0",LV_SYMBOL_BACKSPACE,"\n",
+    "Q","W","E","R","T","Z","U","I","O","P","\n",
+    "A","S","D","F","G","H","J","K","L",LV_SYMBOL_NEW_LINE,"\n",
+    LV_SYMBOL_SHIFT,"Y","X","C","V","B","N","M",".",",",LV_SYMBOL_SHIFT,"\n",
+    "abc"," ",LV_SYMBOL_LEFT,LV_SYMBOL_RIGHT,""
+};
+static const lv_btnmatrix_ctrl_t s_qwertz_ctrl[] = {
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|7,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|7,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|7,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|7,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|7,
+    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+};
+
 // ---------------------------------------------------------------------------
 // Settings interactive handles (kept alive while settings screen exists)
 // ---------------------------------------------------------------------------
@@ -865,6 +901,8 @@ static void open_track_creator(lv_obj_t *scroll, int edit_idx) {
 
     // Full text keyboard — bottom, for track name field
     s_tc_kb = lv_keyboard_create(lv_screen_active());
+    lv_keyboard_set_map(s_tc_kb, LV_KEYBOARD_MODE_TEXT_LOWER, s_qwertz_lc, s_qwertz_ctrl);
+    lv_keyboard_set_map(s_tc_kb, LV_KEYBOARD_MODE_TEXT_UPPER, s_qwertz_uc, s_qwertz_ctrl);
     lv_obj_set_size(s_tc_kb, 800, 200);
     lv_obj_align(s_tc_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_set_style_bg_color(s_tc_kb, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
@@ -1191,6 +1229,8 @@ static void open_wifi_sta_dialog() {
     lv_obj_add_event_cb(bcancel, cb_wifi_dialog_cancel, LV_EVENT_CLICKED, nullptr);
 
     s_dlg_kb = lv_keyboard_create(s_wifi_dialog);
+    lv_keyboard_set_map(s_dlg_kb, LV_KEYBOARD_MODE_TEXT_LOWER, s_qwertz_lc, s_qwertz_ctrl);
+    lv_keyboard_set_map(s_dlg_kb, LV_KEYBOARD_MODE_TEXT_UPPER, s_qwertz_uc, s_qwertz_ctrl);
     lv_obj_set_size(s_dlg_kb, 800, 200); lv_obj_align(s_dlg_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_set_style_bg_color(s_dlg_kb, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
     lv_obj_add_event_cb(s_dlg_kb, cb_dlg_kb_ready, LV_EVENT_READY, nullptr);
