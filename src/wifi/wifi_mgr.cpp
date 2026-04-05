@@ -20,16 +20,21 @@ static char s_ap_pass[64]  = {};
 
 // ---------------------------------------------------------------------------
 void wifi_mgr_init() {
-    // Load saved STA credentials from NVS
+    // Load saved credentials from NVS
     s_prefs.begin("wifi", true);
-    s_prefs.getString("ssid", s_sta_ssid, sizeof(s_sta_ssid));
-    s_prefs.getString("pass", s_sta_pass, sizeof(s_sta_pass));
-    s_prefs.getString("ap_ssid", s_ap_ssid, sizeof(s_ap_ssid));
-    s_prefs.getString("ap_pass",  s_ap_pass,  sizeof(s_ap_pass));
+    s_prefs.getString("ssid",    s_sta_ssid, sizeof(s_sta_ssid));
+    s_prefs.getString("pass",    s_sta_pass, sizeof(s_sta_pass));
+    s_prefs.getString("ap_ssid", s_ap_ssid,  sizeof(s_ap_ssid));
+    s_prefs.getString("ap_pass", s_ap_pass,  sizeof(s_ap_pass));
     s_prefs.end();
     if (strlen(s_ap_ssid) == 0) strncpy(s_ap_ssid, "BRL-Laptimer", sizeof(s_ap_ssid)-1);
 
-    WiFi.mode(WIFI_MODE_NULL);
+    // Keep the WiFi driver alive — calling WiFi.mode(NULL) deinitializes it,
+    // and reinitializing later (~80 KB static buffers) fails with ESP_ERR_NO_MEM
+    // once the heap has been fragmented by LVGL/JSON allocations.
+    WiFi.persistent(false);
+    WiFi.disconnect(false);
+    WiFi.softAPdisconnect(false);
     g_state.wifi_mode = BRL_WIFI_OFF;
     Serial.println("[WIFI] Manager init");
 }
@@ -48,12 +53,14 @@ void wifi_set_sta(const char *ssid, const char *password) {
 void wifi_set_mode(WifiMode mode) {
     if (g_state.wifi_mode == mode) return;
 
-    // Tear down previous mode
+    // Stop current services — do NOT call WiFi.mode(NULL), that deinitializes
+    // the driver and subsequent esp_wifi_init() fails with ESP_ERR_NO_MEM once
+    // heap is fragmented.
     ArduinoOTA.end();
     data_server_stop();
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_MODE_NULL);
-    delay(200);
+    WiFi.softAPdisconnect(false);
+    WiFi.disconnect(false);
+    delay(150);
 
     g_state.wifi_mode = mode;
     strncpy(g_state.wifi_ssid, "", sizeof(g_state.wifi_ssid));
@@ -61,6 +68,7 @@ void wifi_set_mode(WifiMode mode) {
     switch (mode) {
 
         case BRL_WIFI_OFF:
+            // Driver stays alive — just no active connection/AP
             Serial.println("[WIFI] OFF");
             break;
 

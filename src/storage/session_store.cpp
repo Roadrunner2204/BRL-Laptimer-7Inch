@@ -139,61 +139,62 @@ int session_store_list_summaries(SessionSummary *out, int max_count) {
 
     int count = 0;
 
-    File f = dir.openNextFile();
-    while (f && count < max_count) {
-        if (!f.isDirectory()) {
-            String fname = f.name();
-            if (fname.endsWith(".json")) {
-                int slash = fname.lastIndexOf('/');
-                String base = (slash >= 0) ? fname.substring(slash + 1) : fname;
-                char fpath[64];
-                snprintf(fpath, sizeof(fpath), "/sessions/%s", base.c_str());
+    while (count < max_count) {
+        File f = dir.openNextFile();
+        if (!f) break;
 
-                SessionSummary &s = out[count];
-                memset(&s, 0, sizeof(s));
-                String id = base.substring(0, base.length() - 5);
-                strncpy(s.id, id.c_str(), sizeof(s.id) - 1);
+        bool is_dir = f.isDirectory();
+        String fname = f.name();
+        f.close();  // release handle immediately after reading name
 
-                // Stream directly from SD with a filter — skip track_points to save RAM
-                File sf = SD_MMC.open(fpath, FILE_READ);
-                if (sf) {
-                    JsonDocument filter;
-                    filter["name"]  = true;
-                    filter["track"] = true;
-                    filter["laps"][0]["total_ms"] = true;  // [0] applies to all array elements
+        if (is_dir || !fname.endsWith(".json")) continue;
 
-                    JsonDocument doc;
-                    DeserializationError err = deserializeJson(doc, sf,
-                                                DeserializationOption::Filter(filter));
-                    sf.close();
+        int slash = fname.lastIndexOf('/');
+        String base = (slash >= 0) ? fname.substring(slash + 1) : fname;
+        char fpath[64];
+        snprintf(fpath, sizeof(fpath), "/sessions/%s", base.c_str());
 
-                    if (err == DeserializationError::Ok) {
-                        const char *n = doc["name"] | "";
-                        // Fall back to id if name field is missing or empty
-                        strncpy(s.name,  strlen(n) > 0 ? n : s.id, sizeof(s.name) - 1);
-                        strncpy(s.track, doc["track"] | "",          sizeof(s.track) - 1);
+        SessionSummary &s = out[count];
+        memset(&s, 0, sizeof(s));
+        String id = base.substring(0, base.length() - 5);
+        strncpy(s.id, id.c_str(), sizeof(s.id) - 1);
 
-                        JsonArray laps = doc["laps"].as<JsonArray>();
-                        s.lap_count = 0;
-                        uint32_t best = 0;
-                        for (JsonObject lap : laps) {
-                            s.lap_count++;
-                            uint32_t t = lap["total_ms"] | 0u;
-                            if (t > 0 && (best == 0 || t < best)) best = t;
-                        }
-                        s.best_ms = best;
-                    } else {
-                        Serial.printf("[STORE] JSON parse error for %s: %s\n",
-                                      fpath, err.c_str());
-                        strncpy(s.name, s.id, sizeof(s.name) - 1);
-                    }
+        // Stream directly from SD with a filter — skip track_points to save RAM
+        File sf = SD_MMC.open(fpath, FILE_READ);
+        if (sf) {
+            JsonDocument filter;
+            filter["name"]  = true;
+            filter["track"] = true;
+            filter["laps"][0]["total_ms"] = true;  // [0] applies to all array elements
+
+            JsonDocument doc;
+            DeserializationError err = deserializeJson(doc, sf,
+                                        DeserializationOption::Filter(filter));
+            sf.close();
+
+            if (err == DeserializationError::Ok) {
+                const char *n = doc["name"] | "";
+                // Fall back to id if name field is missing or empty
+                strncpy(s.name,  strlen(n) > 0 ? n : s.id, sizeof(s.name) - 1);
+                strncpy(s.track, doc["track"] | "",          sizeof(s.track) - 1);
+
+                JsonArray laps = doc["laps"].as<JsonArray>();
+                s.lap_count = 0;
+                uint32_t best = 0;
+                for (JsonObject lap : laps) {
+                    s.lap_count++;
+                    uint32_t t = lap["total_ms"] | 0u;
+                    if (t > 0 && (best == 0 || t < best)) best = t;
                 }
-                count++;
+                s.best_ms = best;
+            } else {
+                Serial.printf("[STORE] JSON parse error for %s: %s\n",
+                              fpath, err.c_str());
+                strncpy(s.name, s.id, sizeof(s.name) - 1);
             }
         }
-        f = dir.openNextFile();
+        count++;
     }
-    f.close();
     dir.close();
     return count;
 }
@@ -205,22 +206,23 @@ int session_store_list(char ids[][20], int max_count) {
     if (!dir) return 0;
 
     int count = 0;
-    File f = dir.openNextFile();
-    while (f && count < max_count) {
-        if (!f.isDirectory()) {
-            String name = f.name();
-            if (name.endsWith(".json")) {
-                int slash = name.lastIndexOf('/');
-                String id = (slash >= 0) ? name.substring(slash + 1) : name;
-                id = id.substring(0, id.length() - 5);
-                strncpy(ids[count], id.c_str(), 19);
-                ids[count][19] = '\0';
-                count++;
-            }
-        }
-        f = dir.openNextFile();
+    while (count < max_count) {
+        File f = dir.openNextFile();
+        if (!f) break;
+
+        bool is_dir = f.isDirectory();
+        String name = f.name();
+        f.close();  // release handle immediately
+
+        if (is_dir || !name.endsWith(".json")) continue;
+
+        int slash = name.lastIndexOf('/');
+        String id = (slash >= 0) ? name.substring(slash + 1) : name;
+        id = id.substring(0, id.length() - 5);
+        strncpy(ids[count], id.c_str(), 19);
+        ids[count][19] = '\0';
+        count++;
     }
-    f.close();
     dir.close();
     return count;
 }
@@ -236,76 +238,72 @@ void session_store_load_user_tracks() {
 
     g_user_track_count = 0;
     static char buf[2048];
-    File f = dir.openNextFile();
-    while (f && g_user_track_count < MAX_USER_TRACKS) {
-        if (!f.isDirectory()) {
-            // f.name() may return just the filename or the full path depending on SDK version.
-            // Always build a safe absolute path ourselves.
-            String fname = f.name();
+    while (g_user_track_count < MAX_USER_TRACKS) {
+        File f = dir.openNextFile();
+        if (!f) break;
 
-            // Skip builtin coordinate-override files (builtin_NN.json)
-            // They are stored in the same directory but are NOT user tracks.
-            if (fname.startsWith("builtin_")) { f = dir.openNextFile(); continue; }
-            if (!fname.endsWith(".json"))      { f = dir.openNextFile(); continue; }
+        bool is_dir = f.isDirectory();
+        String fname = f.name();
+        f.close();  // release handle immediately after reading name
 
-            // Build full path: strip any leading path component, then prepend /tracks/
-            int slash = fname.lastIndexOf('/');
-            String base = (slash >= 0) ? fname.substring(slash + 1) : fname;
-            char fpath[80];
-            snprintf(fpath, sizeof(fpath), "/tracks/%s", base.c_str());
+        if (is_dir) continue;
 
-            if (!sd_read_file(fpath, buf, sizeof(buf))) {
-                Serial.printf("[STORE] Failed to read %s\n", fpath);
-                f = dir.openNextFile();
-                continue;
-            }
+        // Skip builtin coordinate-override files (builtin_NN.json)
+        int slash = fname.lastIndexOf('/');
+        String base = (slash >= 0) ? fname.substring(slash + 1) : fname;
+        if (base.startsWith("builtin_") || !base.endsWith(".json")) continue;
 
-            JsonDocument doc;
-            if (deserializeJson(doc, buf) != DeserializationError::Ok) {
-                Serial.printf("[STORE] JSON parse error: %s\n", fpath);
-                f = dir.openNextFile();
-                continue;
-            }
+        char fpath[80];
+        snprintf(fpath, sizeof(fpath), "/tracks/%s", base.c_str());
 
-            // Validate: must have a non-empty name field (builtin overrides don't)
-            const char *tname = doc["name"] | "";
-            if (strlen(tname) == 0) { f = dir.openNextFile(); continue; }
-
-            TrackDef &td = g_user_tracks[g_user_track_count];
-            memset(&td, 0, sizeof(td));
-            strncpy(td.name,    tname,                sizeof(td.name) - 1);
-            strncpy(td.country, doc["country"] | "",  sizeof(td.country) - 1);
-            td.length_km    = doc["length_km"] | 0.0f;
-            td.is_circuit   = doc["is_circuit"] | true;
-            td.user_created = true;
-
-            td.sf_lat1 = doc["sf"][0] | 0.0;
-            td.sf_lon1 = doc["sf"][1] | 0.0;
-            td.sf_lat2 = doc["sf"][2] | 0.0;
-            td.sf_lon2 = doc["sf"][3] | 0.0;
-
-            if (!td.is_circuit) {
-                td.fin_lat1 = doc["fin"][0] | 0.0;
-                td.fin_lon1 = doc["fin"][1] | 0.0;
-                td.fin_lat2 = doc["fin"][2] | 0.0;
-                td.fin_lon2 = doc["fin"][3] | 0.0;
-            }
-
-            JsonArray secs = doc["sectors"].as<JsonArray>();
-            td.sector_count = 0;
-            for (JsonObject s : secs) {
-                if (td.sector_count >= MAX_SECTORS) break;
-                td.sectors[td.sector_count].lat = s["lat"] | 0.0;
-                td.sectors[td.sector_count].lon = s["lon"] | 0.0;
-                strncpy(td.sectors[td.sector_count].name,
-                        s["name"] | "", SECTOR_NAME_LEN - 1);
-                td.sector_count++;
-            }
-
-            g_user_track_count++;
-            Serial.printf("[STORE] Loaded user track: %s\n", td.name);
+        if (!sd_read_file(fpath, buf, sizeof(buf))) {
+            Serial.printf("[STORE] Failed to read %s\n", fpath);
+            continue;
         }
-        f = dir.openNextFile();
+
+        JsonDocument doc;
+        if (deserializeJson(doc, buf) != DeserializationError::Ok) {
+            Serial.printf("[STORE] JSON parse error: %s\n", fpath);
+            continue;
+        }
+
+        // Validate: must have a non-empty name field (builtin overrides don't)
+        const char *tname = doc["name"] | "";
+        if (strlen(tname) == 0) continue;
+
+        TrackDef &td = g_user_tracks[g_user_track_count];
+        memset(&td, 0, sizeof(td));
+        strncpy(td.name,    tname,                sizeof(td.name) - 1);
+        strncpy(td.country, doc["country"] | "",  sizeof(td.country) - 1);
+        td.length_km    = doc["length_km"] | 0.0f;
+        td.is_circuit   = doc["is_circuit"] | true;
+        td.user_created = true;
+
+        td.sf_lat1 = doc["sf"][0] | 0.0;
+        td.sf_lon1 = doc["sf"][1] | 0.0;
+        td.sf_lat2 = doc["sf"][2] | 0.0;
+        td.sf_lon2 = doc["sf"][3] | 0.0;
+
+        if (!td.is_circuit) {
+            td.fin_lat1 = doc["fin"][0] | 0.0;
+            td.fin_lon1 = doc["fin"][1] | 0.0;
+            td.fin_lat2 = doc["fin"][2] | 0.0;
+            td.fin_lon2 = doc["fin"][3] | 0.0;
+        }
+
+        JsonArray secs = doc["sectors"].as<JsonArray>();
+        td.sector_count = 0;
+        for (JsonObject s : secs) {
+            if (td.sector_count >= MAX_SECTORS) break;
+            td.sectors[td.sector_count].lat = s["lat"] | 0.0;
+            td.sectors[td.sector_count].lon = s["lon"] | 0.0;
+            strncpy(td.sectors[td.sector_count].name,
+                    s["name"] | "", SECTOR_NAME_LEN - 1);
+            td.sector_count++;
+        }
+
+        g_user_track_count++;
+        Serial.printf("[STORE] Loaded user track: %s\n", td.name);
     }
     Serial.printf("[STORE] Total user tracks loaded: %d\n", g_user_track_count);
 }
