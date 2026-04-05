@@ -43,9 +43,10 @@ int  session_store_list(char ids[][20], int max_count);
 // Compact session summary (no GPS points needed)
 typedef struct {
     char     id[20];
-    char     track[48];
+    char     name[64];   // user-visible session label
+    char     track[48];  // track name
     uint8_t  lap_count;
-    uint32_t best_ms;   // 0 = unknown
+    uint32_t best_ms;    // 0 = unknown
 } SessionSummary;
 
 // Read summary info (id, track, lap count, best lap) from each session file.

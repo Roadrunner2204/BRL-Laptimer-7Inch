@@ -138,14 +138,12 @@ int session_store_list_summaries(SessionSummary *out, int max_count) {
     if (!dir) return 0;
 
     int count = 0;
-    static char s_sum_buf[4096];
 
     File f = dir.openNextFile();
     while (f && count < max_count) {
         if (!f.isDirectory()) {
             String fname = f.name();
             if (fname.endsWith(".json")) {
-                // Build full path
                 int slash = fname.lastIndexOf('/');
                 String base = (slash >= 0) ? fname.substring(slash + 1) : fname;
                 char fpath[64];
@@ -153,14 +151,28 @@ int session_store_list_summaries(SessionSummary *out, int max_count) {
 
                 SessionSummary &s = out[count];
                 memset(&s, 0, sizeof(s));
-                // Extract session ID (filename without .json)
                 String id = base.substring(0, base.length() - 5);
                 strncpy(s.id, id.c_str(), sizeof(s.id) - 1);
 
-                if (sd_read_file(fpath, s_sum_buf, sizeof(s_sum_buf))) {
+                // Stream directly from SD with a filter — skip track_points to save RAM
+                File sf = SD_MMC.open(fpath, FILE_READ);
+                if (sf) {
+                    JsonDocument filter;
+                    filter["name"]  = true;
+                    filter["track"] = true;
+                    filter["laps"][0]["total_ms"] = true;  // [0] applies to all array elements
+
                     JsonDocument doc;
-                    if (deserializeJson(doc, s_sum_buf) == DeserializationError::Ok) {
-                        strncpy(s.track, doc["track"] | "", sizeof(s.track) - 1);
+                    DeserializationError err = deserializeJson(doc, sf,
+                                                DeserializationOption::Filter(filter));
+                    sf.close();
+
+                    if (err == DeserializationError::Ok) {
+                        const char *n = doc["name"] | "";
+                        // Fall back to id if name field is missing or empty
+                        strncpy(s.name,  strlen(n) > 0 ? n : s.id, sizeof(s.name) - 1);
+                        strncpy(s.track, doc["track"] | "",          sizeof(s.track) - 1);
+
                         JsonArray laps = doc["laps"].as<JsonArray>();
                         s.lap_count = 0;
                         uint32_t best = 0;
@@ -170,6 +182,10 @@ int session_store_list_summaries(SessionSummary *out, int max_count) {
                             if (t > 0 && (best == 0 || t < best)) best = t;
                         }
                         s.best_ms = best;
+                    } else {
+                        Serial.printf("[STORE] JSON parse error for %s: %s\n",
+                                      fpath, err.c_str());
+                        strncpy(s.name, s.id, sizeof(s.name) - 1);
                     }
                 }
                 count++;

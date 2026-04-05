@@ -1015,17 +1015,16 @@ static void open_history_screen() {
             brl_style_card(row);
             lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
-            // Track name + session id (small)
-            lv_obj_t *track_lbl = lv_label_create(row);
-            const char *tname = strlen(s_summaries[i].track) > 0
-                                ? s_summaries[i].track : "?";
-            lv_label_set_text(track_lbl, tname);
-            brl_style_label(track_lbl, &BRL_FONT_16, BRL_CLR_TEXT);
-            lv_obj_align(track_lbl, LV_ALIGN_TOP_LEFT, 0, 0);
+            // Session name (top) + track as subtitle
+            lv_obj_t *name_lbl = lv_label_create(row);
+            lv_label_set_text(name_lbl, s_summaries[i].name);
+            brl_style_label(name_lbl, &BRL_FONT_16, BRL_CLR_TEXT);
+            lv_obj_align(name_lbl, LV_ALIGN_TOP_LEFT, 0, 0);
 
-            // Session ID as subtitle
             lv_obj_t *id_lbl = lv_label_create(row);
-            lv_label_set_text(id_lbl, s_summaries[i].id);
+            const char *sub = strlen(s_summaries[i].track) > 0
+                              ? s_summaries[i].track : s_summaries[i].id;
+            lv_label_set_text(id_lbl, sub);
             brl_style_label(id_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
             lv_obj_align(id_lbl, LV_ALIGN_BOTTOM_LEFT, 0, 0);
 
