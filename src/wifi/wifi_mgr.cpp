@@ -1,19 +1,14 @@
 /**
  * wifi_mgr.cpp — WiFi manager
  *
- * Strategy: initialize WIFI_MODE_APSTA at boot (pre-allocates both STA and AP
- * interface objects while heap is clean).  At runtime we never call WiFi.mode()
- * again — we just activate/deactivate via softAP() / WiFi.begin().
+ * Architecture: the WiFi AP is started ONCE at boot in wifi_mgr_init(),
+ * before NimBLE initialises.  ieee80211_hostap_attach() allocates ESP timers
+ * from DRAM; if called after NimBLE/LVGL have run, esp_timer_create() returns
+ * ESP_ERR_NO_MEM and the firmware aborts.  By starting the AP early the
+ * allocation always succeeds.
  *
- * Why:
- *  - Switching modes at runtime (WIFI_MODE_NULL → WIFI_MODE_AP) requires
- *    esp_wifi_init() + interface allocation.  By then, LVGL/BLE allocations
- *    have fragmented the heap → LoadProhibited crash in ieee80211_hostap_attach
- *    (null VAP pointer from failed alloc) or ESP_ERR_NO_MEM in esp_wifi_init.
- *  - WiFi.mode() internally resets PS to WIFI_PS_NONE.  With NimBLE/BLE active
- *    this triggers abort() in pm_set_sleep_type ("enable WiFi modem sleep!").
- *  - Keeping WiFi in APSTA avoids both problems: all memory is pre-allocated,
- *    and we call WiFi.setSleep(true) once after the initial mode() call.
+ * The UI toggle (BRL_WIFI_AP / BRL_WIFI_OFF) only controls the data server —
+ * the AP radio keeps broadcasting for its entire lifetime.
  *
  * Caller must invoke wifi_mgr_init() BEFORE obd_bt_init() in setup().
  */
@@ -46,18 +41,31 @@ void wifi_mgr_init() {
 
     WiFi.persistent(false);
 
-    // Pre-allocate BOTH WiFi interfaces now, while heap is still clean.
-    // WIFI_AP_STA keeps the AP and STA VAP objects alive for the entire session.
-    // After this single WiFi.mode() call we never change the mode again.
+    // APSTA: keep both interfaces pre-allocated.
     WiFi.mode(WIFI_AP_STA);
-    WiFi.setSleep(true);          // modem sleep — mandatory when BLE also runs
+    // Modem sleep is mandatory when BLE also runs (WiFi.mode() resets it to NONE).
+    WiFi.setSleep(true);
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
 
-    // Deactivate both interfaces (no SSID/connection) until user enables them.
-    WiFi.softAPdisconnect(false); // clear AP config, keep interface allocated
-    WiFi.disconnect(false);       // not connected to anything
+    // Start the AP NOW — ieee80211_hostap_attach() allocates ESP timers from
+    // DRAM via esp_timer_create().  After NimBLE and LVGL have run (~750 ms
+    // into setup), the DRAM timer pool is exhausted and this call aborts.
+    // Starting here guarantees success; the AP stays active for the whole session.
+    bool ok = WiFi.softAP(s_ap_ssid,
+                           strlen(s_ap_pass) ? s_ap_pass : nullptr,
+                           6,     // channel 6
+                           false, // visible
+                           4);    // max clients
+    Serial.printf("[WIFI] AP %s  SSID:%s  IP:%s\n",
+                  ok ? "started" : "FAILED", s_ap_ssid,
+                  WiFi.softAPIP().toString().c_str());
 
+    WiFi.disconnect(false);  // STA idle until user enables it
+
+    // Data server stays off until the user enables the AP toggle in settings.
     g_state.wifi_mode = BRL_WIFI_OFF;
-    Serial.println("[WIFI] Manager init (APSTA pre-allocated)");
+    strncpy(g_state.wifi_ssid, s_ap_ssid, sizeof(g_state.wifi_ssid));
+    Serial.println("[WIFI] Manager init done");
 }
 
 // ---------------------------------------------------------------------------
@@ -74,41 +82,28 @@ void wifi_set_sta(const char *ssid, const char *password) {
 void wifi_set_mode(WifiMode mode) {
     if (g_state.wifi_mode == mode) return;
 
-    // Stop current services
     ArduinoOTA.end();
     data_server_stop();
-    WiFi.softAPdisconnect(false);
     WiFi.disconnect(false);
     delay(100);
 
     g_state.wifi_mode = mode;
     strncpy(g_state.wifi_ssid, "", sizeof(g_state.wifi_ssid));
 
-    // NOTE: no WiFi.mode() calls below — we stay in WIFI_AP_STA permanently.
-    // Just activate/deactivate the required interface.
-
     switch (mode) {
 
         case BRL_WIFI_OFF:
-            Serial.println("[WIFI] OFF");
+            // AP radio keeps broadcasting (started at boot); data server is off.
+            Serial.println("[WIFI] OFF (AP radio still active)");
             break;
 
-        case BRL_WIFI_AP: {
-            WiFi.setTxPower(WIFI_POWER_19_5dBm);
-            delay(50);
-            bool ok = WiFi.softAP(s_ap_ssid,
-                                  strlen(s_ap_pass) ? s_ap_pass : nullptr,
-                                  6,     // channel 6
-                                  false, // not hidden
-                                  4);    // max 4 clients
-            delay(100);
-            Serial.printf("[WIFI] AP %s  SSID:%s  IP:%s\n",
-                          ok ? "OK" : "FAILED", s_ap_ssid,
-                          WiFi.softAPIP().toString().c_str());
+        case BRL_WIFI_AP:
+            // AP was started at boot — just enable the data server.
             strncpy(g_state.wifi_ssid, s_ap_ssid, sizeof(g_state.wifi_ssid));
             data_server_start();
+            Serial.printf("[WIFI] AP enabled  IP:%s\n",
+                          WiFi.softAPIP().toString().c_str());
             break;
-        }
 
         case BRL_WIFI_STA:
             if (strlen(s_sta_ssid) == 0) {
@@ -167,9 +162,8 @@ void wifi_ap_set_config(const char *ssid, const char *pass) {
     s_prefs.putString("ap_ssid", s_ap_ssid);
     s_prefs.putString("ap_pass",  s_ap_pass);
     s_prefs.end();
-    if (g_state.wifi_mode == BRL_WIFI_AP) {
-        WiFi.softAP(s_ap_ssid, strlen(s_ap_pass) ? s_ap_pass : nullptr, 6, false, 4);
-    }
+    // AP is already running — this is a live config update (safe, no reallocation).
+    WiFi.softAP(s_ap_ssid, strlen(s_ap_pass) ? s_ap_pass : nullptr, 6, false, 4);
     Serial.printf("[WIFI] AP config updated: SSID=%s pass=%s\n",
                   s_ap_ssid, strlen(s_ap_pass) ? "***" : "(open)");
 }
