@@ -92,6 +92,12 @@ static lv_obj_t *s_ta_ssid     = nullptr;
 static lv_obj_t *s_ta_pass     = nullptr;
 static lv_obj_t *s_dlg_kb      = nullptr;
 
+// WiFi AP config dialog (modal)
+static lv_obj_t *s_ap_dialog  = nullptr;
+static lv_obj_t *s_ap_ta_ssid = nullptr;
+static lv_obj_t *s_ap_ta_pass = nullptr;
+static lv_obj_t *s_ap_kb      = nullptr;
+
 // Track creator state
 static lv_obj_t *s_tc_name     = nullptr;
 static lv_obj_t *s_tc_sf1_lat  = nullptr, *s_tc_sf1_lon = nullptr;
@@ -245,6 +251,7 @@ void menu_screen_show() {
     set_wifi_ap_sw = set_wifi_ap_status_lbl = set_wifi_sta_status_lbl = nullptr;
     set_lang_btn = set_units_btn = nullptr;
     s_wifi_dialog = nullptr;
+    s_ap_dialog = s_ap_ta_ssid = s_ap_ta_pass = s_ap_kb = nullptr;
     s_tc_kb = nullptr;
     s_tc_kb_num = nullptr;
 
@@ -260,6 +267,7 @@ static void sub_screen_load(lv_obj_t *scr) {
         set_obd_status_lbl = set_obd_btn = nullptr;
         set_wifi_ap_sw = set_wifi_ap_status_lbl = set_wifi_sta_status_lbl = nullptr;
         set_lang_btn = set_units_btn = nullptr;
+        s_ap_dialog = s_ap_ta_ssid = s_ap_ta_pass = s_ap_kb = nullptr;
         lv_obj_delete(s_scr_sub);
     }
     s_scr_sub = scr;
@@ -768,6 +776,7 @@ static void cb_tc_save(lv_event_t* /*e*/) {
         sb_sub = {};   // clear BEFORE delete — labels are children of s_scr_sub
         set_obd_status_lbl = set_obd_btn = nullptr;
         set_wifi_ap_sw = set_wifi_ap_status_lbl = set_wifi_sta_status_lbl = nullptr;
+        s_ap_dialog = s_ap_ta_ssid = s_ap_ta_pass = s_ap_kb = nullptr;
         if (s_scr_sub) {
             lv_obj_delete(s_scr_sub);
             s_scr_sub = nullptr;
@@ -1138,6 +1147,131 @@ static lv_obj_t *make_setting_btn(lv_obj_t *parent, const char *text,
     brl_style_label(lbl, &BRL_FONT_14, BRL_CLR_TEXT);
     lv_obj_center(lbl);
     return btn;
+}
+
+// WiFi AP config dialog
+static void cb_ap_dialog_save(lv_event_t* /*e*/) {
+    if (s_ap_ta_ssid && s_ap_ta_pass) {
+        wifi_ap_set_config(lv_textarea_get_text(s_ap_ta_ssid),
+                           lv_textarea_get_text(s_ap_ta_pass));
+    }
+    if (s_ap_dialog) { lv_obj_delete(s_ap_dialog); s_ap_dialog = nullptr; }
+    s_ap_ta_ssid = s_ap_ta_pass = s_ap_kb = nullptr;
+}
+static void cb_ap_dialog_cancel(lv_event_t* /*e*/) {
+    if (s_ap_dialog) { lv_obj_delete(s_ap_dialog); s_ap_dialog = nullptr; }
+    s_ap_ta_ssid = s_ap_ta_pass = s_ap_kb = nullptr;
+}
+static void cb_ap_ta_focus(lv_event_t *e) {
+    if (s_ap_kb) {
+        lv_keyboard_set_textarea(s_ap_kb, (lv_obj_t*)lv_event_get_target(e));
+        lv_obj_remove_flag(s_ap_kb, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+static void open_wifi_ap_dialog() {
+    if (s_ap_dialog) return;
+    lv_obj_t *scr = lv_screen_active();
+
+    // Full-screen overlay
+    s_ap_dialog = lv_obj_create(scr);
+    lv_obj_set_size(s_ap_dialog, 800, 480); lv_obj_set_pos(s_ap_dialog, 0, 0);
+    lv_obj_set_style_bg_color(s_ap_dialog, lv_color_hex(0x000000), LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(s_ap_dialog, LV_OPA_80, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(s_ap_dialog, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_all(s_ap_dialog, 0, LV_STATE_DEFAULT);
+    lv_obj_remove_flag(s_ap_dialog, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Card (top strip, above keyboard)
+    lv_obj_t *card = lv_obj_create(s_ap_dialog);
+    lv_obj_set_size(card, 800, 270); lv_obj_set_pos(card, 0, 40);
+    brl_style_card(card); lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(card, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_all(card, 16, LV_STATE_DEFAULT);
+
+    // Title
+    lv_obj_t *title = lv_label_create(card);
+    lv_label_set_text(title, LV_SYMBOL_WIFI "  Hotspot konfigurieren");
+    brl_style_label(title, &BRL_FONT_16, BRL_CLR_TEXT);
+    lv_obj_set_pos(title, 0, 0);
+
+    // IP info row
+    lv_obj_t *ip_lbl = lv_label_create(card);
+    lv_label_set_text_fmt(ip_lbl, "IP-Adresse: %s", wifi_ap_ip());
+    brl_style_label(ip_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+    lv_obj_set_pos(ip_lbl, 0, 28);
+
+    // SSID field
+    lv_obj_t *ssid_lbl = lv_label_create(card);
+    lv_label_set_text(ssid_lbl, "Hotspot-Name (SSID):");
+    brl_style_label(ssid_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+    lv_obj_set_pos(ssid_lbl, 0, 56);
+
+    s_ap_ta_ssid = lv_textarea_create(card);
+    lv_obj_set_size(s_ap_ta_ssid, LV_PCT(100), 44);
+    lv_obj_set_pos(s_ap_ta_ssid, 0, 76);
+    lv_textarea_set_one_line(s_ap_ta_ssid, true);
+    lv_textarea_set_max_length(s_ap_ta_ssid, 31);
+    lv_textarea_set_text(s_ap_ta_ssid, wifi_ap_ssid());
+    lv_obj_set_style_text_font(s_ap_ta_ssid, &BRL_FONT_16, LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(s_ap_ta_ssid, lv_color_hex(0x111111), LV_STATE_DEFAULT);
+    lv_obj_set_style_border_color(s_ap_ta_ssid, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(s_ap_ta_ssid, 2, LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(s_ap_ta_ssid, lv_color_hex(0xFFFFFF), LV_STATE_DEFAULT);
+    lv_obj_add_event_cb(s_ap_ta_ssid, cb_ap_ta_focus, LV_EVENT_FOCUSED, nullptr);
+
+    // Password field
+    lv_obj_t *pass_lbl = lv_label_create(card);
+    lv_label_set_text(pass_lbl, "Passwort (leer = offen):");
+    brl_style_label(pass_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+    lv_obj_set_pos(pass_lbl, 0, 130);
+
+    s_ap_ta_pass = lv_textarea_create(card);
+    lv_obj_set_size(s_ap_ta_pass, LV_PCT(100), 44);
+    lv_obj_set_pos(s_ap_ta_pass, 0, 150);
+    lv_textarea_set_one_line(s_ap_ta_pass, true);
+    lv_textarea_set_max_length(s_ap_ta_pass, 63);
+    lv_textarea_set_password_mode(s_ap_ta_pass, true);
+    lv_textarea_set_text(s_ap_ta_pass, wifi_ap_pass());
+    lv_obj_set_style_text_font(s_ap_ta_pass, &BRL_FONT_16, LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(s_ap_ta_pass, lv_color_hex(0x111111), LV_STATE_DEFAULT);
+    lv_obj_set_style_border_color(s_ap_ta_pass, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(s_ap_ta_pass, 2, LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(s_ap_ta_pass, lv_color_hex(0xFFFFFF), LV_STATE_DEFAULT);
+    lv_obj_add_event_cb(s_ap_ta_pass, cb_ap_ta_focus, LV_EVENT_FOCUSED, nullptr);
+
+    // Buttons
+    auto mk_btn = [&](const char *lbl, lv_color_t col, int x_ofs) -> lv_obj_t* {
+        lv_obj_t *b = lv_button_create(card);
+        lv_obj_set_size(b, 220, 40);
+        lv_obj_align(b, LV_ALIGN_BOTTOM_RIGHT, x_ofs, 0);
+        lv_obj_set_style_bg_color(b, col, LV_STATE_DEFAULT);
+        lv_obj_set_style_radius(b, 8, LV_STATE_DEFAULT);
+        lv_obj_set_style_border_width(b, 0, LV_STATE_DEFAULT);
+        lv_obj_t *l = lv_label_create(b);
+        lv_label_set_text(l, lbl);
+        brl_style_label(l, &BRL_FONT_16, BRL_CLR_TEXT);
+        lv_obj_center(l);
+        return b;
+    };
+    char save_lbl[32], cancel_lbl[32];
+    snprintf(save_lbl,   sizeof(save_lbl),   LV_SYMBOL_OK    "  Speichern");
+    snprintf(cancel_lbl, sizeof(cancel_lbl), LV_SYMBOL_CLOSE "  Abbrechen");
+    lv_obj_t *bsave   = mk_btn(save_lbl,   BRL_CLR_ACCENT,    0);
+    lv_obj_t *bcancel = mk_btn(cancel_lbl, BRL_CLR_SURFACE2, -240);
+    lv_obj_add_event_cb(bsave,   cb_ap_dialog_save,   LV_EVENT_CLICKED, nullptr);
+    lv_obj_add_event_cb(bcancel, cb_ap_dialog_cancel, LV_EVENT_CLICKED, nullptr);
+
+    // Keyboard at overlay bottom
+    s_ap_kb = lv_keyboard_create(s_ap_dialog);
+    lv_keyboard_set_map(s_ap_kb, LV_KEYBOARD_MODE_TEXT_LOWER, s_qwertz_lc, s_qwertz_ctrl);
+    lv_keyboard_set_map(s_ap_kb, LV_KEYBOARD_MODE_TEXT_UPPER, s_qwertz_uc, s_qwertz_ctrl);
+    lv_obj_set_size(s_ap_kb, 800, 170);
+    lv_obj_align(s_ap_kb, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_set_style_bg_color(s_ap_kb, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
+    lv_obj_add_event_cb(s_ap_kb, [](lv_event_t *e){
+        lv_obj_add_flag((lv_obj_t*)lv_event_get_target(e), LV_OBJ_FLAG_HIDDEN);
+    }, LV_EVENT_READY, nullptr);
+    lv_obj_add_flag(s_ap_kb, LV_OBJ_FLAG_HIDDEN);
 }
 
 // WiFi dialog

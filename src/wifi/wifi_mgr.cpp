@@ -10,13 +10,13 @@
 #include <ArduinoOTA.h>
 #include <Preferences.h>
 
-#define AP_SSID     "BRL-Laptimer"
-#define AP_PASS     ""             // open network
 #define OTA_PASS    "brl2024"      // OTA password
 
 static Preferences s_prefs;
 static char s_sta_ssid[64] = {};
 static char s_sta_pass[64] = {};
+static char s_ap_ssid[32]  = {};
+static char s_ap_pass[64]  = {};
 
 // ---------------------------------------------------------------------------
 void wifi_mgr_init() {
@@ -24,7 +24,10 @@ void wifi_mgr_init() {
     s_prefs.begin("wifi", true);
     s_prefs.getString("ssid", s_sta_ssid, sizeof(s_sta_ssid));
     s_prefs.getString("pass", s_sta_pass, sizeof(s_sta_pass));
+    s_prefs.getString("ap_ssid", s_ap_ssid, sizeof(s_ap_ssid));
+    s_prefs.getString("ap_pass",  s_ap_pass,  sizeof(s_ap_pass));
     s_prefs.end();
+    if (strlen(s_ap_ssid) == 0) strncpy(s_ap_ssid, "BRL-Laptimer", sizeof(s_ap_ssid)-1);
 
     WiFi.mode(WIFI_MODE_NULL);
     g_state.wifi_mode = BRL_WIFI_OFF;
@@ -50,7 +53,7 @@ void wifi_set_mode(WifiMode mode) {
     data_server_stop();
     WiFi.disconnect(true);
     WiFi.mode(WIFI_MODE_NULL);
-    delay(100);
+    delay(200);
 
     g_state.wifi_mode = mode;
     strncpy(g_state.wifi_ssid, "", sizeof(g_state.wifi_ssid));
@@ -62,10 +65,22 @@ void wifi_set_mode(WifiMode mode) {
             break;
 
         case BRL_WIFI_AP:
+            WiFi.setSleep(false);
+            WiFi.setTxPower(WIFI_POWER_19_5dBm);
             WiFi.mode(WIFI_MODE_AP);
-            WiFi.softAP(AP_SSID, strlen(AP_PASS) ? AP_PASS : nullptr);
-            strncpy(g_state.wifi_ssid, AP_SSID, sizeof(g_state.wifi_ssid));
-            Serial.printf("[WIFI] AP started: %s (192.168.4.1)\n", AP_SSID);
+            delay(200);
+            {
+                bool ok = WiFi.softAP(s_ap_ssid,
+                                      strlen(s_ap_pass) ? s_ap_pass : nullptr,
+                                      6,     // channel 6 — reliable, avoids crowded ch1/11
+                                      false, // not hidden
+                                      4);    // max 4 clients
+                delay(100);
+                Serial.printf("[WIFI] AP %s  SSID:%s  IP:%s\n",
+                              ok ? "OK" : "FAILED", s_ap_ssid,
+                              WiFi.softAPIP().toString().c_str());
+            }
+            strncpy(g_state.wifi_ssid, s_ap_ssid, sizeof(g_state.wifi_ssid));
             data_server_start();
             break;
 
@@ -120,5 +135,21 @@ void wifi_mgr_poll() {
     }
 }
 
-const char *wifi_ap_ssid() { return AP_SSID; }
+const char *wifi_ap_ssid() { return s_ap_ssid; }
 const char *wifi_ap_ip()   { return "192.168.4.1"; }
+
+void wifi_ap_set_config(const char *ssid, const char *pass) {
+    if (ssid && strlen(ssid) > 0) strncpy(s_ap_ssid, ssid, sizeof(s_ap_ssid)-1);
+    if (pass) strncpy(s_ap_pass, pass, sizeof(s_ap_pass)-1);
+    s_prefs.begin("wifi", false);
+    s_prefs.putString("ap_ssid", s_ap_ssid);
+    s_prefs.putString("ap_pass",  s_ap_pass);
+    s_prefs.end();
+    // If AP is currently active, restart it immediately
+    if (g_state.wifi_mode == BRL_WIFI_AP) {
+        WiFi.softAP(s_ap_ssid, strlen(s_ap_pass) ? s_ap_pass : nullptr, 6, false, 4);
+    }
+    Serial.printf("[WIFI] AP config updated: SSID=%s pass=%s\n",
+                  s_ap_ssid, strlen(s_ap_pass) ? "***" : "(open)");
+}
+const char *wifi_ap_pass() { return s_ap_pass; }
