@@ -304,13 +304,15 @@ void setup()
   log_e("[SETUP] lap_timer_init");
   lap_timer_init();
 
-  // OBD Bluetooth BLE
-  log_e("[SETUP] obd_bt_init");
-  obd_bt_init();
-
-  // WiFi manager (off by default, user enables from settings)
+  // WiFi manager: MUST come before obd_bt_init() — forces esp_wifi_init()
+  // while heap is clean. NimBLE/BLE init reduces WiFi coex static-RX-buffer
+  // count to 1 (< required 4), so WiFi init after BLE fails with ESP_ERR_NO_MEM.
   log_e("[SETUP] wifi_mgr_init");
   wifi_mgr_init();
+
+  // OBD Bluetooth BLE (after WiFi so coex init order is correct)
+  log_e("[SETUP] obd_bt_init");
+  obd_bt_init();
 
   // Build the UI (Splash → Haupt-UI)
   log_e("[SETUP] lv_my_setup");

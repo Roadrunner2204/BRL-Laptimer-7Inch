@@ -29,14 +29,20 @@ void wifi_mgr_init() {
     s_prefs.end();
     if (strlen(s_ap_ssid) == 0) strncpy(s_ap_ssid, "BRL-Laptimer", sizeof(s_ap_ssid)-1);
 
-    // Keep the WiFi driver alive — calling WiFi.mode(NULL) deinitializes it,
-    // and reinitializing later (~80 KB static buffers) fails with ESP_ERR_NO_MEM
-    // once the heap has been fragmented by LVGL/JSON allocations.
+    // Initialize the WiFi driver NOW, while the heap is still clean.
+    // esp_wifi_init() needs ~80 KB of contiguous IRAM/DRAM.  If we defer
+    // initialization until the user enables the AP (seconds later), LVGL and
+    // NimBLE/BLE allocations have already fragmented the heap AND the BLE
+    // controller has reduced the WiFi coexistence static-RX-buffer count to 1
+    // (below the required minimum of 4), causing ESP_ERR_NO_MEM (0x101 = 257).
+    // Calling WiFi.mode() here forces wifiLowLevelInit() → esp_wifi_init()
+    // before any BLE init takes place (caller must invoke wifi_mgr_init()
+    // before obd_bt_init() in setup()).
     WiFi.persistent(false);
-    WiFi.disconnect(false);
-    WiFi.softAPdisconnect(false);
+    WiFi.mode(WIFI_STA);   // forces esp_wifi_init() immediately
+    WiFi.disconnect(false); // stop any STA activity, keep driver alive
     g_state.wifi_mode = BRL_WIFI_OFF;
-    Serial.println("[WIFI] Manager init");
+    Serial.println("[WIFI] Manager init (driver pre-initialized)");
 }
 
 // ---------------------------------------------------------------------------
