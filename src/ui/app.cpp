@@ -49,7 +49,7 @@ static lv_obj_t *s_scr_sub   = nullptr;   // rebuilt each time
 // ── QWERTZ keyboard maps (must have static lifetime) ────────────────────────
 // LV_SYMBOL_SHIFT is private in lv_keyboard.c — use the raw UTF-8 value (U+F12A)
 #define _SHF "\xef\x84\xaa"
-#define _KBF LV_KEYBOARD_CTRL_BUTTON_FLAGS
+#define _KBF(w) static_cast<lv_btnmatrix_ctrl_t>(LV_KEYBOARD_CTRL_BUTTON_FLAGS|(w))
 
 static const char * const s_qwertz_lc[] = {
     "1","2","3","4","5","6","7","8","9","0",LV_SYMBOL_BACKSPACE,"\n",
@@ -66,11 +66,11 @@ static const char * const s_qwertz_uc[] = {
     "abc"," ",LV_SYMBOL_LEFT,LV_SYMBOL_RIGHT,""
 };
 static const lv_btnmatrix_ctrl_t s_qwertz_ctrl[] = {
-    _KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|7,  // row1
-    _KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,          // row2
-    _KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|7,          // row3
-    _KBF|7,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|7,  // row4
-    _KBF|5,_KBF|7,_KBF|5,_KBF|5,                                                       // row5
+    _KBF(5),_KBF(5),_KBF(5),_KBF(5),_KBF(5),_KBF(5),_KBF(5),_KBF(5),_KBF(5),_KBF(5),_KBF(7),  // row1
+    _KBF(5),_KBF(5),_KBF(5),_KBF(5),_KBF(5),_KBF(5),_KBF(5),_KBF(5),_KBF(5),_KBF(5),          // row2
+    _KBF(5),_KBF(5),_KBF(5),_KBF(5),_KBF(5),_KBF(5),_KBF(5),_KBF(5),_KBF(5),_KBF(7),          // row3
+    _KBF(7),_KBF(5),_KBF(5),_KBF(5),_KBF(5),_KBF(5),_KBF(5),_KBF(5),_KBF(5),_KBF(5),_KBF(7),  // row4
+    _KBF(5),_KBF(7),_KBF(5),_KBF(5),                                                             // row5
 };
 #undef _SHF
 #undef _KBF
