@@ -47,40 +47,33 @@ static lv_obj_t *s_scr_menu  = nullptr;   // cached forever
 static lv_obj_t *s_scr_sub   = nullptr;   // rebuilt each time
 
 // ── QWERTZ keyboard maps (must have static lifetime) ────────────────────────
+// LV_SYMBOL_SHIFT is private in lv_keyboard.c — use the raw UTF-8 value (U+F12A)
+#define _SHF "\xef\x84\xaa"
+#define _KBF LV_KEYBOARD_CTRL_BUTTON_FLAGS
+
 static const char * const s_qwertz_lc[] = {
     "1","2","3","4","5","6","7","8","9","0",LV_SYMBOL_BACKSPACE,"\n",
     "q","w","e","r","t","z","u","i","o","p","\n",
     "a","s","d","f","g","h","j","k","l",LV_SYMBOL_NEW_LINE,"\n",
-    LV_SYMBOL_SHIFT,"y","x","c","v","b","n","m",".",",",LV_SYMBOL_SHIFT,"\n",
+    _SHF,"y","x","c","v","b","n","m",".",",",_SHF,"\n",
     "1#"," ",LV_SYMBOL_LEFT,LV_SYMBOL_RIGHT,""
 };
 static const char * const s_qwertz_uc[] = {
     "1","2","3","4","5","6","7","8","9","0",LV_SYMBOL_BACKSPACE,"\n",
     "Q","W","E","R","T","Z","U","I","O","P","\n",
     "A","S","D","F","G","H","J","K","L",LV_SYMBOL_NEW_LINE,"\n",
-    LV_SYMBOL_SHIFT,"Y","X","C","V","B","N","M",".",",",LV_SYMBOL_SHIFT,"\n",
+    _SHF,"Y","X","C","V","B","N","M",".",",",_SHF,"\n",
     "abc"," ",LV_SYMBOL_LEFT,LV_SYMBOL_RIGHT,""
 };
 static const lv_btnmatrix_ctrl_t s_qwertz_ctrl[] = {
-    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
-    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
-    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
-    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|7,
-    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
-    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
-    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
-    LV_KEYBOARD_CTRL_BTN_FLAGS|5,
-    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
-    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
-    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
-    LV_KEYBOARD_CTRL_BTN_FLAGS|7,
-    LV_KEYBOARD_CTRL_BTN_FLAGS|7,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
-    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
-    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
-    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|7,
-    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|7,
-    LV_KEYBOARD_CTRL_BTN_FLAGS|5,LV_KEYBOARD_CTRL_BTN_FLAGS|5,
+    _KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|7,  // row1
+    _KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,          // row2
+    _KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|7,          // row3
+    _KBF|7,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|5,_KBF|7,  // row4
+    _KBF|5,_KBF|7,_KBF|5,_KBF|5,                                                       // row5
 };
+#undef _SHF
+#undef _KBF
 
 // ---------------------------------------------------------------------------
 // Settings interactive handles (kept alive while settings screen exists)

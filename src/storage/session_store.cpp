@@ -193,6 +193,8 @@ int session_store_list_summaries(SessionSummary *out, int max_count) {
         }
         f = dir.openNextFile();
     }
+    f.close();
+    dir.close();
     return count;
 }
 
@@ -218,6 +220,8 @@ int session_store_list(char ids[][20], int max_count) {
         }
         f = dir.openNextFile();
     }
+    f.close();
+    dir.close();
     return count;
 }
 
