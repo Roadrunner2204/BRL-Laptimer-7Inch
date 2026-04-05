@@ -35,12 +35,14 @@ export async function deleteSessionOnDevice(id: string): Promise<void> {
 }
 
 /** Compute best_lap_idx and attach downloaded_at */
-export function enrichSession(raw: { id: string; track: string; laps: Lap[] }): Session {
+export function enrichSession(raw: { id: string; name?: string; track: string; laps: Lap[] }): Session {
   const laps = raw.laps ?? [];
   let bestIdx = 0;
   let bestMs = Infinity;
   laps.forEach((l, i) => {
     if (l.total_ms > 0 && l.total_ms < bestMs) { bestMs = l.total_ms; bestIdx = i; }
   });
-  return { ...raw, laps, best_lap_idx: bestIdx, downloaded_at: Date.now() };
+  // Use name field if present, otherwise fall back to id
+  const name = raw.name && raw.name.length > 0 ? raw.name : raw.id;
+  return { ...raw, name, laps, best_lap_idx: bestIdx, downloaded_at: Date.now() };
 }

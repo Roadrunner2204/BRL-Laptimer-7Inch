@@ -6,43 +6,74 @@
 #include "sd_mgr.h"
 #include "../data/lap_data.h"
 #include "../data/track_db.h"
+#include "../gps/gps.h"
+#include "../timing/lap_timer.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <SD_MMC.h>
 
-static char s_session_path[48] = {};
+static char s_session_path[64] = {};
 static char s_track_name[48]   = {};
+static char s_session_name[64] = {};
 
 // ---------------------------------------------------------------------------
-// Generate session ID: "YYYYMMDD_HHMMSS" if RTC available, else "millis_XXXXXXXX"
+// GPS-based default session name: "BRL_Timing_DD.MM_HH:MM"
+// Fallback if GPS time not yet valid: "BRL_Timing_<millis>"
 // ---------------------------------------------------------------------------
-static void make_session_id(char *buf, size_t len) {
-    // No RTC yet — use millis for uniqueness
-    uint32_t ts = millis();
-    snprintf(buf, len, "sess_%08lX", (unsigned long)ts);
+void session_store_make_default_name(char *buf, size_t len) {
+    if (gps_parser.date.isValid() && gps_parser.time.isValid()) {
+        snprintf(buf, len, "BRL_Timing_%02u.%02u_%02u:%02u",
+                 gps_parser.date.day(),
+                 gps_parser.date.month(),
+                 gps_parser.time.hour(),
+                 gps_parser.time.minute());
+    } else {
+        snprintf(buf, len, "BRL_Timing_%lu", (unsigned long)(millis() / 1000));
+    }
 }
 
-void session_store_begin(const char *track_name) {
-    strncpy(s_track_name, track_name, sizeof(s_track_name) - 1);
+// File ID: "YYYYMMDD_HHMMSS" from GPS, or "sess_XXXXXXXX" from millis
+static void make_file_id(char *buf, size_t len) {
+    if (gps_parser.date.isValid() && gps_parser.time.isValid()) {
+        snprintf(buf, len, "%04u%02u%02u_%02u%02u%02u",
+                 gps_parser.date.year(),
+                 gps_parser.date.month(),
+                 gps_parser.date.day(),
+                 gps_parser.time.hour(),
+                 gps_parser.time.minute(),
+                 gps_parser.time.second());
+    } else {
+        snprintf(buf, len, "sess_%08lX", (unsigned long)millis());
+    }
+}
 
-    char id[20];
-    make_session_id(id, sizeof(id));
+void session_store_begin(const char *track_name, const char *session_name) {
+    strncpy(s_track_name,   track_name   ? track_name   : "", sizeof(s_track_name)   - 1);
+    strncpy(s_session_name, session_name ? session_name : "", sizeof(s_session_name) - 1);
+
+    char id[32];
+    make_file_id(id, sizeof(id));
     strncpy(g_state.session.session_id, id, sizeof(g_state.session.session_id));
 
+    if (!SD_MMC.exists("/sessions")) SD_MMC.mkdir("/sessions");
     snprintf(s_session_path, sizeof(s_session_path), "/sessions/%s.json", id);
+
+    // Reset lap data for the new session
+    lap_timer_reset_session();
 
     // Write initial JSON skeleton
     if (!g_state.sd_available) return;
 
     JsonDocument doc;
     doc["id"]    = id;
+    doc["name"]  = s_session_name;   // user-visible label
     doc["track"] = s_track_name;
     doc["laps"]  = JsonArray();
 
-    char buf[256];
+    char buf[512];
     serializeJson(doc, buf, sizeof(buf));
     sd_write_file(s_session_path, buf, strlen(buf));
-    Serial.printf("[STORE] Session begun: %s\n", s_session_path);
+    Serial.printf("[STORE] Session begun: '%s'  file:%s\n", s_session_name, s_session_path);
 }
 
 void session_store_save_lap(uint8_t lap_idx) {

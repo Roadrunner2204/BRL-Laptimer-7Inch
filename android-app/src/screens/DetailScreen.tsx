@@ -40,8 +40,8 @@ export default function DetailScreen({ navigation, route }: Props) {
       {/* Header */}
       <View style={s.hdr}>
         <View style={{ flex:1 }}>
-          <Text style={s.trackName}>{session.track}</Text>
-          <Text style={s.sessionId}>{session.id}</Text>
+          <Text style={s.trackName}>{session.name}</Text>
+          <Text style={s.sessionId}>{session.track} · {session.id}</Text>
         </View>
         <TouchableOpacity
           style={s.mapBtn}

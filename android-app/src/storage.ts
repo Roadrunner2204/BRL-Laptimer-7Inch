@@ -49,6 +49,7 @@ export async function listSessionSummaries(): Promise<SessionSummary[]> {
     if (s) {
       summaries.push({
         id: s.id,
+        name: s.name,
         track: s.track,
         lap_count: s.laps.length,
         best_ms: s.laps[s.best_lap_idx]?.total_ms ?? 0,

@@ -10,6 +10,7 @@ export interface Lap {
 
 export interface Session {
   id: string;
+  name: string;    // user-assigned label, e.g. "BRL_Timing_12.04_14:35"
   track: string;
   laps: Lap[];
   // computed client-side:
@@ -19,6 +20,7 @@ export interface Session {
 
 export interface SessionSummary {
   id: string;
+  name: string;
   track: string;
   lap_count: number;
   best_ms: number;

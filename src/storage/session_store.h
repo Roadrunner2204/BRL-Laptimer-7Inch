@@ -25,8 +25,13 @@
  * ArduinoJson 7 is used for serialization.
  */
 
-// Generate a session ID from current time (uses millis if no RTC)
-void session_store_begin(const char *track_name);
+// Fill buf with a GPS-based default session name: "BRL_Timing_DD.MM_HH:MM"
+// Falls back to millis-based name if GPS date/time not yet valid.
+void session_store_make_default_name(char *buf, size_t len);
+
+// Begin a new session. session_name = user-provided label (may equal default).
+// Resets lap data, opens the session file on SD.
+void session_store_begin(const char *track_name, const char *session_name);
 
 // Save one lap to the session JSON on SD (called after each lap finishes)
 void session_store_save_lap(uint8_t lap_idx);

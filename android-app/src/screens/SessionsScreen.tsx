@@ -108,7 +108,10 @@ export default function SessionsScreen({ navigation, route }: Props) {
               disabled={!isLocal}
             >
               <View style={s.cardTop}>
-                <Text style={s.track}>{summary?.track ?? id}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.track}>{summary?.name ?? id}</Text>
+                  {summary && <Text style={s.trackSub}>{summary.track}</Text>}
+                </View>
                 {isLocal && <Text style={s.savedBadge}>✓ Gespeichert</Text>}
               </View>
 
@@ -166,7 +169,8 @@ const s = StyleSheet.create({
   empty:        { color: C.dim, textAlign:'center', marginTop:48, fontSize:15 },
   card:         { backgroundColor: C.surface, borderRadius:12, padding:16, marginBottom:10 },
   cardTop:      { flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:10 },
-  track:        { color: C.text, fontSize:17, fontWeight:'700', flex:1 },
+  track:        { color: C.text, fontSize:17, fontWeight:'700' },
+  trackSub:     { color: C.dim, fontSize:12, marginTop:2 },
   savedBadge:   { color: C.accent, fontSize:12, fontWeight:'600' },
   row:          { flexDirection:'row', marginBottom:12 },
   stat:         { flex:1 },

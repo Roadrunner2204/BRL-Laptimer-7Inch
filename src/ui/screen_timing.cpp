@@ -24,6 +24,7 @@
 #include "../timing/lap_timer.h"
 #include "../obd/obd_bt.h"
 #include "../wifi/wifi_mgr.h"
+#include "../storage/session_store.h"
 #include <Arduino.h>
 
 // ---------------------------------------------------------------------------
@@ -38,6 +39,15 @@ TimingWidgets     tw = {};
 static lv_obj_t  *s_timing_screen  = nullptr;
 static lv_obj_t  *s_picker_overlay = nullptr;
 static lv_obj_t  *s_scale_overlay  = nullptr;  // delta-bar scale picker
+
+// Session-name dialog state
+static lv_obj_t   *s_name_dlg       = nullptr;
+static lv_obj_t   *s_name_ta        = nullptr;
+static lv_obj_t   *s_name_kb        = nullptr;
+static lv_obj_t   *s_name_count_lbl = nullptr;
+static lv_timer_t *s_name_tmr       = nullptr;
+static int         s_name_secs      = 8;
+static bool        s_session_begun  = false;  // true after session_store_begin called
 
 // Delta bar scale — persists across screen rebuilds
 static int32_t    s_delta_scale_ms = 3000;  // ±3 s default
@@ -361,6 +371,156 @@ static lv_obj_t *mk_slot_card(lv_obj_t *row, int zone, int slot_idx,
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Session-name dialog
+// ---------------------------------------------------------------------------
+static void name_dlg_confirm() {
+    if (!s_name_dlg) return;
+
+    // Cancel countdown timer
+    if (s_name_tmr) { lv_timer_delete(s_name_tmr); s_name_tmr = nullptr; }
+
+    // Read name from text area; fall back to default if empty
+    const char *entered = s_name_ta ? lv_textarea_get_text(s_name_ta) : nullptr;
+    char name[64];
+    if (!entered || strlen(entered) == 0) {
+        session_store_make_default_name(name, sizeof(name));
+    } else {
+        strncpy(name, entered, sizeof(name) - 1);
+        name[sizeof(name) - 1] = '\0';
+    }
+
+    // Begin session with chosen name
+    const TrackDef *td = track_get(g_state.active_track_idx);
+    session_store_begin(td ? td->name : "Unknown", name);
+    s_session_begun = true;
+
+    // Close dialog
+    lv_obj_delete(s_name_dlg);
+    s_name_dlg = s_name_ta = s_name_kb = s_name_count_lbl = nullptr;
+}
+
+static void name_countdown_cb(lv_timer_t * /*t*/) {
+    s_name_secs--;
+    if (s_name_count_lbl) {
+        char buf[24];
+        snprintf(buf, sizeof(buf), "Auto-Start in %ds", s_name_secs);
+        lv_label_set_text(s_name_count_lbl, buf);
+    }
+    if (s_name_secs <= 0) name_dlg_confirm();
+}
+
+static void timing_show_session_name_dialog() {
+    if (s_session_begun || !s_timing_screen) return;
+
+    // Default name prefilled from GPS time
+    char def_name[64];
+    session_store_make_default_name(def_name, sizeof(def_name));
+    s_name_secs = 8;
+
+    // ── Full-screen dimmed overlay ──────────────────────────────────────────
+    s_name_dlg = lv_obj_create(s_timing_screen);
+    lv_obj_set_size(s_name_dlg, 800, 480);
+    lv_obj_set_pos(s_name_dlg, 0, 0);
+    lv_obj_set_style_bg_color(s_name_dlg, lv_color_hex(0x000000), LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(s_name_dlg, LV_OPA_70, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(s_name_dlg, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(s_name_dlg, 0, LV_STATE_DEFAULT);
+    lv_obj_remove_flag(s_name_dlg, LV_OBJ_FLAG_SCROLLABLE);
+
+    // ── Card ────────────────────────────────────────────────────────────────
+    lv_obj_t *card = lv_obj_create(s_name_dlg);
+    lv_obj_set_size(card, 760, 400);
+    lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x1A1A1A), LV_STATE_DEFAULT);
+    lv_obj_set_style_border_color(card, lv_color_hex(0x333333), LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(card, 1, LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(card, 12, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_all(card, 16, LV_STATE_DEFAULT);
+    lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Title row: label + countdown
+    lv_obj_t *title_row = lv_obj_create(card);
+    lv_obj_set_size(title_row, LV_PCT(100), 30);
+    lv_obj_set_pos(title_row, 0, 0);
+    brl_style_transparent(title_row);
+    lv_obj_remove_flag(title_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(title_row);
+    lv_label_set_text(title, "Session benennen");
+    brl_style_label(title, &BRL_FONT_16, BRL_CLR_TEXT);
+    lv_obj_align(title, LV_ALIGN_LEFT_MID, 0, 0);
+
+    s_name_count_lbl = lv_label_create(title_row);
+    char count_buf[24];
+    snprintf(count_buf, sizeof(count_buf), "Auto-Start in %ds", s_name_secs);
+    lv_label_set_text(s_name_count_lbl, count_buf);
+    brl_style_label(s_name_count_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+    lv_obj_align(s_name_count_lbl, LV_ALIGN_RIGHT_MID, 0, 0);
+
+    // Text area with default name
+    s_name_ta = lv_textarea_create(card);
+    lv_obj_set_size(s_name_ta, LV_PCT(100), 50);
+    lv_obj_set_pos(s_name_ta, 0, 38);
+    lv_textarea_set_one_line(s_name_ta, true);
+    lv_textarea_set_text(s_name_ta, def_name);
+    lv_obj_set_style_text_font(s_name_ta, &BRL_FONT_16, LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(s_name_ta, lv_color_hex(0x111111), LV_STATE_DEFAULT);
+    lv_obj_set_style_border_color(s_name_ta, lv_color_hex(0x00CC66), LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(s_name_ta, 2, LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(s_name_ta, lv_color_hex(0xFFFFFF), LV_STATE_DEFAULT);
+
+    // Keyboard
+    s_name_kb = lv_keyboard_create(card);
+    lv_keyboard_set_mode(s_name_kb, LV_KEYBOARD_MODE_TEXT_LOWER);
+    lv_keyboard_set_textarea(s_name_kb, s_name_ta);
+    lv_obj_set_size(s_name_kb, LV_PCT(100), 220);
+    lv_obj_set_pos(s_name_kb, 0, 96);
+    lv_obj_set_style_bg_color(s_name_kb, lv_color_hex(0x111111), LV_STATE_DEFAULT);
+
+    // Button row at bottom
+    lv_obj_t *btn_row = lv_obj_create(card);
+    lv_obj_set_size(btn_row, LV_PCT(100), 46);
+    lv_obj_set_pos(btn_row, 0, 322);
+    brl_style_transparent(btn_row);
+    lv_obj_remove_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    // "Starten" button
+    lv_obj_t *btn_ok = lv_button_create(btn_row);
+    lv_obj_set_size(btn_ok, 300, 40);
+    lv_obj_align(btn_ok, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_set_style_bg_color(btn_ok, lv_color_hex(0x00CC66), LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(btn_ok, 8, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(btn_ok, 0, LV_STATE_DEFAULT);
+    lv_obj_t *ok_lbl = lv_label_create(btn_ok);
+    lv_label_set_text(ok_lbl, LV_SYMBOL_OK "  Starten");
+    brl_style_label(ok_lbl, &BRL_FONT_16, lv_color_hex(0x000000));
+    lv_obj_center(ok_lbl);
+    lv_obj_add_event_cb(btn_ok, [](lv_event_t * /*e*/) { name_dlg_confirm(); },
+                        LV_EVENT_CLICKED, nullptr);
+
+    // "Standard" button (skip → use default name)
+    lv_obj_t *btn_skip = lv_button_create(btn_row);
+    lv_obj_set_size(btn_skip, 220, 40);
+    lv_obj_align(btn_skip, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_bg_color(btn_skip, lv_color_hex(0x222222), LV_STATE_DEFAULT);
+    lv_obj_set_style_border_color(btn_skip, lv_color_hex(0x444444), LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(btn_skip, 1, LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(btn_skip, 8, LV_STATE_DEFAULT);
+    lv_obj_t *skip_lbl = lv_label_create(btn_skip);
+    lv_label_set_text(skip_lbl, "Standard verwenden");
+    brl_style_label(skip_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+    lv_obj_center(skip_lbl);
+    lv_obj_add_event_cb(btn_skip, [](lv_event_t * /*e*/) {
+        // Clear TA so name_dlg_confirm fills in default
+        if (s_name_ta) lv_textarea_set_text(s_name_ta, "");
+        name_dlg_confirm();
+    }, LV_EVENT_CLICKED, nullptr);
+
+    // Countdown timer — fires every 1 second
+    s_name_tmr = lv_timer_create(name_countdown_cb, 1000, nullptr);
+}
+
 // Build
 // ---------------------------------------------------------------------------
 static void cb_back(lv_event_t * /*e*/) { menu_screen_show(); }
@@ -575,11 +735,18 @@ void timing_screen_open() {
         s_timing_screen = timing_screen_build();
     }
     lv_screen_load(s_timing_screen);
+    // Show session name dialog for every new track visit (not if already in a session)
+    if (!s_session_begun) timing_show_session_name_dialog();
 }
 
 void timing_screen_rebuild() {
+    // Kill countdown timer before overlay objects are freed
+    if (s_name_tmr) { lv_timer_delete(s_name_tmr); s_name_tmr = nullptr; }
+    s_name_dlg = s_name_ta = s_name_kb = s_name_count_lbl = nullptr;
+
     s_picker_overlay = nullptr;
-    s_scale_overlay  = nullptr;   // was child of old screen — now freed with it
+    s_scale_overlay  = nullptr;
+    s_session_begun  = false;   // new track selected → new session
     tw = {};
     if (s_timing_screen) {
         lv_obj_delete(s_timing_screen);
@@ -587,4 +754,5 @@ void timing_screen_rebuild() {
     }
     s_timing_screen = timing_screen_build();
     lv_screen_load(s_timing_screen);
+    timing_show_session_name_dialog();
 }
