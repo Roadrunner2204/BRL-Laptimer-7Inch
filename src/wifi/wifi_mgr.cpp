@@ -1,5 +1,12 @@
 /**
  * wifi_mgr.cpp — WiFi manager
+ *
+ * IMPORTANT — WiFi + BLE coexistence rule (ESP-IDF hard requirement):
+ *   WIFI_PS_NONE is FORBIDDEN when BLE is active. Any call to
+ *   esp_wifi_set_ps(WIFI_PS_NONE) / WiFi.setSleep(false) while NimBLE is
+ *   running causes abort() in pm_set_sleep_type().
+ *   WiFi.mode() itself may reset PS to NONE internally, so we call
+ *   WiFi.setSleep(true) after EVERY mode change.
  */
 
 #include "wifi_mgr.h"
@@ -10,7 +17,7 @@
 #include <ArduinoOTA.h>
 #include <Preferences.h>
 
-#define OTA_PASS    "brl2024"      // OTA password
+#define OTA_PASS    "brl2024"
 
 static Preferences s_prefs;
 static char s_sta_ssid[64] = {};
@@ -18,9 +25,13 @@ static char s_sta_pass[64] = {};
 static char s_ap_ssid[32]  = {};
 static char s_ap_pass[64]  = {};
 
+// Force modem sleep after every WiFi.mode() call — required when BLE runs.
+static inline void wifi_ensure_sleep() {
+    WiFi.setSleep(true);   // WIFI_PS_MIN_MODEM — compatible with BLE coex
+}
+
 // ---------------------------------------------------------------------------
 void wifi_mgr_init() {
-    // Load saved credentials from NVS
     s_prefs.begin("wifi", true);
     s_prefs.getString("ssid",    s_sta_ssid, sizeof(s_sta_ssid));
     s_prefs.getString("pass",    s_sta_pass, sizeof(s_sta_pass));
@@ -29,20 +40,16 @@ void wifi_mgr_init() {
     s_prefs.end();
     if (strlen(s_ap_ssid) == 0) strncpy(s_ap_ssid, "BRL-Laptimer", sizeof(s_ap_ssid)-1);
 
-    // Initialize the WiFi driver NOW, while the heap is still clean.
-    // esp_wifi_init() needs ~80 KB of contiguous IRAM/DRAM.  If we defer
-    // initialization until the user enables the AP (seconds later), LVGL and
-    // NimBLE/BLE allocations have already fragmented the heap AND the BLE
-    // controller has reduced the WiFi coexistence static-RX-buffer count to 1
-    // (below the required minimum of 4), causing ESP_ERR_NO_MEM (0x101 = 257).
-    // Calling WiFi.mode() here forces wifiLowLevelInit() → esp_wifi_init()
-    // before any BLE init takes place (caller must invoke wifi_mgr_init()
-    // before obd_bt_init() in setup()).
+    // Force esp_wifi_init() NOW, before NimBLE/BLE starts.
+    // BLE controller init reduces WiFi coex static-RX-buffer count below the
+    // required minimum of 4 → esp_wifi_init() fails with ESP_ERR_NO_MEM later.
+    // Caller (main.cpp) must call wifi_mgr_init() BEFORE obd_bt_init().
     WiFi.persistent(false);
-    WiFi.mode(WIFI_STA);   // forces esp_wifi_init() immediately
-    WiFi.disconnect(false); // stop any STA activity, keep driver alive
+    WiFi.mode(WIFI_STA);     // triggers wifiLowLevelInit() → esp_wifi_init()
+    wifi_ensure_sleep();     // prevent PS=NONE crash when BLE starts later
+    WiFi.disconnect(false);
     g_state.wifi_mode = BRL_WIFI_OFF;
-    Serial.println("[WIFI] Manager init (driver pre-initialized)");
+    Serial.println("[WIFI] Manager init");
 }
 
 // ---------------------------------------------------------------------------
@@ -59,9 +66,6 @@ void wifi_set_sta(const char *ssid, const char *password) {
 void wifi_set_mode(WifiMode mode) {
     if (g_state.wifi_mode == mode) return;
 
-    // Stop current services — do NOT call WiFi.mode(NULL), that deinitializes
-    // the driver and subsequent esp_wifi_init() fails with ESP_ERR_NO_MEM once
-    // heap is fragmented.
     ArduinoOTA.end();
     data_server_stop();
     WiFi.softAPdisconnect(false);
@@ -74,23 +78,18 @@ void wifi_set_mode(WifiMode mode) {
     switch (mode) {
 
         case BRL_WIFI_OFF:
-            // Driver stays alive — just no active connection/AP
             Serial.println("[WIFI] OFF");
             break;
 
         case BRL_WIFI_AP:
-            // NOTE: WiFi.setSleep(false) is FORBIDDEN when BLE is also running —
-            // esp_wifi_set_ps(WIFI_PS_NONE) causes abort() in wifi_set_ps_process.
-            // Modem sleep (default) is required for WiFi+BT coexistence.
             WiFi.setTxPower(WIFI_POWER_19_5dBm);
             WiFi.mode(WIFI_MODE_AP);
+            wifi_ensure_sleep();   // WiFi.mode() resets PS to NONE — restore it
             delay(200);
             {
                 bool ok = WiFi.softAP(s_ap_ssid,
                                       strlen(s_ap_pass) ? s_ap_pass : nullptr,
-                                      6,     // channel 6 — reliable, avoids crowded ch1/11
-                                      false, // not hidden
-                                      4);    // max 4 clients
+                                      6, false, 4);
                 delay(100);
                 Serial.printf("[WIFI] AP %s  SSID:%s  IP:%s\n",
                               ok ? "OK" : "FAILED", s_ap_ssid,
@@ -107,11 +106,11 @@ void wifi_set_mode(WifiMode mode) {
                 return;
             }
             WiFi.mode(WIFI_MODE_STA);
+            wifi_ensure_sleep();   // WiFi.mode() resets PS to NONE — restore it
             WiFi.begin(s_sta_ssid, s_sta_pass);
             strncpy(g_state.wifi_ssid, s_sta_ssid, sizeof(g_state.wifi_ssid));
             Serial.printf("[WIFI] Connecting to %s...\n", s_sta_ssid);
 
-            // Setup OTA
             ArduinoOTA.setPassword(OTA_PASS);
             ArduinoOTA.setHostname("BRL-Laptimer");
             ArduinoOTA.onStart([]() {
@@ -129,7 +128,6 @@ void wifi_set_mode(WifiMode mode) {
             break;
 
         case BRL_WIFI_OTA:
-            // Entered automatically by ArduinoOTA callback
             break;
     }
 }
@@ -161,7 +159,6 @@ void wifi_ap_set_config(const char *ssid, const char *pass) {
     s_prefs.putString("ap_ssid", s_ap_ssid);
     s_prefs.putString("ap_pass",  s_ap_pass);
     s_prefs.end();
-    // If AP is currently active, restart it immediately
     if (g_state.wifi_mode == BRL_WIFI_AP) {
         WiFi.softAP(s_ap_ssid, strlen(s_ap_pass) ? s_ap_pass : nullptr, 6, false, 4);
     }
