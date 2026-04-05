@@ -79,7 +79,9 @@ void wifi_set_mode(WifiMode mode) {
             break;
 
         case BRL_WIFI_AP:
-            WiFi.setSleep(false);
+            // NOTE: WiFi.setSleep(false) is FORBIDDEN when BLE is also running —
+            // esp_wifi_set_ps(WIFI_PS_NONE) causes abort() in wifi_set_ps_process.
+            // Modem sleep (default) is required for WiFi+BT coexistence.
             WiFi.setTxPower(WIFI_POWER_19_5dBm);
             WiFi.mode(WIFI_MODE_AP);
             delay(200);
