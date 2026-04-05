@@ -1395,6 +1395,7 @@ static void open_settings_screen() {
         lv_label_set_text(set_wifi_ap_status_lbl, tr(TR_WIFI_AP_OFF));
         brl_style_label(set_wifi_ap_status_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
         lv_obj_align(set_wifi_ap_status_lbl, LV_ALIGN_LEFT_MID, 0, 0);
+
         set_wifi_ap_sw = lv_switch_create(r);
         lv_obj_align(set_wifi_ap_sw, LV_ALIGN_RIGHT_MID, 0, 0);
         lv_obj_set_style_bg_color(set_wifi_ap_sw, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
@@ -1403,6 +1404,12 @@ static void open_settings_screen() {
             wifi_set_mode(lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED)
                           ? BRL_WIFI_AP : BRL_WIFI_OFF);
         }, LV_EVENT_VALUE_CHANGED, nullptr);
+
+        char cfg_lbl[48];
+        snprintf(cfg_lbl, sizeof(cfg_lbl), LV_SYMBOL_SETTINGS " %s", tr(TR_CONFIGURE_BTN));
+        lv_obj_t *bcfg = make_setting_btn(r, cfg_lbl, BRL_CLR_SURFACE2, LV_ALIGN_RIGHT_MID, -80);
+        lv_obj_add_event_cb(bcfg, [](lv_event_t* /*e*/){ open_wifi_ap_dialog(); },
+                            LV_EVENT_CLICKED, nullptr);
     }
     // WiFi STA
     {
