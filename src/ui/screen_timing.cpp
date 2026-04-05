@@ -47,7 +47,8 @@ static lv_obj_t   *s_name_kb        = nullptr;
 static lv_obj_t   *s_name_count_lbl = nullptr;
 static lv_timer_t *s_name_tmr       = nullptr;
 static int         s_name_secs      = 8;
-static bool        s_session_begun  = false;  // true after session_store_begin called
+static bool        s_session_begun  = false;
+static int         s_last_track_idx = -2;  // track last opened; -2 = never
 
 // Delta bar scale — persists across screen rebuilds
 static int32_t    s_delta_scale_ms = 3000;  // ±3 s default
@@ -418,7 +419,7 @@ static void timing_show_session_name_dialog() {
     session_store_make_default_name(def_name, sizeof(def_name));
     s_name_secs = 8;
 
-    // ── Full-screen dimmed overlay ──────────────────────────────────────────
+    // ── Full-screen dimmed overlay (no padding, no radius) ──────────────────
     s_name_dlg = lv_obj_create(s_timing_screen);
     lv_obj_set_size(s_name_dlg, 800, 480);
     lv_obj_set_pos(s_name_dlg, 0, 0);
@@ -426,17 +427,20 @@ static void timing_show_session_name_dialog() {
     lv_obj_set_style_bg_opa(s_name_dlg, LV_OPA_70, LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(s_name_dlg, 0, LV_STATE_DEFAULT);
     lv_obj_set_style_radius(s_name_dlg, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_all(s_name_dlg, 0, LV_STATE_DEFAULT);
     lv_obj_remove_flag(s_name_dlg, LV_OBJ_FLAG_SCROLLABLE);
 
-    // ── Card ────────────────────────────────────────────────────────────────
+    // ── Top card: title + textarea + buttons (slim, no keyboard inside) ─────
+    // Height: 16 pad + 30 title + 8 gap + 50 ta + 8 gap + 46 btns + 16 pad = 174
     lv_obj_t *card = lv_obj_create(s_name_dlg);
-    lv_obj_set_size(card, 760, 400);
-    lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_size(card, 800, 174);
+    lv_obj_set_pos(card, 0, 40);          // below status bar
     lv_obj_set_style_bg_color(card, lv_color_hex(0x1A1A1A), LV_STATE_DEFAULT);
     lv_obj_set_style_border_color(card, lv_color_hex(0x333333), LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(card, 1, LV_STATE_DEFAULT);
-    lv_obj_set_style_radius(card, 12, LV_STATE_DEFAULT);
-    lv_obj_set_style_pad_all(card, 16, LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(card, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_hor(card, 16, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_ver(card, 16, LV_STATE_DEFAULT);
     lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 
     // Title row: label + countdown
@@ -470,18 +474,10 @@ static void timing_show_session_name_dialog() {
     lv_obj_set_style_border_width(s_name_ta, 2, LV_STATE_DEFAULT);
     lv_obj_set_style_text_color(s_name_ta, lv_color_hex(0xFFFFFF), LV_STATE_DEFAULT);
 
-    // Keyboard
-    s_name_kb = lv_keyboard_create(card);
-    lv_keyboard_set_mode(s_name_kb, LV_KEYBOARD_MODE_TEXT_LOWER);
-    lv_keyboard_set_textarea(s_name_kb, s_name_ta);
-    lv_obj_set_size(s_name_kb, LV_PCT(100), 220);
-    lv_obj_set_pos(s_name_kb, 0, 96);
-    lv_obj_set_style_bg_color(s_name_kb, lv_color_hex(0x111111), LV_STATE_DEFAULT);
-
-    // Button row at bottom
+    // Button row
     lv_obj_t *btn_row = lv_obj_create(card);
     lv_obj_set_size(btn_row, LV_PCT(100), 46);
-    lv_obj_set_pos(btn_row, 0, 322);
+    lv_obj_set_pos(btn_row, 0, 96);
     brl_style_transparent(btn_row);
     lv_obj_remove_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
 
@@ -516,6 +512,16 @@ static void timing_show_session_name_dialog() {
         if (s_name_ta) lv_textarea_set_text(s_name_ta, "");
         name_dlg_confirm();
     }, LV_EVENT_CLICKED, nullptr);
+
+    // ── Keyboard: child of overlay (NOT card), full-width, anchored at bottom
+    // Overlay is 800×480; keyboard at y=214 gives 266px height to screen bottom.
+    s_name_kb = lv_keyboard_create(s_name_dlg);
+    lv_keyboard_set_mode(s_name_kb, LV_KEYBOARD_MODE_TEXT_LOWER);
+    lv_keyboard_set_textarea(s_name_kb, s_name_ta);
+    lv_obj_set_size(s_name_kb, 800, 266);
+    lv_obj_set_pos(s_name_kb, 0, 214);
+    lv_obj_set_style_bg_color(s_name_kb, lv_color_hex(0x111111), LV_STATE_DEFAULT);
+    lv_obj_remove_flag(s_name_kb, LV_OBJ_FLAG_SCROLLABLE);
 
     // Countdown timer — fires every 1 second
     s_name_tmr = lv_timer_create(name_countdown_cb, 1000, nullptr);
@@ -734,8 +740,18 @@ void timing_screen_open() {
         tw = {};
         s_timing_screen = timing_screen_build();
     }
+    // Reset session state whenever a different track is opened
+    if (g_state.active_track_idx != s_last_track_idx) {
+        s_session_begun  = false;
+        s_last_track_idx = g_state.active_track_idx;
+        // Remove any stale dialog from a previous visit
+        if (s_name_dlg) {
+            if (s_name_tmr) { lv_timer_delete(s_name_tmr); s_name_tmr = nullptr; }
+            lv_obj_delete(s_name_dlg);
+            s_name_dlg = s_name_ta = s_name_kb = s_name_count_lbl = nullptr;
+        }
+    }
     lv_screen_load(s_timing_screen);
-    // Show session name dialog for every new track visit (not if already in a session)
     if (!s_session_begun) timing_show_session_name_dialog();
 }
 
