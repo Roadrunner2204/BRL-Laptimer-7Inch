@@ -87,6 +87,21 @@ static const TrackDef TRACK_DB[] = {
         true, false
     },
     {
+        // Hauptgerade, Höhe Start/Ziel-Tribüne — S/F-Linie senkrecht zur Fahrlinie
+        // S1: nach erstem Komplex (Eingang Bergkurve)
+        // S2: Ende Rückegrade vor letztem Schikanen-Komplex
+        // S3: Eingang letztes Kurvenpaket vor Zielgerade
+        "Salzburgring",          "Österreich",   4.241f,
+        47.78340, 13.18460,   47.78320, 13.18460,
+        0,0,  0,0,
+        {
+            { 47.78415, 13.18400, "S1" },
+            { 47.78270, 13.18510, "S2" },
+            { 47.78290, 13.18325, "S3" },
+        }, 3,
+        true, false
+    },
+    {
         // La Source-Seite der Hauptgeraden, Höhe Zeitmessung
         "Spa-Francorchamps",     "Belgien",      7.004f,
         50.43718,  5.97126,   50.43677,  5.97162,
