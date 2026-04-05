@@ -164,12 +164,17 @@ static void do_disconnect() {
 // ---------------------------------------------------------------------------
 void obd_bt_init() {
     NimBLEDevice::init("BRL-Laptimer");
-    NimBLEDevice::setPower(ESP_PWR_LVL_P9);  // max TX power
+    NimBLEDevice::setPower(ESP_PWR_LVL_P9);
     s_scan = NimBLEDevice::getScan();
     s_scan->setAdvertisedDeviceCallbacks(&s_scan_cb, false);
     s_scan->setActiveScan(true);
-    s_scan->setInterval(100);
-    s_scan->setWindow(99);
+    // Low duty-cycle (10%): reduces BLE advertising-report processing and the
+    // resulting heap churn that fragments DRAM.  With 99% duty-cycle the DRAM
+    // heap becomes so fragmented that WiFi AP authentication timers (~60 B)
+    // can no longer be allocated -> ESP_ERR_NO_MEM -> abort().
+    s_scan->setInterval(450);   // was 100 ms
+    s_scan->setWindow(45);      // 45/450 = 10% duty cycle (was 99/100 = 99%)
+    s_scan->setDuplicateFilter(true);  // process each device only once per scan
     s_state    = OBD_IDLE;
     s_retry_ts = 0;
     log_e("[OBD] NimBLE init done");
