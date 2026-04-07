@@ -15,15 +15,30 @@ static bool      s_running = false;
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
+// Add permissive CORS headers so the app can also be served from a WebView.
+static void add_cors_headers() {
+    s_server.sendHeader("Access-Control-Allow-Origin",  "*");
+    s_server.sendHeader("Access-Control-Allow-Methods", "GET, DELETE, OPTIONS");
+    s_server.sendHeader("Access-Control-Allow-Headers", "Content-Type");
+    s_server.sendHeader("Connection", "close");
+}
+
+static void handle_options() {
+    add_cors_headers();
+    s_server.send(204);
+}
+
 static void handle_root() {
+    Serial.println("[HTTP] GET /");
     char buf[256];
     snprintf(buf, sizeof(buf),
              "{\"device\":\"BRL-Laptimer\","
-             "\"wifi_mode\":%d,"  // BRL_WIFI_OFF=0 AP=1 STA=2 OTA=3
+             "\"wifi_mode\":%d,"  // BRL_WIFI_AP=1 STA=2 OTA=3
              "\"sd\":%s,"
              "\"version\":\"1.0.0\"}",
              (int)g_state.wifi_mode,
              g_state.sd_available ? "true" : "false");
+    add_cors_headers();
     s_server.send(200, "application/json", buf);
 }
 
@@ -58,6 +73,8 @@ static void handle_sessions() {
     }
     dir.close();
     json += "]";
+    Serial.printf("[HTTP] GET /sessions → %s\n", json.c_str());
+    add_cors_headers();
     s_server.send(200, "application/json", json);
 }
 
@@ -106,10 +123,13 @@ static void handle_not_found() {
 void data_server_start() {
     if (s_running) return;
 
-    s_server.on("/",                       HTTP_GET,    handle_root);
-    s_server.on("/sessions",               HTTP_GET,    handle_sessions);
-    s_server.on("/session/{}", HTTP_GET,    handle_session_get);
-    s_server.on("/session/{}", HTTP_DELETE, handle_session_delete);
+    s_server.on("/",              HTTP_GET,     handle_root);
+    s_server.on("/",              HTTP_OPTIONS, handle_options);
+    s_server.on("/sessions",      HTTP_GET,     handle_sessions);
+    s_server.on("/sessions",      HTTP_OPTIONS, handle_options);
+    s_server.on("/session/{}",    HTTP_GET,     handle_session_get);
+    s_server.on("/session/{}",    HTTP_DELETE,  handle_session_delete);
+    s_server.on("/session/{}",    HTTP_OPTIONS, handle_options);
     s_server.onNotFound(handle_not_found);
 
     s_server.begin();

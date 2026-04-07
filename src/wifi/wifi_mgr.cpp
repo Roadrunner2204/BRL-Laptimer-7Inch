@@ -161,9 +161,8 @@ void wifi_ap_set_config(const char *ssid, const char *pass) {
     s_prefs.putString("ap_ssid", s_ap_ssid);
     s_prefs.putString("ap_pass",  s_ap_pass);
     s_prefs.end();
-    // Update AP config — keep hidden state matching current mode.
-    bool hidden = (g_state.wifi_mode != BRL_WIFI_AP);
-    WiFi.softAP(s_ap_ssid, strlen(s_ap_pass) ? s_ap_pass : nullptr, 6, hidden, 4);
+    // AP is always visible.
+    WiFi.softAP(s_ap_ssid, strlen(s_ap_pass) ? s_ap_pass : nullptr, 6, false, 4);
     Serial.printf("[WIFI] AP config updated: SSID=%s pass=%s\n",
                   s_ap_ssid, strlen(s_ap_pass) ? "***" : "(open)");
 }

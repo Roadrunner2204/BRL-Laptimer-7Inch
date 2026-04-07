@@ -218,6 +218,11 @@ static void logic_task(void * /*param*/)
 void setup()
 {
   Serial.begin(115200);
+  delay(200);  // let USB CDC settle before first message
+  Serial.println("\n\n========================================");
+  Serial.println("  BRL LAPTIMER  BOOT  v2.0");
+  Serial.println("  Build: " __DATE__ " " __TIME__);
+  Serial.println("========================================\n");
 
   g_state_mutex = xSemaphoreCreateMutex();
 
