@@ -62,8 +62,11 @@ void wifi_mgr_init() {
 
     WiFi.disconnect(false);  // STA idle until user enables it
 
-    // Data server stays off until the user enables the AP toggle in settings.
-    g_state.wifi_mode = BRL_WIFI_OFF;
+    // AP is live — start the data server immediately so the app can connect.
+    // The UI toggle switches between BRL_WIFI_AP (server on) and BRL_WIFI_OFF
+    // (server off, but AP keeps broadcasting).
+    data_server_start();
+    g_state.wifi_mode = BRL_WIFI_AP;
     strncpy(g_state.wifi_ssid, s_ap_ssid, sizeof(g_state.wifi_ssid));
     Serial.println("[WIFI] Manager init done");
 }
