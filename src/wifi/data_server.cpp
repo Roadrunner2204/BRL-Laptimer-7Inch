@@ -42,22 +42,21 @@ static void handle_sessions() {
 
     String json = "[";
     bool first = true;
-    File f = dir.openNextFile();
-    while (f) {
-        if (!f.isDirectory()) {
-            String name = f.name();
-            if (name.endsWith(".json")) {
-                if (!first) json += ",";
-                // Strip path and extension
-                int slash = name.lastIndexOf('/');
-                String id = (slash >= 0) ? name.substring(slash + 1) : name;
-                id = id.substring(0, id.length() - 5);
-                json += "\"" + id + "\"";
-                first = false;
-            }
-        }
-        f = dir.openNextFile();
+    for (;;) {
+        File f = dir.openNextFile();
+        if (!f) break;
+        bool is_dir = f.isDirectory();
+        String name = f.name();
+        f.close();
+        if (is_dir || !name.endsWith(".json")) continue;
+        if (!first) json += ",";
+        int slash = name.lastIndexOf('/');
+        String id = (slash >= 0) ? name.substring(slash + 1) : name;
+        id = id.substring(0, id.length() - 5);
+        json += "\"" + id + "\"";
+        first = false;
     }
+    dir.close();
     json += "]";
     s_server.send(200, "application/json", json);
 }

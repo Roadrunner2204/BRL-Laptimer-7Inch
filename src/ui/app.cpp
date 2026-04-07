@@ -1387,27 +1387,18 @@ static void open_settings_screen() {
             else obd_bt_disconnect(); // resets to IDLE → poll restarts scan
         }, LV_EVENT_CLICKED, nullptr);
     }
-    // WiFi AP
+    // WiFi AP — always active, only SSID/password can be configured
     {
         lv_obj_t *r = make_setting_row(content, 0, RH2, LV_SYMBOL_WIFI,
                                         tr(TR_WIFI_AP_TITLE), tr(TR_WIFI_AP_SUB));
         set_wifi_ap_status_lbl = lv_label_create(r);
-        lv_label_set_text(set_wifi_ap_status_lbl, tr(TR_WIFI_AP_OFF));
-        brl_style_label(set_wifi_ap_status_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+        lv_label_set_text(set_wifi_ap_status_lbl, tr(TR_WIFI_AP_ON));
+        brl_style_label(set_wifi_ap_status_lbl, &BRL_FONT_14, lv_color_hex(0x00CC66));
         lv_obj_align(set_wifi_ap_status_lbl, LV_ALIGN_LEFT_MID, 0, 0);
-
-        set_wifi_ap_sw = lv_switch_create(r);
-        lv_obj_align(set_wifi_ap_sw, LV_ALIGN_RIGHT_MID, 0, 0);
-        lv_obj_set_style_bg_color(set_wifi_ap_sw, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_color(set_wifi_ap_sw, BRL_CLR_ACCENT, LV_STATE_CHECKED);
-        lv_obj_add_event_cb(set_wifi_ap_sw, [](lv_event_t *e){
-            wifi_set_mode(lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED)
-                          ? BRL_WIFI_AP : BRL_WIFI_OFF);
-        }, LV_EVENT_VALUE_CHANGED, nullptr);
 
         char cfg_lbl[48];
         snprintf(cfg_lbl, sizeof(cfg_lbl), LV_SYMBOL_SETTINGS " %s", tr(TR_CONFIGURE_BTN));
-        lv_obj_t *bcfg = make_setting_btn(r, cfg_lbl, BRL_CLR_SURFACE2, LV_ALIGN_RIGHT_MID, -80);
+        lv_obj_t *bcfg = make_setting_btn(r, cfg_lbl, BRL_CLR_SURFACE2, LV_ALIGN_RIGHT_MID);
         lv_obj_add_event_cb(bcfg, [](lv_event_t* /*e*/){ open_wifi_ap_dialog(); },
                             LV_EVENT_CLICKED, nullptr);
     }
@@ -1821,18 +1812,7 @@ void timer_live_update(lv_timer_t * /*t*/) {
                  conn ? tr(TR_DISCONNECT_BTN) : tr(TR_CONNECT_BTN));
         lv_label_set_text(lv_obj_get_child(set_obd_btn, 0), obd_btn_buf);
     }
-    if (set_wifi_ap_status_lbl) {
-        bool ap_on = (g_state.wifi_mode == BRL_WIFI_AP || g_state.wifi_mode == BRL_WIFI_OTA);
-        lv_label_set_text(set_wifi_ap_status_lbl, ap_on ? tr(TR_WIFI_AP_ON) : tr(TR_WIFI_AP_OFF));
-        lv_obj_set_style_text_color(set_wifi_ap_status_lbl,
-            ap_on ? lv_color_hex(0x00CC66) : lv_color_hex(0xAAAAAA), 0);
-        if (set_wifi_ap_sw) {
-            if (ap_on && !lv_obj_has_state(set_wifi_ap_sw, LV_STATE_CHECKED))
-                lv_obj_add_state(set_wifi_ap_sw, LV_STATE_CHECKED);
-            else if (!ap_on && lv_obj_has_state(set_wifi_ap_sw, LV_STATE_CHECKED))
-                lv_obj_remove_state(set_wifi_ap_sw, LV_STATE_CHECKED);
-        }
-    }
+    // AP is always active — status label is a static green "Aktiv", no dynamic update needed.
     if (set_wifi_sta_status_lbl) {
         bool sta_on = (g_state.wifi_mode == BRL_WIFI_STA);
         lv_label_set_text(set_wifi_sta_status_lbl,

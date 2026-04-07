@@ -47,25 +47,22 @@ void wifi_mgr_init() {
     WiFi.setSleep(true);
     WiFi.setTxPower(WIFI_POWER_19_5dBm);
 
-    // Pre-initialize the AP as HIDDEN so that ieee80211_hostap_attach()
-    // allocates its ESP timers now, while the heap is still clean.
-    // If we defer softAP() until the user enables it (~seconds later),
-    // NimBLE has fragmented DRAM so badly that esp_timer_create() returns
-    // ESP_ERR_NO_MEM → abort(). The AP is invisible to phones until the
-    // user explicitly enables it in Settings.
+    // Pre-initialize the AP (visible) so ieee80211_hostap_attach() allocates
+    // its ESP timers now, while DRAM is not yet fragmented by NimBLE/LVGL.
+    // The data server is NOT started here — user enables it via Settings toggle.
     bool ok = WiFi.softAP(s_ap_ssid,
                            strlen(s_ap_pass) ? s_ap_pass : nullptr,
-                           6,    // channel 6
-                           true, // hidden — not visible until user enables
-                           4);   // max clients
-    Serial.printf("[WIFI] AP pre-init %s (hidden)  SSID:%s\n",
-                  ok ? "OK" : "FAILED", s_ap_ssid);
+                           6, false, 4);
+    Serial.printf("[WIFI] AP %s  SSID:%s  IP:%s\n",
+                  ok ? "started" : "FAILED", s_ap_ssid,
+                  WiFi.softAPIP().toString().c_str());
 
-    WiFi.disconnect(false);  // STA idle
+    WiFi.disconnect(false);
 
-    // OFF by default — user must enable in Settings.
-    g_state.wifi_mode = BRL_WIFI_OFF;
-    strncpy(g_state.wifi_ssid, "", sizeof(g_state.wifi_ssid));
+    // AP is always on — start the data server immediately.
+    data_server_start();
+    g_state.wifi_mode = BRL_WIFI_AP;
+    strncpy(g_state.wifi_ssid, s_ap_ssid, sizeof(g_state.wifi_ssid));
     Serial.println("[WIFI] Manager init done");
 }
 
@@ -94,22 +91,17 @@ void wifi_set_mode(WifiMode mode) {
     switch (mode) {
 
         case BRL_WIFI_OFF:
-            // Hide the AP so phones can no longer discover or connect.
-            WiFi.softAP(s_ap_ssid,
-                        strlen(s_ap_pass) ? s_ap_pass : nullptr,
-                        6, true, 4);   // hidden=true
-            Serial.println("[WIFI] OFF (AP hidden)");
-            break;
+            // AP always stays visible — just ensure data server is running.
+            strncpy(g_state.wifi_ssid, s_ap_ssid, sizeof(g_state.wifi_ssid));
+            g_state.wifi_mode = BRL_WIFI_AP;
+            data_server_start();
+            Serial.println("[WIFI] STA disconnected — AP stays active");
+            return;   // mode already set above, skip the assignment below
 
         case BRL_WIFI_AP:
-            // Make the AP visible and start the data server.
-            WiFi.softAP(s_ap_ssid,
-                        strlen(s_ap_pass) ? s_ap_pass : nullptr,
-                        6, false, 4);  // hidden=false
+            // Already always on — nothing to do.
             strncpy(g_state.wifi_ssid, s_ap_ssid, sizeof(g_state.wifi_ssid));
             data_server_start();
-            Serial.printf("[WIFI] AP ON  SSID:%s  IP:%s\n",
-                          s_ap_ssid, WiFi.softAPIP().toString().c_str());
             break;
 
         case BRL_WIFI_STA:
