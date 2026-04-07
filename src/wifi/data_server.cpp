@@ -1,5 +1,15 @@
 /**
- * data_server.cpp — HTTP session download server
+ * data_server.cpp — HTTP session download server + captive-portal DNS stub
+ *
+ * Android detects "no internet" when connected to a WiFi AP that has no
+ * real internet access.  It then routes all traffic through mobile data,
+ * making 192.168.4.1 (our AP address) unreachable from apps that haven't
+ * explicitly bound to the WiFi interface.
+ *
+ * Fix: run a DNS server that returns 192.168.4.1 for every hostname.
+ * Android's connectivity check (connectivitycheck.gstatic.com/generate_204)
+ * then reaches our HTTP server, we respond with 204 → Android marks the
+ * network as "has internet" → all traffic goes through WiFi.
  */
 
 #include "data_server.h"
@@ -7,9 +17,11 @@
 #include "../data/lap_data.h"
 #include <Arduino.h>
 #include <WebServer.h>
+#include <DNSServer.h>
 #include <SD_MMC.h>
 
 static WebServer s_server(80);
+static DNSServer s_dns;
 static bool      s_running = false;
 
 // ---------------------------------------------------------------------------
@@ -113,7 +125,28 @@ static void handle_session_delete() {
     s_server.send(200, "application/json", "{\"ok\":true}");
 }
 
+// Android / iOS captive-portal detection endpoints.
+// Returning 204 makes the OS believe the network has internet access,
+// so it stops routing traffic through mobile data.
+static void handle_generate_204() {
+    log_e("[HTTP] captive-portal check → 204");
+    add_cors_headers();
+    s_server.send(204);
+}
+
 static void handle_not_found() {
+    // Catch-all: also answer captive-portal probes that hit any path.
+    // Some Android versions probe arbitrary paths on the gateway.
+    const String &uri = s_server.uri();
+    if (uri.indexOf("generate_204") >= 0 ||
+        uri.indexOf("hotspot-detect") >= 0 ||
+        uri.indexOf("ncsi") >= 0 ||
+        uri.indexOf("connectivity") >= 0) {
+        log_e("[HTTP] captive-portal probe %s → 204", uri.c_str());
+        add_cors_headers();
+        s_server.send(204);
+        return;
+    }
     s_server.send(404, "application/json", "{\"error\":\"not found\"}");
 }
 
@@ -123,22 +156,33 @@ static void handle_not_found() {
 void data_server_start() {
     if (s_running) return;
 
-    s_server.on("/",              HTTP_GET,     handle_root);
-    s_server.on("/",              HTTP_OPTIONS, handle_options);
-    s_server.on("/sessions",      HTTP_GET,     handle_sessions);
-    s_server.on("/sessions",      HTTP_OPTIONS, handle_options);
-    s_server.on("/session/{}",    HTTP_GET,     handle_session_get);
-    s_server.on("/session/{}",    HTTP_DELETE,  handle_session_delete);
-    s_server.on("/session/{}",    HTTP_OPTIONS, handle_options);
+    s_server.on("/",                    HTTP_GET,     handle_root);
+    s_server.on("/",                    HTTP_OPTIONS, handle_options);
+    s_server.on("/sessions",            HTTP_GET,     handle_sessions);
+    s_server.on("/sessions",            HTTP_OPTIONS, handle_options);
+    s_server.on("/session/{}",          HTTP_GET,     handle_session_get);
+    s_server.on("/session/{}",          HTTP_DELETE,  handle_session_delete);
+    s_server.on("/session/{}",          HTTP_OPTIONS, handle_options);
+    // Android captive-portal detection (makes OS think WiFi has internet)
+    s_server.on("/generate_204",        HTTP_GET,     handle_generate_204);
+    s_server.on("/hotspot-detect.html", HTTP_GET,     handle_generate_204); // iOS
+    s_server.on("/ncsi.txt",            HTTP_GET,     handle_generate_204); // Windows
     s_server.onNotFound(handle_not_found);
 
     s_server.begin();
+
+    // DNS server: redirect ALL hostnames → 192.168.4.1 so Android's
+    // connectivity check reaches our HTTP server instead of timing out.
+    s_dns.setTTL(300);
+    s_dns.start(53, "*", IPAddress(192, 168, 4, 1));
+
     s_running = true;
-    log_e("[HTTP] Server started on port 80");
+    log_e("[HTTP] Server started on port 80, DNS redirect active");
 }
 
 void data_server_stop() {
     if (!s_running) return;
+    s_dns.stop();
     s_server.stop();
     s_running = false;
     log_e("[HTTP] Server stopped");
@@ -147,5 +191,7 @@ void data_server_stop() {
 bool data_server_running() { return s_running; }
 
 void data_server_poll() {
-    if (s_running) s_server.handleClient();
+    if (!s_running) return;
+    s_dns.processNextRequest();   // handle one DNS query per tick
+    s_server.handleClient();      // handle one HTTP request per tick
 }
