@@ -47,27 +47,25 @@ void wifi_mgr_init() {
     WiFi.setSleep(true);
     WiFi.setTxPower(WIFI_POWER_19_5dBm);
 
-    // Start the AP NOW — ieee80211_hostap_attach() allocates ESP timers from
-    // DRAM via esp_timer_create().  After NimBLE and LVGL have run (~750 ms
-    // into setup), the DRAM timer pool is exhausted and this call aborts.
-    // Starting here guarantees success; the AP stays active for the whole session.
+    // Pre-initialize the AP as HIDDEN so that ieee80211_hostap_attach()
+    // allocates its ESP timers now, while the heap is still clean.
+    // If we defer softAP() until the user enables it (~seconds later),
+    // NimBLE has fragmented DRAM so badly that esp_timer_create() returns
+    // ESP_ERR_NO_MEM → abort(). The AP is invisible to phones until the
+    // user explicitly enables it in Settings.
     bool ok = WiFi.softAP(s_ap_ssid,
                            strlen(s_ap_pass) ? s_ap_pass : nullptr,
-                           6,     // channel 6
-                           false, // visible
-                           4);    // max clients
-    Serial.printf("[WIFI] AP %s  SSID:%s  IP:%s\n",
-                  ok ? "started" : "FAILED", s_ap_ssid,
-                  WiFi.softAPIP().toString().c_str());
+                           6,    // channel 6
+                           true, // hidden — not visible until user enables
+                           4);   // max clients
+    Serial.printf("[WIFI] AP pre-init %s (hidden)  SSID:%s\n",
+                  ok ? "OK" : "FAILED", s_ap_ssid);
 
-    WiFi.disconnect(false);  // STA idle until user enables it
+    WiFi.disconnect(false);  // STA idle
 
-    // AP is live — start the data server immediately so the app can connect.
-    // The UI toggle switches between BRL_WIFI_AP (server on) and BRL_WIFI_OFF
-    // (server off, but AP keeps broadcasting).
-    data_server_start();
-    g_state.wifi_mode = BRL_WIFI_AP;
-    strncpy(g_state.wifi_ssid, s_ap_ssid, sizeof(g_state.wifi_ssid));
+    // OFF by default — user must enable in Settings.
+    g_state.wifi_mode = BRL_WIFI_OFF;
+    strncpy(g_state.wifi_ssid, "", sizeof(g_state.wifi_ssid));
     Serial.println("[WIFI] Manager init done");
 }
 
@@ -96,16 +94,22 @@ void wifi_set_mode(WifiMode mode) {
     switch (mode) {
 
         case BRL_WIFI_OFF:
-            // AP radio keeps broadcasting (started at boot); data server is off.
-            Serial.println("[WIFI] OFF (AP radio still active)");
+            // Hide the AP so phones can no longer discover or connect.
+            WiFi.softAP(s_ap_ssid,
+                        strlen(s_ap_pass) ? s_ap_pass : nullptr,
+                        6, true, 4);   // hidden=true
+            Serial.println("[WIFI] OFF (AP hidden)");
             break;
 
         case BRL_WIFI_AP:
-            // AP was started at boot — just enable the data server.
+            // Make the AP visible and start the data server.
+            WiFi.softAP(s_ap_ssid,
+                        strlen(s_ap_pass) ? s_ap_pass : nullptr,
+                        6, false, 4);  // hidden=false
             strncpy(g_state.wifi_ssid, s_ap_ssid, sizeof(g_state.wifi_ssid));
             data_server_start();
-            Serial.printf("[WIFI] AP enabled  IP:%s\n",
-                          WiFi.softAPIP().toString().c_str());
+            Serial.printf("[WIFI] AP ON  SSID:%s  IP:%s\n",
+                          s_ap_ssid, WiFi.softAPIP().toString().c_str());
             break;
 
         case BRL_WIFI_STA:
@@ -165,8 +169,9 @@ void wifi_ap_set_config(const char *ssid, const char *pass) {
     s_prefs.putString("ap_ssid", s_ap_ssid);
     s_prefs.putString("ap_pass",  s_ap_pass);
     s_prefs.end();
-    // AP is already running — this is a live config update (safe, no reallocation).
-    WiFi.softAP(s_ap_ssid, strlen(s_ap_pass) ? s_ap_pass : nullptr, 6, false, 4);
+    // Update AP config — keep hidden state matching current mode.
+    bool hidden = (g_state.wifi_mode != BRL_WIFI_AP);
+    WiFi.softAP(s_ap_ssid, strlen(s_ap_pass) ? s_ap_pass : nullptr, 6, hidden, 4);
     Serial.printf("[WIFI] AP config updated: SSID=%s pass=%s\n",
                   s_ap_ssid, strlen(s_ap_pass) ? "***" : "(open)");
 }
