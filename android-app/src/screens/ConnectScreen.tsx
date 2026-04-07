@@ -21,16 +21,32 @@ export default function ConnectScreen({ navigation }: Props) {
 
   async function connect() {
     setLoading(true);
-    try {
-      setBaseUrl(ip);
-      await fetchDeviceInfo();
-      await saveIp(ip);
-      navigation.navigate('Sessions', { mode: 'device' });
-    } catch {
-      Alert.alert('Verbindungsfehler', `Kein BRL Laptimer unter ${ip} erreichbar.\n\nStelle sicher dass:\n• WiFi des Laptimers aktiv ist\n• Du mit dem Laptimer-WLAN verbunden bist`);
-    } finally {
-      setLoading(false);
+    setBaseUrl(ip);
+    // Try twice: Android sometimes routes the first request through mobile
+    // data after connecting to a new AP.  A short pause lets the OS update
+    // its routing table before the second attempt.
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        if (attempt > 0) await new Promise(r => setTimeout(r, 1500));
+        await fetchDeviceInfo();
+        await saveIp(ip);
+        setLoading(false);
+        navigation.navigate('Sessions', { mode: 'device' });
+        return;
+      } catch (e) {
+        lastErr = e;
+      }
     }
+    setLoading(false);
+    Alert.alert(
+      'Verbindungsfehler',
+      `Kein BRL Laptimer unter ${ip} erreichbar.\n\n` +
+      `Tipps:\n` +
+      `• Stelle sicher, dass du mit dem Laptimer-WLAN verbunden bist\n` +
+      `• Falls Android fragt "Ohne Internet verbunden bleiben?" → JA tippen\n` +
+      `• Netzwerk einmal vergessen und neu verbinden`,
+    );
   }
 
   return (
