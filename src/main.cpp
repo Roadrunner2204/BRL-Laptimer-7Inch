@@ -256,11 +256,23 @@ void setup()
   lv_init();
   lv_tick_set_cb(my_tick_function);
 
-  // Allocate draw buffers in internal RAM for best DMA performance
-  disp_draw_buf  = (lv_color_t *)heap_caps_malloc(buf_size_in_bytes,
-                                                   MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  disp_draw_buf2 = (lv_color_t *)heap_caps_malloc(buf_size_in_bytes,
-                                                   MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  // Draw buffers in PSRAM — each is 800×480×2÷10 = 76 800 B.
+  // Keeping them in DRAM (MALLOC_CAP_INTERNAL) would consume ~150 KB of the
+  // ~300 KB total DRAM budget, leaving too little for WiFi+NimBLE coexistence
+  // (esp_timer_create inside hostap_auth_open fails → abort on client connect).
+  // On ESP32-S3 with OPI PSRAM the RGB panel copies via CPU/DMA2D — PSRAM
+  // source is fine; Panel_RGB pushImage() is not a DMA-from-IRAM path.
+  disp_draw_buf  = (lv_color_t *)heap_caps_malloc(buf_size_in_bytes, MALLOC_CAP_SPIRAM);
+  disp_draw_buf2 = (lv_color_t *)heap_caps_malloc(buf_size_in_bytes, MALLOC_CAP_SPIRAM);
+  // Fallback to DRAM if PSRAM unavailable
+  if (!disp_draw_buf)
+      disp_draw_buf  = (lv_color_t *)heap_caps_malloc(buf_size_in_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (!disp_draw_buf2)
+      disp_draw_buf2 = (lv_color_t *)heap_caps_malloc(buf_size_in_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+
+  log_e("[HEAP] after LVGL buf alloc — DRAM free: %u  largest: %u",
+        heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 
   if (!disp_draw_buf) {
     Serial.println("LVGL: draw buffer allocation failed!");
@@ -309,10 +321,16 @@ void setup()
   // count to 1 (< required 4), so WiFi init after BLE fails with ESP_ERR_NO_MEM.
   log_e("[SETUP] wifi_mgr_init");
   wifi_mgr_init();
+  log_e("[HEAP] after wifi_mgr_init — DRAM free: %u  largest: %u",
+        heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 
   // OBD Bluetooth BLE (after WiFi so coex init order is correct)
   log_e("[SETUP] obd_bt_init");
   obd_bt_init();
+  log_e("[HEAP] after obd_bt_init  — DRAM free: %u  largest: %u",
+        heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 
   // Build the UI (Splash → Haupt-UI)
   log_e("[SETUP] lv_my_setup");
