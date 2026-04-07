@@ -342,19 +342,6 @@ void setup()
   lv_my_setup();
   log_e("[SETUP] lv_my_setup DONE");
 
-  // I2C scan + CH422G diagnostic — runs on UART0 (same as ESP-IDF logs)
-  log_e("[I2C scan on I2C_NUM_1]");
-  for (uint8_t addr = 1; addr < 127; addr++) {
-    i2c_cmd_handle_t sc = i2c_cmd_link_create();
-    i2c_master_start(sc);
-    i2c_master_write_byte(sc, (addr << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_stop(sc);
-    if (i2c_master_cmd_begin(I2C_NUM_1, sc, pdMS_TO_TICKS(10)) == ESP_OK)
-      log_e("  I2C found: 0x%02X", addr);
-    i2c_cmd_link_delete(sc);
-  }
-  log_e("[I2C scan done]");
-
   // Spawn logic task pinned to Core 0 (PRO_CPU)
   // Stack: 8 kB is sufficient for GPS/OBD/WiFi poll loops
   xTaskCreatePinnedToCore(

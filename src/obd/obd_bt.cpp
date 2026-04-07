@@ -95,12 +95,8 @@ static void on_scan_complete(NimBLEScanResults results);
 
 class ScanCB : public NimBLEAdvertisedDeviceCallbacks {
     void onResult(NimBLEAdvertisedDevice *dev) override {
-        // Log every device found (helps diagnose name mismatches)
-        log_e("[OBD] BLE found: '%s'  addr=%s",
-              dev->getName().c_str(),
-              dev->getAddress().toString().c_str());
         if (dev->getName() == TARGET_NAME) {
-            log_e("[OBD] Target found, stopping scan");
+            log_e("[OBD] Target found: %s", dev->getAddress().toString().c_str());
             s_addr  = dev->getAddress();
             s_state = OBD_FOUND;
             NimBLEDevice::getScan()->stop();
@@ -112,7 +108,6 @@ static ScanCB s_scan_cb;
 // Called when scan window expires (device not found → retry)
 static void on_scan_complete(NimBLEScanResults /*results*/) {
     if (s_state == OBD_SCANNING) {
-        log_e("[OBD] Scan complete, target not found — will retry");
         s_state    = OBD_IDLE;
         s_retry_ts = millis();
     }
@@ -187,7 +182,6 @@ void obd_bt_poll() {
 
         case OBD_IDLE:
             if (now - s_retry_ts >= RETRY_INTERVAL) {
-                log_e("[OBD] Starting BLE scan...");
                 s_scan->clearResults();
                 s_scan->start(SCAN_SECONDS, on_scan_complete, false);
                 s_state = OBD_SCANNING;
