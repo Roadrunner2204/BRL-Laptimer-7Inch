@@ -29,7 +29,7 @@ static void handle_options() {
 }
 
 static void handle_root() {
-    Serial.println("[HTTP] GET /");
+    log_e("[HTTP] GET /");
     char buf[256];
     snprintf(buf, sizeof(buf),
              "{\"device\":\"BRL-Laptimer\","
@@ -73,7 +73,7 @@ static void handle_sessions() {
     }
     dir.close();
     json += "]";
-    Serial.printf("[HTTP] GET /sessions → %s\n", json.c_str());
+    log_e("[HTTP] GET /sessions → %s", json.c_str());
     add_cors_headers();
     s_server.send(200, "application/json", json);
 }
@@ -134,14 +134,14 @@ void data_server_start() {
 
     s_server.begin();
     s_running = true;
-    Serial.println("[HTTP] Server started on port 80");
+    log_e("[HTTP] Server started on port 80");
 }
 
 void data_server_stop() {
     if (!s_running) return;
     s_server.stop();
     s_running = false;
-    Serial.println("[HTTP] Server stopped");
+    log_e("[HTTP] Server stopped");
 }
 
 bool data_server_running() { return s_running; }

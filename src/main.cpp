@@ -219,10 +219,10 @@ void setup()
 {
   Serial.begin(115200);
   delay(200);  // let USB CDC settle before first message
-  Serial.println("\n\n========================================");
-  Serial.println("  BRL LAPTIMER  BOOT  v2.0");
-  Serial.println("  Build: " __DATE__ " " __TIME__);
-  Serial.println("========================================\n");
+  log_e("========================================"  );
+  log_e("  BRL LAPTIMER  BOOT  v2.0"              );
+  log_e("  Build: " __DATE__ " " __TIME__          );
+  log_e("========================================"  );
 
   g_state_mutex = xSemaphoreCreateMutex();
 
