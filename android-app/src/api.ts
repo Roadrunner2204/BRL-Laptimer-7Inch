@@ -1,4 +1,5 @@
 import { Session, Lap } from './types';
+import { bindToWifi, unbindFromWifi } from '../modules/wifi-binder';
 
 let baseUrl = 'http://192.168.4.1';  // default AP IP
 
@@ -8,27 +9,37 @@ export function setBaseUrl(ip: string) {
 
 export function getBaseUrl() { return baseUrl; }
 
+/** Wraps fetch with WiFi-interface binding so OkHttp uses the AP, not mobile data. */
+async function wifiFetch(url: string, options?: RequestInit): Promise<Response> {
+  try { await bindToWifi(); } catch { /* Expo Go / iOS — ignore */ }
+  try {
+    return await fetch(url, options);
+  } finally {
+    try { await unbindFromWifi(); } catch { /* ignore */ }
+  }
+}
+
 export async function fetchDeviceInfo(): Promise<{ device: string; version: string; sd: boolean }> {
-  const r = await fetch(`${baseUrl}/`, { signal: AbortSignal.timeout(5000) });
+  const r = await wifiFetch(`${baseUrl}/`, { signal: AbortSignal.timeout(5000) });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
 
 export async function fetchSessionList(): Promise<string[]> {
-  const r = await fetch(`${baseUrl}/sessions`, { signal: AbortSignal.timeout(5000) });
+  const r = await wifiFetch(`${baseUrl}/sessions`, { signal: AbortSignal.timeout(5000) });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
 
 export async function fetchSession(id: string): Promise<Session> {
-  const r = await fetch(`${baseUrl}/session/${id}`, { signal: AbortSignal.timeout(30000) });
+  const r = await wifiFetch(`${baseUrl}/session/${id}`, { signal: AbortSignal.timeout(30000) });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const raw = await r.json();
   return enrichSession(raw);
 }
 
 export async function deleteSessionOnDevice(id: string): Promise<void> {
-  await fetch(`${baseUrl}/session/${id}`, {
+  await wifiFetch(`${baseUrl}/session/${id}`, {
     method: 'DELETE',
     signal: AbortSignal.timeout(5000),
   });
