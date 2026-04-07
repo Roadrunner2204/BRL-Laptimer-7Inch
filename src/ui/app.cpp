@@ -1828,9 +1828,14 @@ void timer_live_update(lv_timer_t * /*t*/) {
 // ---------------------------------------------------------------------------
 void app_init() {
     bool sd_was_available = sd_mgr_available(); // preserve across g_state reset
+    WifiMode wifi_was    = g_state.wifi_mode;   // preserve — set by wifi_mgr_init()
+    char wifi_ssid_was[sizeof(g_state.wifi_ssid)];
+    memcpy(wifi_ssid_was, g_state.wifi_ssid, sizeof(wifi_ssid_was));
     g_state = {};
     g_state.active_track_idx = -1;
     g_state.sd_available     = sd_was_available;
+    g_state.wifi_mode        = wifi_was;
+    memcpy(g_state.wifi_ssid, wifi_ssid_was, sizeof(g_state.wifi_ssid));
 
     dash_config_load();
     g_state.language = g_dash_cfg.language;
