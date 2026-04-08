@@ -7,7 +7,6 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../App';
 import { fetchDeviceInfo, setBaseUrl } from '../api';
 import { loadIp, saveIp } from '../storage';
-import { bindToWifi, unbindFromWifi } from '../../modules/wifi-binder';
 import { C } from '../theme';
 
 type Props = { navigation: NativeStackNavigationProp<RootStackParamList, 'Connect'> };
@@ -23,26 +22,20 @@ export default function ConnectScreen({ navigation }: Props) {
   async function connect() {
     setLoading(true);
     setBaseUrl(ip);
-    // Try twice: Android sometimes routes the first request through mobile
-    // data after connecting to a new AP.  A short pause lets the OS update
-    // its routing table before the second attempt.
     let lastErr: unknown;
-    try {
-      // Force all sockets through the WiFi interface so Android's default
-      // routing (mobile data when WiFi has "no internet") is bypassed.
-      await bindToWifi();
-    } catch { /* native module not available in Expo Go — ignore */ }
-    try {
-      await fetchDeviceInfo();
-      await saveIp(ip);
-      setLoading(false);
-      navigation.navigate('Sessions', { mode: 'device' });
-      return;
-    } catch (e) {
-      lastErr = e;
-    } finally {
-      // Restore normal routing so map/internet features work.
-      try { await unbindFromWifi(); } catch { /* ignore */ }
+    // Two attempts: on first connect to a new AP Android sometimes needs
+    // a moment to update its routing table.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        if (attempt > 0) await new Promise(r => setTimeout(r, 1500));
+        await fetchDeviceInfo();
+        await saveIp(ip);
+        setLoading(false);
+        navigation.navigate('Sessions', { mode: 'device' });
+        return;
+      } catch (e) {
+        lastErr = e;
+      }
     }
     setLoading(false);
     Alert.alert(
