@@ -118,6 +118,13 @@ void splash_show(uint32_t duration_ms, void (*on_done)()) {
     lv_bar_set_range(s_bar, 0, 100);
     lv_bar_set_value(s_bar, 0, LV_ANIM_OFF);
 
+    // --- "Hallo Chrisl" Grußzeile ---
+    lv_obj_t *greet = lv_label_create(s_screen);
+    lv_label_set_text(greet, "Hallo Chrisl!");
+    lv_obj_set_style_text_font(greet, &BRL_FONT_16, LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(greet, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
+    lv_obj_align(greet, LV_ALIGN_BOTTOM_MID, 0, -90);
+
     // --- "Wird gestartet..." ---
     lv_obj_t *loading = lv_label_create(s_screen);
     lv_label_set_text(loading, "Wird gestartet...");
