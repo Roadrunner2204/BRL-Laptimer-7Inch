@@ -243,25 +243,6 @@ static esp_err_t handle_generate_204(httpd_req_t *req)
     return httpd_resp_send(req, nullptr, 0);
 }
 
-// Catch-all for captive portal probes from various OSes
-static esp_err_t handle_captive_catch_all(httpd_req_t *req)
-{
-    const char *uri = req->uri;
-    if (strstr(uri, "generate_204") ||
-        strstr(uri, "hotspot-detect") ||
-        strstr(uri, "ncsi") ||
-        strstr(uri, "connectivity")) {
-        ESP_LOGI(TAG, "captive-portal probe %s -> 204", uri);
-        set_cors_headers(req);
-        httpd_resp_set_status(req, "204 No Content");
-        return httpd_resp_send(req, nullptr, 0);
-    }
-    httpd_resp_set_status(req, "404 Not Found");
-    httpd_resp_set_type(req, "application/json");
-    const char *err = "{\"error\":\"not found\"}";
-    return httpd_resp_send(req, err, strlen(err));
-}
-
 // ---------------------------------------------------------------------------
 // DNS captive portal responder
 //
@@ -407,12 +388,6 @@ void data_server_start(void)
     for (size_t i = 0; i < sizeof(s_uri_handlers) / sizeof(s_uri_handlers[0]); i++) {
         httpd_register_uri_handler(s_httpd, &s_uri_handlers[i]);
     }
-
-    // Register catch-all last (lowest priority for wildcard matching)
-    // esp_http_server handles 404 automatically, but we want custom handling
-    // for captive-portal probes
-    // Note: a custom 404 handler is not directly supported by esp_http_server,
-    // but the wildcard handlers above cover the main cases.
 
     // Start DNS captive-portal responder
     dns_server_start();
