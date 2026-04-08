@@ -5,3 +5,7 @@ dependencies:
   lvgl/lvgl:
     version: "9.2.*"
     public: true
+  espressif/esp_hosted:
+    version: "*"
+  espressif/mdns:
+    version: "*"
