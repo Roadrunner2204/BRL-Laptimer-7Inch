@@ -20,16 +20,10 @@
    STDLIB WRAPPER SETTINGS
  *=========================*/
 
-/* Use built-in LVGL malloc/free (backed by heap_caps on ESP32) */
-#define LV_USE_STDLIB_MALLOC    LV_STDLIB_BUILTIN
-#define LV_USE_STDLIB_STRING    LV_STDLIB_BUILTIN
-#define LV_USE_STDLIB_SPRINTF   LV_STDLIB_BUILTIN
-
-/* Memory pool size for LVGL (only used when LV_STDLIB_BUILTIN) */
-#define LV_MEM_SIZE (256 * 1024U)  /* 256 KB */
-#define LV_MEM_POOL_INCLUDE <stdlib.h>
-#define LV_MEM_POOL_ALLOC   malloc
-#define LV_MEM_POOL_FREE    free
+/* Use C stdlib malloc/free — on ESP32 with PSRAM this uses all available RAM */
+#define LV_USE_STDLIB_MALLOC    LV_STDLIB_CLIB
+#define LV_USE_STDLIB_STRING    LV_STDLIB_CLIB
+#define LV_USE_STDLIB_SPRINTF   LV_STDLIB_CLIB
 
 /*====================
    HAL SETTINGS
@@ -44,8 +38,6 @@
 /* Align draw buffer to this many bytes */
 #define LV_DRAW_BUF_ALIGN   4
 
-/* Keep draw buffer in RAM (not PSRAM) for speed */
-#define LV_DRAW_BUF_DEFINE_STATIC 0
 
 /*=====================
    RENDERING SETTINGS
@@ -57,6 +49,9 @@
 /* Enable 16-bit color swap for flush */
 #define LV_DRAW_SW_COMPLEX 1
 
+/* Disable ARM-specific ASM optimisations (Helium/NEON) — ESP32-S3 uses Xtensa */
+#define LV_DRAW_SW_ASM LV_DRAW_SW_ASM_NONE
+
 /*=======================
    FEATURE CONFIGURATION
  *=======================*/
@@ -64,9 +59,47 @@
 /* Large memory - enable all font/widget features */
 #define LV_FONT_MONTSERRAT_14 1
 #define LV_FONT_MONTSERRAT_16 1
+#define LV_FONT_MONTSERRAT_20 1
 #define LV_FONT_MONTSERRAT_24 1
 #define LV_FONT_MONTSERRAT_32 1
+#define LV_FONT_MONTSERRAT_40 1
+#define LV_FONT_MONTSERRAT_48 1
 #define LV_FONT_DEFAULT &lv_font_montserrat_14
+
+/*
+ * Extended Latin fonts (Ä Ö Ü ä ö ü ß etc.)
+ *
+ * LVGL's built-in Montserrat only covers ASCII (0x20–0x7E).
+ * To get German umlauts:
+ *   1. Run:  tools/generate_fonts.sh   (requires Node + lv_font_conv + Montserrat-Regular.ttf)
+ *   2. Set:  BRL_USE_EXTENDED_FONTS  1   (below)
+ *
+ * Once enabled, brl_font_NN aliases replace lv_font_montserrat_NN everywhere in the UI.
+ * All font sizes (14 16 20 24 32 40 48) are covered.
+ */
+#define BRL_USE_EXTENDED_FONTS  1   /* custom fonts with Ä Ö Ü ä ö ü ß — see src/ui/fonts/ */
+
+#if BRL_USE_EXTENDED_FONTS
+  /* Alias macros — LV_FONT_DECLARE is in include/brl_fonts.h (included after lvgl.h) */
+  #define BRL_FONT_14  brl_font_montserrat_14
+  #define BRL_FONT_16  brl_font_montserrat_16
+  #define BRL_FONT_20  brl_font_montserrat_20
+  #define BRL_FONT_24  brl_font_montserrat_24
+  #define BRL_FONT_32  brl_font_montserrat_32
+  #define BRL_FONT_40  brl_font_montserrat_40
+  #define BRL_FONT_48  brl_font_montserrat_48
+  #define BRL_FONT_64  brl_font_montserrat_64
+#else
+  /* Fall back to built-in ASCII-only Montserrat */
+  #define BRL_FONT_14  lv_font_montserrat_14
+  #define BRL_FONT_16  lv_font_montserrat_16
+  #define BRL_FONT_20  lv_font_montserrat_20
+  #define BRL_FONT_24  lv_font_montserrat_24
+  #define BRL_FONT_32  lv_font_montserrat_32
+  #define BRL_FONT_40  lv_font_montserrat_40
+  #define BRL_FONT_48  lv_font_montserrat_48
+  #define BRL_FONT_64  lv_font_montserrat_48  /* no 64 built-in, fallback to 48 */
+#endif
 
 /* Enable extra drawing capabilities */
 #define LV_USE_ARC        1
@@ -98,11 +131,12 @@
 /* Animation */
 #define LV_USE_ANIM 1
 
-/* Enable image decoder */
-#define LV_USE_BMP 0
-#define LV_USE_SJPG 0
-#define LV_USE_GIF 0
-#define LV_USE_PNG 0
+/* Image decoders */
+#define LV_USE_BMP   0
+#define LV_USE_GIF   0
+#define LV_USE_PNG   0
+/* JPEG via TJpgDec — lightweight, fits well on ESP32 */
+#define LV_USE_TJPGD 1
 
 /* Logging */
 #define LV_USE_LOG 0

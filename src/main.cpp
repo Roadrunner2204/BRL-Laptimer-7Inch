@@ -13,10 +13,31 @@
 
 #include <Arduino.h>
 #include <lvgl.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/semphr.h>
+#include "gps/gps.h"
+#include "obd/obd_bt.h"
+#include "wifi/wifi_mgr.h"
+#include "wifi/data_server.h"
+#include "storage/sd_mgr.h"
+#include "storage/session_store.h"
+#include "timing/lap_timer.h"
+#include "timing/live_delta.h"
+#include "data/lap_data.h"
+
+// ---------------------------------------------------------------------------
+// Cross-core mutex — taken for any read/write of g_state from either task.
+// Use LVGL_LOCK / LVGL_UNLOCK around all lv_* calls made outside the LVGL task
+// (currently we never do that — LVGL stays on Core 1 entirely).
+// ---------------------------------------------------------------------------
+SemaphoreHandle_t g_state_mutex = nullptr;
 
 // ---------------------------------------------------------------------------
 // LovyanGFX display configuration
 // ---------------------------------------------------------------------------
+#include <driver/i2c.h>
+
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
 #include <lgfx/v1/platforms/esp32s3/Panel_RGB.hpp>
@@ -171,20 +192,92 @@ void my_touchpad_read(lv_indev_t *indev_drv, lv_indev_data_t *data)
 // ---------------------------------------------------------------------------
 // Arduino setup / loop
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Core 0 task: GPS · OBD · WiFi · Timing  (non-LVGL work)
+// ---------------------------------------------------------------------------
+static void logic_task(void * /*param*/)
+{
+  for (;;) {
+    xSemaphoreTake(g_state_mutex, portMAX_DELAY);
+    gps_poll();
+    lap_timer_poll();
+    xSemaphoreGive(g_state_mutex);
+
+    // OBD, WiFi and HTTP don't touch g_state directly in hot paths
+    obd_bt_poll();
+    wifi_mgr_poll();
+    data_server_poll();
+
+    vTaskDelay(pdMS_TO_TICKS(5));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Arduino setup / loop  — run on Core 1 (APP_CPU)
+// ---------------------------------------------------------------------------
 void setup()
 {
   Serial.begin(115200);
+  delay(200);  // let USB CDC settle before first message
+  log_e("========================================"  );
+  log_e("  BRL LAPTIMER  BOOT  v2.0"              );
+  log_e("  Build: " __DATE__ " " __TIME__          );
+  log_e("========================================"  );
+
+  g_state_mutex = xSemaphoreCreateMutex();
 
   gfx.begin();
+
+  // CH422G: set IO output mode and assert SD_CS (IO3) LOW.
+  // Must run AFTER gfx.begin() so LovyanGFX has installed I2C_NUM_1.
+  // CH422G multi-address protocol (from datasheet):
+  //   WR_SET=0x24: config  — bit0=IO_OE(1=output)  bit2=OD_EN  bit3=SLEEP
+  //   WR_IO =0x38: output data for IO0-IO7
+  // Waveshare pin map: IO0=TP_RST IO1=LCD_BL IO2=LCD_RST IO3=SD_CS IO4=USB_SEL
+  {
+    auto i2c_write = [](uint8_t addr, uint8_t val) -> esp_err_t {
+      i2c_cmd_handle_t c = i2c_cmd_link_create();
+      i2c_master_start(c);
+      i2c_master_write_byte(c, (addr << 1) | I2C_MASTER_WRITE, true);
+      i2c_master_write_byte(c, val, true);
+      i2c_master_stop(c);
+      esp_err_t e = i2c_master_cmd_begin(I2C_NUM_1, c, pdMS_TO_TICKS(50));
+      i2c_cmd_link_delete(c);
+      return e;
+    };
+    // Write output VALUES first (latch set while still in input mode = no glitch)
+    // THEN enable output mode — pins immediately go to correct values.
+    // Prevents TP_RST/LCD_RST from briefly pulsing LOW during mode switch.
+    // WR_IO=0xFF: all pins HIGH (IO0=TP_RST, IO1=LCD_BL, IO2=LCD_RST all un-reset)
+    // IO3=HIGH keeps SD card D3 line HIGH → SD bus mode (not SPI mode)
+    // Must latch output values BEFORE enabling output mode (prevents reset glitch)
+    esp_err_t e1 = i2c_write(0x38, 0xFF); // WR_IO:  all HIGH, incl. IO3(SD D3)=HIGH
+    esp_err_t e2 = i2c_write(0x24, 0x01); // WR_SET: IO_OE=1 (enable output)
+    log_e("[CH422G] WR_IO->0xFF:%s  WR_SET->0x01:%s",
+          e1 == ESP_OK ? "OK" : esp_err_to_name(e1),
+          e2 == ESP_OK ? "OK" : esp_err_to_name(e2));
+  }
 
   lv_init();
   lv_tick_set_cb(my_tick_function);
 
-  // Allocate draw buffers in internal RAM for best DMA performance
-  disp_draw_buf  = (lv_color_t *)heap_caps_malloc(buf_size_in_bytes,
-                                                   MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  disp_draw_buf2 = (lv_color_t *)heap_caps_malloc(buf_size_in_bytes,
-                                                   MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  // Draw buffers in PSRAM — each is 800×480×2÷10 = 76 800 B.
+  // Keeping them in DRAM (MALLOC_CAP_INTERNAL) would consume ~150 KB of the
+  // ~300 KB total DRAM budget, leaving too little for WiFi+NimBLE coexistence
+  // (esp_timer_create inside hostap_auth_open fails → abort on client connect).
+  // On ESP32-S3 with OPI PSRAM the RGB panel copies via CPU/DMA2D — PSRAM
+  // source is fine; Panel_RGB pushImage() is not a DMA-from-IRAM path.
+  disp_draw_buf  = (lv_color_t *)heap_caps_malloc(buf_size_in_bytes, MALLOC_CAP_SPIRAM);
+  disp_draw_buf2 = (lv_color_t *)heap_caps_malloc(buf_size_in_bytes, MALLOC_CAP_SPIRAM);
+  // Fallback to DRAM if PSRAM unavailable
+  if (!disp_draw_buf)
+      disp_draw_buf  = (lv_color_t *)heap_caps_malloc(buf_size_in_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (!disp_draw_buf2)
+      disp_draw_buf2 = (lv_color_t *)heap_caps_malloc(buf_size_in_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+
+  log_e("[HEAP] after LVGL buf alloc — DRAM free: %u  largest: %u",
+        heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 
   if (!disp_draw_buf) {
     Serial.println("LVGL: draw buffer allocation failed!");
@@ -199,18 +292,77 @@ void setup()
   lv_display_set_buffers(disp, disp_draw_buf, disp_draw_buf2,
                          buf_size_in_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
 
+  // Dark theme: removes default borders/shadows from all LVGL widgets
+  lv_theme_t *theme = lv_theme_default_init(disp,
+      lv_color_hex(0x0096FF),   // primary: BRL blue
+      lv_color_hex(0x0060C0),   // secondary
+      true,                      // dark mode
+      &lv_font_montserrat_14);
+  lv_display_set_theme(disp, theme);
+
   indev = lv_indev_create();
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(indev, my_touchpad_read);
 
-  // Build the UI
-  lv_my_setup();
+  // GPS: Tau1201 on UART2 (GPIO 19 RX, GPIO 20 TX)
+  log_e("[SETUP] gps_init");
+  gps_init();
 
-  Serial.println("Setup complete");
+  // SD card (SPI: MOSI=11, MISO=13, SCLK=12, CS=15)
+  log_e("[SETUP] sd_mgr_init");
+  sd_mgr_init();
+
+  // Load user-created tracks from SD
+  log_e("[SETUP] session_store_load");
+  session_store_load_user_tracks();
+  session_store_load_builtin_overrides();
+
+  // Lap timer
+  log_e("[SETUP] lap_timer_init");
+  lap_timer_init();
+
+  // WiFi manager: MUST come before obd_bt_init() — forces esp_wifi_init()
+  // while heap is clean. NimBLE/BLE init reduces WiFi coex static-RX-buffer
+  // count to 1 (< required 4), so WiFi init after BLE fails with ESP_ERR_NO_MEM.
+  log_e("[SETUP] wifi_mgr_init");
+  wifi_mgr_init();
+  log_e("[HEAP] after wifi_mgr_init — DRAM free: %u  largest: %u",
+        heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+
+  // OBD Bluetooth BLE (after WiFi so coex init order is correct)
+  log_e("[SETUP] obd_bt_init");
+  obd_bt_init();
+  log_e("[HEAP] after obd_bt_init  — DRAM free: %u  largest: %u",
+        heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+
+  // Build the UI (Splash → Haupt-UI)
+  log_e("[SETUP] lv_my_setup");
+  lv_my_setup();
+  log_e("[SETUP] lv_my_setup DONE");
+
+  // Spawn logic task pinned to Core 0 (PRO_CPU)
+  // Stack: 8 kB is sufficient for GPS/OBD/WiFi poll loops
+  xTaskCreatePinnedToCore(
+    logic_task,
+    "logic",
+    8192,       // stack bytes
+    nullptr,
+    1,          // priority (same as loop task — yields via vTaskDelay)
+    nullptr,
+    0           // Core 0
+  );
+
+  Serial.println("Setup complete — logic task on Core 0, LVGL on Core 1");
 }
 
+// loop() stays on Core 1 — only drives LVGL rendering
 void loop()
 {
+  // Guard g_state reads inside lv_timer_handler (timer_live_update)
+  xSemaphoreTake(g_state_mutex, portMAX_DELAY);
   lv_timer_handler();
+  xSemaphoreGive(g_state_mutex);
   delay(5);
 }
