@@ -243,7 +243,8 @@ static int gatt_dsc_disc_cb(uint16_t conn_handle,
     }
 
     // Check if this descriptor is the CCCD (UUID 0x2902)
-    if (ble_uuid_cmp(&dsc->uuid.u, BLE_UUID16_DECLARE(0x2902)) == 0) {
+    static const ble_uuid16_t cccd_uuid = BLE_UUID16_INIT(0x2902);
+    if (ble_uuid_cmp(&dsc->uuid.u, &cccd_uuid.u) == 0) {
         s_resp_cccd_handle = dsc->handle;
         ESP_LOGI(TAG, "Found RESP CCCD handle: %d", s_resp_cccd_handle);
     }

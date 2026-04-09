@@ -455,7 +455,7 @@ static void open_tracks_screen() {
         for (int c = 0; c < n_countries; c++)
             if (strcmp(countries[c], td->country) == 0) { found = true; break; }
         if (!found && n_countries < 16)
-            { strncpy(countries[n_countries], td->country, 31); countries[n_countries][31] = '\0'; n_countries++; }
+            { snprintf(countries[n_countries], 32, "%s", td->country); n_countries++; }
     }
 
     // ── Build screen ──────────────────────────────────────────────────────
