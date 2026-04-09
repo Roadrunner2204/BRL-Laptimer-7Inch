@@ -18,4 +18,5 @@ target_compile_options(${COMPONENT_LIB} PRIVATE
     -Wno-error=missing-field-initializers
     -Wno-error=deprecated-enum-enum-conversion
     -Wno-error=format-truncation
+    -Wno-error=stringop-truncation
 )
