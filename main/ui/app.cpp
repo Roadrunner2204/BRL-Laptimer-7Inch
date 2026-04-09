@@ -1569,14 +1569,14 @@ void timer_live_update(lv_timer_t * /*t*/) {
                 if (lt.timing_active) ms = millis() - lt.lap_start_ms;
                 else if (sess.lap_count > 0) ms = sess.laps[sess.lap_count - 1].total_ms;
                 snprintf(buf, sizeof(buf), "%u:%05.2f",
-                         ms / 60000, fmod(ms / 1000.0f, 60.0f));
+                         (unsigned)(ms / 60000), fmod(ms / 1000.0f, 60.0f));
                 break;
             }
             case FIELD_BESTLAP: {
                 if (sess.lap_count > 0) {
                     uint32_t ms = sess.laps[sess.best_lap_idx].total_ms;
                     snprintf(buf, sizeof(buf), "%u:%05.2f",
-                             ms / 60000, fmod(ms / 1000.0f, 60.0f));
+                             (unsigned)(ms / 60000), fmod(ms / 1000.0f, 60.0f));
                 } else strncpy(buf, "---", sizeof(buf));
                 break;
             }
@@ -1599,7 +1599,7 @@ void timer_live_update(lv_timer_t * /*t*/) {
                 uint32_t now_ms = millis();
                 auto sec_fmt = [](char *b, size_t len, uint8_t n, uint32_t ms) {
                     snprintf(b, len, "S%u %u.%02u", (unsigned)n,
-                             ms / 1000, (ms % 1000) / 10);
+                             (unsigned)(ms / 1000), (unsigned)((ms % 1000) / 10));
                 };
                 if (lt.in_lap) {
                     const uint32_t *s_ms = sess.laps[sess.lap_count].sector_ms;
@@ -1609,7 +1609,7 @@ void timer_live_update(lv_timer_t * /*t*/) {
                         sec_fmt(buf, sizeof(buf), si+1, s_ms[si]);
                         lv_obj_set_style_text_color(lbl, BRL_CLR_TEXT_DIM, 0);
                     } else if ((int)cs == si) {
-                        snprintf(buf, sizeof(buf), "> %u.%02u", run_ms/1000, (run_ms%1000)/10);
+                        snprintf(buf, sizeof(buf), "> %u.%02u", (unsigned)(run_ms/1000), (unsigned)((run_ms%1000)/10));
                         lv_obj_set_style_text_color(lbl, BRL_CLR_ACCENT, 0);
                     } else {
                         strncpy(buf, "---", sizeof(buf));

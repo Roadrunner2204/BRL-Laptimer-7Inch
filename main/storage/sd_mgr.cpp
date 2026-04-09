@@ -40,7 +40,7 @@ static sdmmc_card_t *s_card = NULL;
 static void full_path(char *out, size_t len, const char *path)
 {
     if (strncmp(path, SD_MOUNT_POINT, strlen(SD_MOUNT_POINT)) == 0) {
-        strncpy(out, path, len);
+        strncpy(out, path, len - 1);
         out[len - 1] = '\0';
     } else {
         snprintf(out, len, "%s%s", SD_MOUNT_POINT, path);

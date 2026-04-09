@@ -169,7 +169,7 @@ extern bool       g_builtin_override_set[MAX_BUILTIN_TRACKS];
 
 // Combined access: idx 0..(BUILTIN-1) = built-in, idx BUILTIN..N = user
 static inline const TrackDef *track_get(int idx) {
-    if (idx < 0) return nullptr;
+    if (idx < 0) return NULL;
     if (idx < TRACK_DB_BUILTIN_COUNT) {
         if (idx < MAX_BUILTIN_TRACKS && g_builtin_override_set[idx])
             return &g_builtin_overrides[idx];
@@ -177,7 +177,7 @@ static inline const TrackDef *track_get(int idx) {
     }
     int u = idx - TRACK_DB_BUILTIN_COUNT;
     if (u < g_user_track_count) return &g_user_tracks[u];
-    return nullptr;
+    return NULL;
 }
 
 static inline int track_total_count() {
