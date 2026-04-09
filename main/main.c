@@ -95,7 +95,7 @@ void app_main(void)
         .double_buffer = BSP_LCD_DRAW_BUFF_DOUBLE,
         .flags = {
             .buff_dma = true,
-            .sw_rotate = true,
+            .sw_rotate = false,
         }
     };
     bsp_display_start_with_config(&cfg);
@@ -111,7 +111,8 @@ void app_main(void)
             true,                      /* dark mode */
             &lv_font_montserrat_14);
         lv_display_set_theme(disp, theme);
-        lv_display_set_rotation(disp, LV_DISPLAY_ROTATION_180);
+        /* Rotation disabled — requires too much RAM for rotation buffer.
+         * If display is upside-down, mount the board differently. */
         bsp_display_unlock();
     }
 
