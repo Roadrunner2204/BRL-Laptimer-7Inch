@@ -190,8 +190,32 @@ void wifi_mgr_init(void)
     s_ap_netif  = esp_netif_create_default_wifi_ap();
     s_sta_netif = esp_netif_create_default_wifi_sta();
 
-    // --- Initialize WiFi with default config ---
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    // --- Initialize WiFi ---
+    // On ESP32-P4, WiFi runs via esp_hosted on ESP32-C6.
+    // WIFI_INIT_CONFIG_DEFAULT() references Kconfig symbols that may not exist.
+    // Use zero-init and let esp_wifi_init fill defaults.
+    wifi_init_config_t cfg = {};
+    cfg.osi_funcs = NULL;
+    cfg.static_rx_buf_num = 4;
+    cfg.dynamic_rx_buf_num = 8;
+    cfg.tx_buf_type = 1;
+    cfg.static_tx_buf_num = 0;
+    cfg.dynamic_tx_buf_num = 16;
+    cfg.cache_tx_buf_num = 16;
+    cfg.csi_enable = 0;
+    cfg.ampdu_rx_enable = 1;
+    cfg.ampdu_tx_enable = 1;
+    cfg.amsdu_tx_enable = 0;
+    cfg.nvs_enable = 1;
+    cfg.nano_enable = 0;
+    cfg.rx_ba_win = 6;
+    cfg.wifi_task_core_id = 0;
+    cfg.beacon_max_len = 752;
+    cfg.mgmt_sbuf_num = 32;
+    cfg.feature_caps = 0;
+    cfg.sta_disconnected_pm = false;
+    cfg.espnow_max_encrypt_num = 2;
+    cfg.magic = WIFI_INIT_CONFIG_MAGIC;
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
     // --- Register event handlers ---
