@@ -538,9 +538,8 @@ void obd_bt_init(void)
     ble_hs_cfg.sync_cb  = on_sync;
     ble_hs_cfg.reset_cb = on_reset;
 
-    // Initialize the NimBLE store (required for pairing, even if unused)
-    extern void ble_store_config_init(void);
-    ble_store_config_init();
+    // NimBLE store config — not needed for unpaired connections
+    // ble_store_config_init();
 
     // Start the NimBLE host task on its own FreeRTOS task
     nimble_port_freertos_init(nimble_host_task);

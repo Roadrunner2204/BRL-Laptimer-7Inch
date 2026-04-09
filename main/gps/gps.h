@@ -3,6 +3,10 @@
 #include "driver/uart.h"
 #include "../data/lap_data.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * Tau1201 GPS driver (ESP-IDF / ESP32-P4)
  *
@@ -24,8 +28,8 @@
 #define GPS_BAUD        115200
 
 // ---- Public functions ----
-void gps_init();
-void gps_poll();   // call from main loop -- non-blocking
+void gps_init(void);
+void gps_poll(void);   // call from main loop -- non-blocking
 
 // ---- GPS date/time (populated from NMEA RMC sentence) ----
 typedef struct {
@@ -33,4 +37,8 @@ typedef struct {
     uint8_t month, day, hour, minute, second;
     bool valid;
 } GpsDateTime;
-GpsDateTime gps_get_datetime();
+GpsDateTime gps_get_datetime(void);
+
+#ifdef __cplusplus
+}
+#endif

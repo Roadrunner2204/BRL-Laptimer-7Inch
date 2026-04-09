@@ -15,7 +15,15 @@
  *   4. Result stored in g_state.timing.live_delta_ms.
  */
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void live_delta_set_ref(const RecordedLap *ref_lap);
 void live_delta_update(double lat, double lon, uint32_t elapsed_ms,
                        const RecordedLap *ref_lap);
-void live_delta_reset();
+void live_delta_reset(void);
+
+#ifdef __cplusplus
+}
+#endif
