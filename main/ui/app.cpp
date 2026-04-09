@@ -455,7 +455,7 @@ static void open_tracks_screen() {
         for (int c = 0; c < n_countries; c++)
             if (strcmp(countries[c], td->country) == 0) { found = true; break; }
         if (!found && n_countries < 16)
-            strncpy(countries[n_countries++], td->country, 31);
+            { strncpy(countries[n_countries], td->country, 31); countries[n_countries][31] = '\0'; n_countries++; }
     }
 
     // ── Build screen ──────────────────────────────────────────────────────
@@ -695,7 +695,7 @@ static void cb_tc_type_ab(lv_event_t* /*e*/) {
 
 static void cb_tc_add_sector(lv_event_t* /*e*/) {
     if (s_tc_sec_count >= MAX_SECTORS || !s_tc_sec_container) return;
-    char sec_lbl[8]; snprintf(sec_lbl, sizeof(sec_lbl), "S%d", s_tc_sec_count+1);
+    char sec_lbl[16]; snprintf(sec_lbl, sizeof(sec_lbl), "S%d", s_tc_sec_count+1);
     mk_coord_row(s_tc_sec_container, sec_lbl,
                  &s_tc_sec_lat[s_tc_sec_count], &s_tc_sec_lon[s_tc_sec_count]);
     s_tc_sec_count++;
