@@ -436,7 +436,7 @@ static void name_dlg_confirm() {
 static void name_countdown_cb(lv_timer_t * /*t*/) {
     s_name_secs--;
     if (s_name_count_lbl) {
-        char buf[24];
+        char buf[32];
         snprintf(buf, sizeof(buf), "Auto-Start in %ds", s_name_secs);
         lv_label_set_text(s_name_count_lbl, buf);
     }

@@ -11,5 +11,11 @@ idf_component_register(
                   esp_event esp_netif fatfs vfs json bt
 )
 
-# LVGL configuration
-target_compile_options(${COMPONENT_LIB} PRIVATE -DLV_LVGL_H_INCLUDE_SIMPLE)
+# LVGL configuration + suppress warnings-as-errors for our code
+target_compile_options(${COMPONENT_LIB} PRIVATE
+    -DLV_LVGL_H_INCLUDE_SIMPLE
+    -Wno-error=unused-variable
+    -Wno-error=missing-field-initializers
+    -Wno-error=deprecated-enum-enum-conversion
+    -Wno-error=format-truncation
+)

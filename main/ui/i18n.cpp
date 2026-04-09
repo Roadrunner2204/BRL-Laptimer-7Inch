@@ -1,4 +1,4 @@
-#include "../../include/i18n.h"
+#include "i18n.h"
 
 static uint8_t s_lang = 0;  // 0 = DE, 1 = EN
 

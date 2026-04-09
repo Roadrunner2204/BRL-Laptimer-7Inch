@@ -31,7 +31,8 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
-#include "esp_ota_ops.h"
+// OTA not yet implemented for ESP32-P4
+// #include "esp_ota_ops.h"
 
 static const char *TAG = "wifi_mgr";
 
