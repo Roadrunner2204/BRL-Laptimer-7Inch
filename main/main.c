@@ -116,7 +116,7 @@ void app_main(void)
         bsp_display_unlock();
     }
 
-    /* ── GPS: UART (RX=GPIO19, TX=GPIO20) ────────────────────── */
+    /* ── GPS: UART (RX=GPIO21, TX=GPIO22, PPS=GPIO20) ────────── */
     ESP_LOGI(TAG, "gps_init");
     gps_init();
 
