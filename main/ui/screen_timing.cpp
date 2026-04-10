@@ -5,9 +5,9 @@
  *   y=  0  Status bar  (40 px)
  *   y= 40  Header bar  (50 px): ← MENÜ | track name | START/STOP
  *   y= 90  Delta bar   (80 px, fixed — not configurable)
- *   y=176  Zone 1     (≈140 px): 5 slots — 0-1 wide (390 px), 2-4 narrow (193 px)
- *   y=322  Zone 2     (≈ 85 px): 3 equal-width sector slots
- *   y=413  Zone 3     (≈ 60 px): 5 equal-width OBD slots
+ *   y=176  Zone 1     (≈200 px): 5 slots — 0-1 wide (500 px), 2-4 narrow (248 px)
+ *   y=382  Zone 2     (≈ 85 px): 3 equal-width sector slots
+ *   y=473  Zone 3     (≈ 72 px): 5 equal-width OBD slots
  *
  * Tapping any slot card opens a field-picker popup filtered to:
  *   Zone 1 & 2 → laptimer / GPS fields only
@@ -281,7 +281,7 @@ static void open_field_picker(int zone, int slot, uint8_t current_field) {
 
     // Card
     lv_obj_t *card = lv_obj_create(s_picker_overlay);
-    lv_obj_set_size(card, 680, 260);
+    lv_obj_set_size(card, 860, 280);
     lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
     brl_style_card(card);
     lv_obj_set_style_pad_all(card, 12, LV_STATE_DEFAULT);
@@ -299,7 +299,7 @@ static void open_field_picker(int zone, int slot, uint8_t current_field) {
 
     // Button grid
     lv_obj_t *grid = lv_obj_create(card);
-    lv_obj_set_size(grid, 656, 190);
+    lv_obj_set_size(grid, 836, 220);
     lv_obj_align(grid, LV_ALIGN_BOTTOM_MID, 0, 0);
     brl_style_transparent(grid);
     lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
@@ -315,7 +315,7 @@ static void open_field_picker(int zone, int slot, uint8_t current_field) {
     for (int i = 0; i < n_fields; i++) {
         uint8_t fid = fields[i];
         lv_obj_t *btn = lv_button_create(grid);
-        lv_obj_set_size(btn, 148, 50);
+        lv_obj_set_size(btn, 186, 54);
         bool active = (fid == current_field);
         brl_style_btn(btn, active ? BRL_CLR_ACCENT : BRL_CLR_SURFACE2);
         lv_obj_set_user_data(btn, (void*)(intptr_t)fid);
@@ -348,7 +348,7 @@ static void cb_slot_click(lv_event_t *e) {
 // ---------------------------------------------------------------------------
 static lv_obj_t *mk_row(lv_obj_t *parent, int y, int h) {
     lv_obj_t *r = lv_obj_create(parent);
-    lv_obj_set_size(r, 784, h);
+    lv_obj_set_size(r, BRL_SCREEN_W - 16, h);
     lv_obj_set_pos(r, 8, y);
     brl_style_transparent(r);
     lv_obj_remove_flag(r, LV_OBJ_FLAG_SCROLLABLE);
@@ -603,7 +603,7 @@ lv_obj_t *timing_screen_build() {
     tw.sb_gps_lbl = lv_label_create(sb);
     lv_label_set_text(tw.sb_gps_lbl, LV_SYMBOL_GPS " 0");
     brl_style_label(tw.sb_gps_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
-    lv_obj_set_pos(tw.sb_gps_lbl, 100, 13);
+    lv_obj_set_pos(tw.sb_gps_lbl, 130, 13);
 
     // Track name — centered
     tw.track_name_lbl = lv_label_create(sb);
@@ -616,7 +616,7 @@ lv_obj_t *timing_screen_build() {
     tw.sb_obd_lbl = lv_label_create(sb);
     lv_label_set_text(tw.sb_obd_lbl, LV_SYMBOL_BLUETOOTH " OBD --");
     brl_style_label(tw.sb_obd_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
-    lv_obj_set_pos(tw.sb_obd_lbl, 700, 13);
+    lv_obj_set_pos(tw.sb_obd_lbl, 900, 13);
 
     // ── Delta bar (80 px, fixed) ──────────────────────────────────────────
     const int DBAR_GAP = 6;
@@ -638,7 +638,7 @@ lv_obj_t *timing_screen_build() {
 
     lv_obj_t *cmark = lv_obj_create(dbar);
     lv_obj_set_size(cmark, 2, DBAR_H);
-    lv_obj_set_pos(cmark, 399, 0);
+    lv_obj_set_pos(cmark, BRL_SCREEN_W / 2 - 1, 0);
     lv_obj_set_style_bg_color(cmark, lv_color_hex(0x555555), LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(cmark, LV_OPA_COVER, LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(cmark, 0, LV_STATE_DEFAULT);
@@ -647,7 +647,7 @@ lv_obj_t *timing_screen_build() {
 
     tw.delta_bar_fill = lv_obj_create(dbar);
     lv_obj_set_size(tw.delta_bar_fill, 0, DBAR_H);
-    lv_obj_set_pos(tw.delta_bar_fill, 400, 0);
+    lv_obj_set_pos(tw.delta_bar_fill, BRL_SCREEN_W / 2, 0);
     lv_obj_set_style_bg_color(tw.delta_bar_fill, lv_color_hex(0x00CC66), LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(tw.delta_bar_fill, LV_OPA_COVER, LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(tw.delta_bar_fill, 0, LV_STATE_DEFAULT);
@@ -678,7 +678,7 @@ lv_obj_t *timing_screen_build() {
         }, LV_EVENT_CLICKED, nullptr);
 
         lv_obj_t *card = lv_obj_create(s_scale_overlay);
-        lv_obj_set_size(card, 360, 180);
+        lv_obj_set_size(card, 440, 200);
         lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
         brl_style_card(card);
         lv_obj_set_style_pad_all(card, 12, LV_STATE_DEFAULT);
@@ -693,7 +693,7 @@ lv_obj_t *timing_screen_build() {
         lv_obj_align(ttl, LV_ALIGN_TOP_MID, 0, 0);
 
         lv_obj_t *row = lv_obj_create(card);
-        lv_obj_set_size(row, 336, 80);
+        lv_obj_set_size(row, 416, 90);
         lv_obj_align(row, LV_ALIGN_BOTTOM_MID, 0, 0);
         brl_style_transparent(row);
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
@@ -704,7 +704,7 @@ lv_obj_t *timing_screen_build() {
                                    "\xC2\xB1" "10s", "\xC2\xB1" "20s" };
         for (int i = 0; i < 5; i++) {
             lv_obj_t *btn = lv_button_create(row);
-            lv_obj_set_size(btn, 62, 70);
+            lv_obj_set_size(btn, 76, 80);
             bool active = (s_delta_scale_ms == scales[i]);
             brl_style_btn(btn, active ? BRL_CLR_ACCENT : BRL_CLR_SURFACE2);
             lv_obj_t *lbl = lv_label_create(btn);
@@ -733,8 +733,8 @@ lv_obj_t *timing_screen_build() {
     {
         lv_obj_t *row = mk_row(scr, cy, h1);
         const int ch = h1 - 10;
-        const int WW = 390;    // wide slot
-        const int NW = 193;    // narrow slot
+        const int WW = 500;    // wide slot
+        const int NW = 248;    // narrow slot
 
         for (int s = 0; s < Z1_SLOTS; s++) {
             int w = (s <= 1) ? WW : NW;
@@ -747,7 +747,7 @@ lv_obj_t *timing_screen_build() {
     // ── Zone 2 ────────────────────────────────────────────────────────────
     {
         lv_obj_t *row = mk_row(scr, cy, h2);
-        const int sw = (784 - (Z2_SLOTS - 1) * 4) / Z2_SLOTS;
+        const int sw = (BRL_SCREEN_W - 16 - (Z2_SLOTS - 1) * 4) / Z2_SLOTS;
         const int sh = h2 - 10;
 
         for (int s = 0; s < Z2_SLOTS; s++) {
@@ -760,7 +760,7 @@ lv_obj_t *timing_screen_build() {
     // ── Zone 3 ────────────────────────────────────────────────────────────
     {
         lv_obj_t *row = mk_row(scr, cy, h3);
-        const int ow = (784 - (Z3_SLOTS - 1) * 4) / Z3_SLOTS;
+        const int ow = (BRL_SCREEN_W - 16 - (Z3_SLOTS - 1) * 4) / Z3_SLOTS;
         const int oh = h3 - 10;
 
         for (int s = 0; s < Z3_SLOTS; s++) {
