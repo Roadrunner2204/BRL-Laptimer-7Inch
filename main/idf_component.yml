@@ -9,3 +9,5 @@ dependencies:
     version: "*"
   espressif/mdns:
     version: "*"
+  espressif/usb:
+    version: "*"
