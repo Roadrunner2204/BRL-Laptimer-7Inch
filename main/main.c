@@ -137,9 +137,9 @@ void app_main(void)
     ESP_LOGI(TAG, "wifi_mgr_init");
     wifi_mgr_init();
 
-    /* ── OBD Bluetooth LE ────────────────────────────────────── */
-    ESP_LOGI(TAG, "obd_bt_init");
-    obd_bt_init();
+    /* ── OBD Bluetooth LE (disabled — UART conflict with NimBLE HCI) ── */
+    ESP_LOGI(TAG, "obd_bt_init SKIPPED (NimBLE UART conflict — needs esp_hosted BLE)");
+    /* obd_bt_init(); */
 
     /* ── Build LVGL UI (Splash → Main Menu) ──────────────────── */
     ESP_LOGI(TAG, "lv_my_setup");
