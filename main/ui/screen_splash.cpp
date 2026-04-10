@@ -88,26 +88,26 @@ void splash_show(uint32_t duration_ms, void (*on_done)()) {
     // --- Logo (JPEG, 225x225, zentriert oben) ---
     lv_obj_t *img = lv_image_create(s_screen);
     lv_image_set_src(img, &logo_dsc);
-    lv_obj_align(img, LV_ALIGN_CENTER, 0, -60);
+    lv_obj_align(img, LV_ALIGN_CENTER, 0, -75);
 
     // --- "BAVARIAN RACELABS" Schriftzug ---
     lv_obj_t *brand = lv_label_create(s_screen);
     lv_label_set_text(brand, "BAVARIAN RACELABS");
     lv_obj_set_style_text_font(brand, &BRL_FONT_24, LV_STATE_DEFAULT);
     lv_obj_set_style_text_color(brand, BRL_CLR_TEXT, LV_STATE_DEFAULT);
-    lv_obj_align(brand, LV_ALIGN_CENTER, 0, 80);
+    lv_obj_align(brand, LV_ALIGN_CENTER, 0, 100);
 
     // --- "LAPTIMER" Untertitel ---
     lv_obj_t *sub = lv_label_create(s_screen);
     lv_label_set_text(sub, "L A P T I M E R");
     lv_obj_set_style_text_font(sub, &BRL_FONT_16, LV_STATE_DEFAULT);
     lv_obj_set_style_text_color(sub, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
-    lv_obj_align(sub, LV_ALIGN_CENTER, 0, 110);
+    lv_obj_align(sub, LV_ALIGN_CENTER, 0, 138);
 
     // --- Ladebalken ---
     s_bar = lv_bar_create(s_screen);
-    lv_obj_set_size(s_bar, 360, 6);
-    lv_obj_align(s_bar, LV_ALIGN_BOTTOM_MID, 0, -56);
+    lv_obj_set_size(s_bar, 460, 6);
+    lv_obj_align(s_bar, LV_ALIGN_BOTTOM_MID, 0, -70);
     lv_obj_set_style_bg_color(s_bar, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(s_bar, LV_OPA_COVER, LV_STATE_DEFAULT);
     lv_obj_set_style_radius(s_bar, 3, LV_STATE_DEFAULT);
@@ -124,28 +124,28 @@ void splash_show(uint32_t duration_ms, void (*on_done)()) {
     lv_label_set_text(greet, "Hallo Chrisl!");
     lv_obj_set_style_text_font(greet, &BRL_FONT_16, LV_STATE_DEFAULT);
     lv_obj_set_style_text_color(greet, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
-    lv_obj_align(greet, LV_ALIGN_BOTTOM_MID, 0, -90);
+    lv_obj_align(greet, LV_ALIGN_BOTTOM_MID, 0, -112);
 
     // --- "Wird gestartet..." ---
     lv_obj_t *loading = lv_label_create(s_screen);
     lv_label_set_text(loading, "Wird gestartet...");
     lv_obj_set_style_text_font(loading, &BRL_FONT_14, LV_STATE_DEFAULT);
     lv_obj_set_style_text_color(loading, BRL_CLR_TEXT_DIM, LV_STATE_DEFAULT);
-    lv_obj_align(loading, LV_ALIGN_BOTTOM_MID, 0, -70);
+    lv_obj_align(loading, LV_ALIGN_BOTTOM_MID, 0, -88);
 
     // --- Version (rechts unten) ---
     lv_obj_t *ver = lv_label_create(s_screen);
     lv_label_set_text(ver, APP_VERSION);
     lv_obj_set_style_text_font(ver, &BRL_FONT_14, LV_STATE_DEFAULT);
     lv_obj_set_style_text_color(ver, BRL_CLR_TEXT_DARK, LV_STATE_DEFAULT);
-    lv_obj_align(ver, LV_ALIGN_BOTTOM_RIGHT, -12, -12);
+    lv_obj_align(ver, LV_ALIGN_BOTTOM_RIGHT, -16, -16);
 
     // --- Copyright (links unten) ---
     lv_obj_t *copy = lv_label_create(s_screen);
     lv_label_set_text(copy, "Bavarian RaceLabs LLC");
     lv_obj_set_style_text_font(copy, &BRL_FONT_14, LV_STATE_DEFAULT);
     lv_obj_set_style_text_color(copy, BRL_CLR_TEXT_DARK, LV_STATE_DEFAULT);
-    lv_obj_align(copy, LV_ALIGN_BOTTOM_LEFT, 12, -12);
+    lv_obj_align(copy, LV_ALIGN_BOTTOM_LEFT, 16, -16);
 
     // --- Fortschritts-Timer (50ms Interval) ---
     s_timer = lv_timer_create(cb_progress, 50, nullptr);

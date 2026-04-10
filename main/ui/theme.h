@@ -44,8 +44,8 @@ static inline void brl_style_card(lv_obj_t *obj) {
     lv_obj_set_style_border_width(obj, 0, LV_STATE_DEFAULT);
     lv_obj_set_style_shadow_width(obj, 0, LV_STATE_DEFAULT);
     lv_obj_set_style_outline_width(obj, 0, LV_STATE_DEFAULT);
-    lv_obj_set_style_radius(obj, 6, LV_STATE_DEFAULT);
-    lv_obj_set_style_pad_all(obj, 8, LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(obj, 8, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_all(obj, 10, LV_STATE_DEFAULT);
 }
 
 // Helper: transparent background (no border, no bg, no shadow)

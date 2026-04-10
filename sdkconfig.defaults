@@ -1,5 +1,5 @@
 # BRL Laptimer - ESP32-P4 Waveshare 7" Touch LCD
-# ESP-IDF Project Minimal Configuration (based on ESP-IDF 5.4.0)
+# ESP-IDF Project Minimal Configuration (ESP-IDF 5.4+ / 6.0)
 
 CONFIG_IDF_TARGET="esp32p4"
 

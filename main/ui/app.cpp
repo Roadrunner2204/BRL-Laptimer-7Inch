@@ -155,12 +155,12 @@ static void build_sb(lv_obj_t *scr, SbH *out) {
     out->wifi = lv_label_create(bar);
     lv_label_set_text(out->wifi, LV_SYMBOL_WIFI " --");
     brl_style_label(out->wifi, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
-    lv_obj_set_pos(out->wifi, 140, 12);
+    lv_obj_set_pos(out->wifi, 180, 12);
 
     out->obd = lv_label_create(bar);
     lv_label_set_text(out->obd, LV_SYMBOL_BLUETOOTH " OBD --");
     brl_style_label(out->obd, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
-    lv_obj_set_pos(out->obd, 270, 12);
+    lv_obj_set_pos(out->obd, 350, 12);
 }
 
 // Build a sub-screen header bar (back + title) at y=40, h=50
@@ -208,10 +208,10 @@ static lv_obj_t *build_sub_header(lv_obj_t *scr, const char *title,
     return hdr;
 }
 
-// Content area: y=90, h=390 (below status bar + header)
+// Content area: y=90, h=510 (below status bar + header)
 static lv_obj_t *build_content_area(lv_obj_t *scr, bool scrollable = true) {
     lv_obj_t *area = lv_obj_create(scr);
-    lv_obj_set_size(area, BRL_SCREEN_W, 390);
+    lv_obj_set_size(area, BRL_SCREEN_W, BRL_SCREEN_H - 90);
     lv_obj_set_pos(area, 0, 90);
     lv_obj_set_style_bg_color(area, BRL_CLR_BG, LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(area, LV_OPA_COVER, LV_STATE_DEFAULT);
@@ -328,8 +328,8 @@ static void build_menu_screen(bool is_rebuild = false) {
     brl_style_label(brand, &BRL_FONT_16, BRL_CLR_ACCENT);
     lv_obj_align(brand, LV_ALIGN_CENTER, 0, 0);
 
-    // 2×2 tile grid (y=96, available h=384)
-    const int TW = 388, TH = 186, GAP = 8, X0 = 8, Y0 = 96;
+    // 2×2 tile grid (y=96, available h=504)
+    const int TW = 500, TH = 248, GAP = 8, X0 = 8, Y0 = 96;
     struct { const char *icon; TrKey label_key; TrKey sub_key; lv_event_cb_t cb; } tiles[4] = {
         { LV_SYMBOL_PLAY,     TR_TILE_TIMING,   TR_TILE_TIMING_SUB,   cb_tile_timing   },
         { LV_SYMBOL_GPS,      TR_TILE_TRACKS,   TR_TILE_TRACKS_SUB,   cb_tile_tracks   },
@@ -352,17 +352,17 @@ static void build_menu_screen(bool is_rebuild = false) {
         lv_label_set_text(ico, tiles[i].icon);
         lv_obj_set_style_text_font(ico, &BRL_FONT_48, LV_STATE_DEFAULT);
         lv_obj_set_style_text_color(ico, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
-        lv_obj_align(ico, LV_ALIGN_CENTER, 0, -24);
+        lv_obj_align(ico, LV_ALIGN_CENTER, 0, -36);
 
         lv_obj_t *lbl = lv_label_create(tile);
         lv_label_set_text(lbl, tr(tiles[i].label_key));
         brl_style_label(lbl, &BRL_FONT_20, BRL_CLR_TEXT);
-        lv_obj_align(lbl, LV_ALIGN_BOTTOM_MID, 0, -24);
+        lv_obj_align(lbl, LV_ALIGN_BOTTOM_MID, 0, -36);
 
         lv_obj_t *sub = lv_label_create(tile);
         lv_label_set_text(sub, tr(tiles[i].sub_key));
         brl_style_label(sub, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
-        lv_obj_align(sub, LV_ALIGN_BOTTOM_MID, 0, -8);
+        lv_obj_align(sub, LV_ALIGN_BOTTOM_MID, 0, -14);
     }
 
     if (!is_rebuild) {
@@ -560,7 +560,7 @@ static void open_tracks_screen() {
         if (is_user) right_buttons_w += 66;  // + delete button
 
         // Select button (fills remaining width)
-        int sel_w = 784 - right_buttons_w;
+        int sel_w = (BRL_SCREEN_W - 16) - right_buttons_w;
         lv_obj_t *sel_btn = lv_button_create(row);
         lv_obj_set_size(sel_btn, sel_w, 52);
         lv_obj_set_pos(sel_btn, 0, 0);
@@ -1665,7 +1665,7 @@ void timer_live_update(lv_timer_t * /*t*/) {
         int32_t d     = g_state.timing.live_delta_ms;
         int32_t scale = timing_get_delta_scale();
         int16_t bh    = tw.delta_bar_h > 0 ? tw.delta_bar_h : 80;
-        const int HALF = 396;
+        const int HALF = BRL_SCREEN_W / 2 - 4;
         int fill_w = (int)(fabsf((float)d) / (float)scale * HALF);
         if (fill_w > HALF) fill_w = HALF;
         if (d == 0 || !g_state.timing.timing_active) {
@@ -1673,11 +1673,11 @@ void timer_live_update(lv_timer_t * /*t*/) {
         } else if (d > 0) {
             lv_obj_set_style_bg_color(tw.delta_bar_fill, lv_color_hex(0xFF4444), 0);
             lv_obj_set_size(tw.delta_bar_fill, fill_w, bh);
-            lv_obj_set_pos(tw.delta_bar_fill, 400 - fill_w, 0);
+            lv_obj_set_pos(tw.delta_bar_fill, BRL_SCREEN_W / 2 - fill_w, 0);
         } else {
             lv_obj_set_style_bg_color(tw.delta_bar_fill, lv_color_hex(0x00CC66), 0);
             lv_obj_set_size(tw.delta_bar_fill, fill_w, bh);
-            lv_obj_set_pos(tw.delta_bar_fill, 400, 0);
+            lv_obj_set_pos(tw.delta_bar_fill, BRL_SCREEN_W / 2, 0);
         }
         char dbuf[16];
         if (!g_state.timing.timing_active || d == 0) {
