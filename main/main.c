@@ -94,7 +94,8 @@ void app_main(void)
         .buffer_size = BSP_LCD_DRAW_BUFF_SIZE,
         .double_buffer = BSP_LCD_DRAW_BUFF_DOUBLE,
         .flags = {
-            .buff_dma = true,
+            .buff_dma = false,
+            .buff_spiram = false,
             .sw_rotate = false,
         }
     };

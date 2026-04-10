@@ -8,7 +8,7 @@ idf_component_register(
     SRCS ${SRCS}
     INCLUDE_DIRS "." "ui" "data" "gps" "timing" "obd" "wifi" "storage" "assets"
     PRIV_REQUIRES nvs_flash driver esp_http_server esp_timer
-                  esp_event fatfs vfs bt
+                  esp_event fatfs vfs bt json
 )
 
 # LVGL configuration + suppress warnings-as-errors for our code
