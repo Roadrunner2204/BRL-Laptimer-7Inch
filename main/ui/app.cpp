@@ -24,6 +24,8 @@ static const char *TAG = "app";
 #include "../timing/lap_timer.h"
 #include "../obd/obd_bt.h"
 #include "../can/can_bus.h"
+#include "../gps/gps.h"
+#include "driver/gpio.h"
 #include "../wifi/wifi_mgr.h"
 #include "../storage/session_store.h"
 #include "../storage/sd_mgr.h"
@@ -1639,6 +1641,125 @@ static void open_wifi_pass_dialog(const char *ssid) {
 }
 
 // ============================================================================
+// GPS INFO SCREEN
+// ============================================================================
+static lv_timer_t *s_gps_timer = nullptr;
+
+static void open_gps_info_screen() {
+    lv_obj_t *scr = make_sub_screen("GPS Info", [](lv_event_t* /*e*/) {
+        if (s_gps_timer) { lv_timer_delete(s_gps_timer); s_gps_timer = nullptr; }
+        open_settings_screen();
+    });
+    lv_obj_t *content = build_content_area(scr, true);
+    lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(content, 4, LV_STATE_DEFAULT);
+
+    // Helper: create a labeled info row
+    struct InfoRow { lv_obj_t *val_lbl; };
+    static InfoRow rows[9];
+    int ri = 0;
+
+    auto add_row = [&](const char *label) -> lv_obj_t* {
+        lv_obj_t *row = lv_obj_create(content);
+        lv_obj_set_width(row, LV_PCT(100));
+        lv_obj_set_height(row, 44);
+        brl_style_card(row);
+        lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *lbl = lv_label_create(row);
+        lv_label_set_text(lbl, label);
+        brl_style_label(lbl, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
+        lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
+
+        lv_obj_t *val = lv_label_create(row);
+        lv_label_set_text(val, "---");
+        brl_style_label(val, &BRL_FONT_20, BRL_CLR_TEXT);
+        lv_obj_align(val, LV_ALIGN_RIGHT_MID, 0, 0);
+        rows[ri++].val_lbl = val;
+        return val;
+    };
+
+    add_row(tr(TR_GPS_STATUS));    // 0
+    add_row(tr(TR_GPS_SATS));      // 1
+    add_row(tr(TR_GPS_HDOP));      // 2
+    add_row(tr(TR_GPS_COORDS));    // 3
+    add_row(tr(TR_GPS_ALTITUDE));  // 4
+    add_row(tr(TR_GPS_SPEED));     // 5
+    add_row(tr(TR_GPS_HEADING));   // 6
+    add_row(tr(TR_GPS_TIME));      // 7
+    add_row(tr(TR_GPS_PPS));       // 8
+
+    // Update timer (500ms)
+    s_gps_timer = lv_timer_create([](lv_timer_t *t) {
+        (void)t;
+        char buf[64];
+        const GpsData &g = g_state.gps;
+        GpsDateTime dt = gps_get_datetime();
+
+        // Status
+        if (g.valid) {
+            lv_label_set_text(rows[0].val_lbl, tr(TR_GPS_FIX_OK));
+            brl_style_label(rows[0].val_lbl, &BRL_FONT_20, lv_color_hex(0x00CC66));
+        } else {
+            lv_label_set_text(rows[0].val_lbl, tr(TR_GPS_NO_FIX));
+            brl_style_label(rows[0].val_lbl, &BRL_FONT_20, BRL_CLR_DANGER);
+        }
+
+        // Satellites
+        snprintf(buf, sizeof(buf), "%d", g.satellites);
+        lv_label_set_text(rows[1].val_lbl, buf);
+        lv_color_t sat_clr = g.satellites >= 6 ? lv_color_hex(0x00CC66) :
+                             g.satellites >= 3 ? lv_color_hex(0xFFAA00) : BRL_CLR_DANGER;
+        brl_style_label(rows[1].val_lbl, &BRL_FONT_20, sat_clr);
+
+        // HDOP
+        snprintf(buf, sizeof(buf), "%.1f", (double)g.hdop);
+        lv_label_set_text(rows[2].val_lbl, buf);
+        lv_color_t hdop_clr = g.hdop < 2.0f ? lv_color_hex(0x00CC66) :
+                              g.hdop < 5.0f ? lv_color_hex(0xFFAA00) : BRL_CLR_DANGER;
+        brl_style_label(rows[2].val_lbl, &BRL_FONT_20, hdop_clr);
+
+        // Coordinates
+        if (g.valid) {
+            snprintf(buf, sizeof(buf), "%.6f, %.6f", g.lat, g.lon);
+        } else {
+            snprintf(buf, sizeof(buf), "---");
+        }
+        lv_label_set_text(rows[3].val_lbl, buf);
+
+        // Altitude
+        snprintf(buf, sizeof(buf), "%.1f m", (double)g.altitude_m);
+        lv_label_set_text(rows[4].val_lbl, buf);
+
+        // Speed
+        snprintf(buf, sizeof(buf), "%.1f km/h", (double)g.speed_kmh);
+        lv_label_set_text(rows[5].val_lbl, buf);
+
+        // Heading
+        snprintf(buf, sizeof(buf), "%.1f°", (double)g.heading_deg);
+        lv_label_set_text(rows[6].val_lbl, buf);
+
+        // UTC Time
+        if (dt.valid) {
+            snprintf(buf, sizeof(buf), "%02d:%02d:%02d  %02d.%02d.%04d",
+                     dt.hour, dt.minute, dt.second, dt.day, dt.month, dt.year);
+        } else {
+            snprintf(buf, sizeof(buf), "---");
+        }
+        lv_label_set_text(rows[7].val_lbl, buf);
+
+        // PPS (read GPIO level)
+        int pps = gpio_get_level((gpio_num_t)GPS_PPS_PIN);
+        lv_label_set_text(rows[8].val_lbl, pps ? "HIGH" : "LOW");
+        brl_style_label(rows[8].val_lbl, &BRL_FONT_20,
+                        pps ? lv_color_hex(0x00CC66) : BRL_CLR_TEXT_DIM);
+
+    }, 500, nullptr);
+
+    sub_screen_load(scr);
+}
+
+// ============================================================================
 // CAR PROFILE MANAGER SCREEN
 // ============================================================================
 static void open_car_profiles_screen();
@@ -1980,6 +2101,27 @@ static void open_settings_screen() {
             }
             open_settings_screen();
         }, LV_EVENT_CLICKED, nullptr);
+    }
+    // GPS Info
+    {
+        lv_obj_t *r = make_setting_row(content, 0, RH2, LV_SYMBOL_GPS,
+                                        tr(TR_GPS_INFO), tr(TR_GPS_INFO_SUB));
+        lv_obj_t *gps_status = lv_label_create(r);
+        if (g_state.gps.valid) {
+            char sat_buf[16];
+            snprintf(sat_buf, sizeof(sat_buf), "%d Sats", g_state.gps.satellites);
+            lv_label_set_text(gps_status, sat_buf);
+            brl_style_label(gps_status, &BRL_FONT_16, lv_color_hex(0x00CC66));
+        } else {
+            lv_label_set_text(gps_status, tr(TR_GPS_NO_FIX));
+            brl_style_label(gps_status, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
+        }
+        lv_obj_set_width(gps_status, 140);
+        lv_obj_align(gps_status, LV_ALIGN_LEFT_MID, 0, 0);
+
+        lv_obj_t *bgps = make_setting_btn(r, "Info", BRL_CLR_ACCENT, LV_ALIGN_RIGHT_MID);
+        lv_obj_add_event_cb(bgps, [](lv_event_t* /*e*/){ open_gps_info_screen(); },
+                            LV_EVENT_CLICKED, nullptr);
     }
     // WiFi AP — always active, only SSID/password can be configured
     {

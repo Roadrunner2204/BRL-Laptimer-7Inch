@@ -12,12 +12,11 @@ extern "C" {
  *
  * Pin / UART configuration for Waveshare ESP32-P4-WIFI6-Touch-LCD-7B.
  *
- * IMPORTANT: GPIO 14-19 are occupied by the ESP32-C6 SDIO interface
- * (esp_hosted WiFi/BT). The original ESP32-S3 wiring (RX=19, PPS=16)
- * conflicts with those pins.  Updated to use free header GPIOs:
- *   RX  = GPIO 21   (Header pin, free)
- *   TX  = GPIO 22   (Header pin, free)
- *   PPS = GPIO 20   (Header pin, free)
+ * GPIO 14-19 are reserved for the ESP32-C6 SDIO interface (esp_hosted).
+ * GPS uses free header GPIOs:
+ *   RX  = GPIO 2   (Header IO2)
+ *   TX  = GPIO 3   (Header IO3)
+ *   PPS = GPIO 4   (Header IO4)
  *
  * Tau1201 specs:
  *   - Dual-Frequency L1 + L5, GPS/BeiDou/Galileo/GLONASS
