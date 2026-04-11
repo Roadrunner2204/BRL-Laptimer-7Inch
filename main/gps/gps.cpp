@@ -253,6 +253,135 @@ static void nmea_feed_char(char c) {
 }
 
 // ---------------------------------------------------------------------------
+// UBX protocol helpers for TAU1201 configuration
+// ---------------------------------------------------------------------------
+
+// Compute UBX checksum (CK_A, CK_B) over payload starting after sync bytes
+static void ubx_checksum(const uint8_t *msg, size_t len, uint8_t *ck_a, uint8_t *ck_b)
+{
+    *ck_a = 0;
+    *ck_b = 0;
+    // Checksum covers class, id, length, and payload (skip sync bytes 0xB5,0x62)
+    for (size_t i = 2; i < len; i++) {
+        *ck_a += msg[i];
+        *ck_b += *ck_a;
+    }
+}
+
+// Send a UBX command and wait briefly for it to be transmitted
+static void ubx_send(const uint8_t *msg, size_t len)
+{
+    uart_write_bytes(GPS_UART_PORT, msg, len);
+    uart_wait_tx_done(GPS_UART_PORT, pdMS_TO_TICKS(100));
+}
+
+// Build and send a UBX-CFG-VALSET command (RAM layer) for a single U1/U2/U4 key
+static void ubx_cfg_valset_u1(uint32_t key, uint8_t value)
+{
+    // UBX-CFG-VALSET: class=0x06, id=0x8A
+    // Payload: version(1) + layers(1) + reserved(2) + cfgData(key:4 + val:1)
+    uint8_t msg[9 + 6 + 2]; // header(6) + payload(9) + checksum(2) = 17
+    msg[0] = 0xB5; msg[1] = 0x62;  // sync
+    msg[2] = 0x06; msg[3] = 0x8A;  // class, id
+    msg[4] = 9;    msg[5] = 0;     // length = 9 (little-endian)
+    msg[6] = 0x00;                 // version
+    msg[7] = 0x01;                 // layers: RAM only
+    msg[8] = 0x00; msg[9] = 0x00;  // reserved
+    // Key (little-endian)
+    msg[10] = (key >>  0) & 0xFF;
+    msg[11] = (key >>  8) & 0xFF;
+    msg[12] = (key >> 16) & 0xFF;
+    msg[13] = (key >> 24) & 0xFF;
+    // Value
+    msg[14] = value;
+    // Checksum
+    uint8_t ck_a, ck_b;
+    ubx_checksum(msg, 15, &ck_a, &ck_b);
+    msg[15] = ck_a;
+    msg[16] = ck_b;
+    ubx_send(msg, 17);
+}
+
+static void ubx_cfg_valset_u2(uint32_t key, uint16_t value)
+{
+    uint8_t msg[10 + 6 + 2]; // 18 bytes
+    msg[0] = 0xB5; msg[1] = 0x62;
+    msg[2] = 0x06; msg[3] = 0x8A;
+    msg[4] = 10;   msg[5] = 0;     // length = 10
+    msg[6] = 0x00; msg[7] = 0x01;
+    msg[8] = 0x00; msg[9] = 0x00;
+    msg[10] = (key >>  0) & 0xFF;
+    msg[11] = (key >>  8) & 0xFF;
+    msg[12] = (key >> 16) & 0xFF;
+    msg[13] = (key >> 24) & 0xFF;
+    msg[14] = (value >> 0) & 0xFF;
+    msg[15] = (value >> 8) & 0xFF;
+    uint8_t ck_a, ck_b;
+    ubx_checksum(msg, 16, &ck_a, &ck_b);
+    msg[16] = ck_a;
+    msg[17] = ck_b;
+    ubx_send(msg, 18);
+}
+
+// Configure TAU1201 for motorsport use:
+//   - 10 Hz navigation rate
+//   - GPS + Galileo + BeiDou + GLONASS enabled
+//   - Automotive dynamic model
+static void gps_configure_tau1201(void)
+{
+    // Wait for module to be ready after power-on
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    // ── Navigation rate: 10 Hz (100ms measurement period) ──
+    // CFG-RATE-MEAS = 0x30210001 (U2, ms)
+    ubx_cfg_valset_u2(0x30210001, 100);
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    // CFG-RATE-NAV = 0x30210002 (U2, cycles per nav solution)
+    ubx_cfg_valset_u2(0x30210002, 1);
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    // ── Dynamic platform model: Automotive ──
+    // CFG-NAVSPG-DYNMODEL = 0x20110021 (U1, 4=automotive)
+    ubx_cfg_valset_u1(0x20110021, 4);
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    // ── Enable GNSS constellations ──
+    // CFG-SIGNAL-GPS_ENA = 0x1031001F (L, GPS L1C/A)
+    ubx_cfg_valset_u1(0x1031001F, 1);
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    // CFG-SIGNAL-GPS_L5_ENA = 0x10310004 (L, GPS L5)  -- only on supported modules
+    ubx_cfg_valset_u1(0x10310004, 1);
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    // CFG-SIGNAL-GAL_ENA = 0x10310021 (L, Galileo)
+    ubx_cfg_valset_u1(0x10310021, 1);
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    // CFG-SIGNAL-GAL_E5A_ENA = 0x10310025 (L, Galileo E5a)
+    ubx_cfg_valset_u1(0x10310025, 1);
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    // CFG-SIGNAL-BDS_ENA = 0x10310022 (L, BeiDou)
+    ubx_cfg_valset_u1(0x10310022, 1);
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    // CFG-SIGNAL-BDS_B2A_ENA = 0x10310028 (L, BeiDou B2a)
+    ubx_cfg_valset_u1(0x10310028, 1);
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    // CFG-SIGNAL-GLO_ENA = 0x10310025 -- GLONASS (same key collision with GAL_E5A on some FW)
+    // TAU1201 supports GPS+Galileo+BeiDou on L1+L5 natively
+    // GLONASS only on L1 — enable if available
+    // CFG-SIGNAL-GLO_ENA = 0x10310020
+    ubx_cfg_valset_u1(0x10310020, 1);
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    log_i("TAU1201 configured: 10 Hz, automotive mode, all constellations + L5");
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 void gps_init() {
@@ -289,6 +418,9 @@ void gps_init() {
     memset(&s_datetime, 0, sizeof(s_datetime));
     s_nmea_idx = 0;
     s_nmea_in_sentence = false;
+
+    // Configure TAU1201 via UBX protocol (10 Hz, automotive, all GNSS)
+    gps_configure_tau1201();
 }
 
 void gps_poll() {
