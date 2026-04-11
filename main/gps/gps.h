@@ -44,6 +44,10 @@ typedef struct {
 } GpsDateTime;
 GpsDateTime gps_get_datetime(void);
 
+// ---- GPS diagnostics ----
+/// Returns measured NMEA fix updates per second (e.g. 10 = 10 Hz)
+uint8_t gps_get_update_rate(void);
+
 #ifdef __cplusplus
 }
 #endif

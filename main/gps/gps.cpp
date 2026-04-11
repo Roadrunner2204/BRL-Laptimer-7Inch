@@ -30,6 +30,11 @@ static bool    s_nmea_in_sentence = false;
 // Module-static date/time from the last valid RMC sentence
 static GpsDateTime s_datetime = {};
 
+// Update rate measurement (count GGA sentences per second)
+static uint32_t s_fix_count = 0;       // fixes in current window
+static uint32_t s_last_rate_ms = 0;    // millis at last rate calculation
+static uint8_t  s_update_rate = 0;     // measured Hz
+
 // ---------------------------------------------------------------------------
 // UART read buffer
 // ---------------------------------------------------------------------------
@@ -136,6 +141,16 @@ static void parse_gga(char *fields[], int nfields) {
 
     // GGA alone marks a valid fix
     g.valid = true;
+
+    // Update rate measurement
+    s_fix_count++;
+    uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    uint32_t elapsed = now - s_last_rate_ms;
+    if (elapsed >= 1000) {
+        s_update_rate = (uint8_t)((s_fix_count * 1000) / elapsed);
+        s_fix_count = 0;
+        s_last_rate_ms = now;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -436,4 +451,8 @@ void gps_poll() {
 
 GpsDateTime gps_get_datetime() {
     return s_datetime;
+}
+
+uint8_t gps_get_update_rate() {
+    return s_update_rate;
 }

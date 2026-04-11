@@ -1656,7 +1656,7 @@ static void open_gps_info_screen() {
 
     // Helper: create a labeled info row
     struct InfoRow { lv_obj_t *val_lbl; };
-    static InfoRow rows[9];
+    static InfoRow rows[10];
     int ri = 0;
 
     auto add_row = [&](const char *label) -> lv_obj_t* {
@@ -1688,6 +1688,7 @@ static void open_gps_info_screen() {
     add_row(tr(TR_GPS_HEADING));   // 6
     add_row(tr(TR_GPS_TIME));      // 7
     add_row(tr(TR_GPS_PPS));       // 8
+    add_row("Update Rate");        // 9
 
     // Update timer (500ms)
     s_gps_timer = lv_timer_create([](lv_timer_t *t) {
@@ -1753,6 +1754,14 @@ static void open_gps_info_screen() {
         lv_label_set_text(rows[8].val_lbl, pps ? "HIGH" : "LOW");
         brl_style_label(rows[8].val_lbl, &BRL_FONT_20,
                         pps ? lv_color_hex(0x00CC66) : BRL_CLR_TEXT_DIM);
+
+        // Update rate (measured Hz)
+        uint8_t hz = gps_get_update_rate();
+        snprintf(buf, sizeof(buf), "%d Hz", hz);
+        lv_label_set_text(rows[9].val_lbl, buf);
+        lv_color_t hz_clr = hz >= 9 ? lv_color_hex(0x00CC66) :
+                            hz >= 4 ? lv_color_hex(0xFFAA00) : BRL_CLR_DANGER;
+        brl_style_label(rows[9].val_lbl, &BRL_FONT_20, hz_clr);
 
     }, 500, nullptr);
 
