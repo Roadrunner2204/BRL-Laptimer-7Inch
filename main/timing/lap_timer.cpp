@@ -124,10 +124,12 @@ static void finish_lap(uint32_t cross_ms) {
 
     RecordedLap &rl = sess.laps[sess.lap_count];
     rl.total_ms     = lap_total_ms;
-    rl.sectors_used = lt.current_sector;
-    // Copy current sector time
+    // Record the final (in-progress) sector time at S/F crossing
     if (lt.current_sector < MAX_SECTORS) {
         rl.sector_ms[lt.current_sector] = cross_ms - lt.sector_start_ms;
+        rl.sectors_used = lt.current_sector + 1;  // include the final sector
+    } else {
+        rl.sectors_used = lt.current_sector;
     }
     rl.points      = s_cur_buf;
     rl.point_count = s_cur_count;
@@ -189,11 +191,13 @@ void lap_timer_set_track(int track_idx) {
 
     s_sector_count = td->sector_count;
     for (uint8_t i = 0; i < td->sector_count && i < MAX_SECTORS; i++) {
-        // Sector line: create a short perpendicular segment (+/-5 m) around point
-        // Simplified: use +/-0.00005 deg offset as sector "gate width"
+        // Sector line: create a diagonal gate (~10m wide) around the sector point.
+        // Using both lat AND lon offsets ensures the gate catches crossings
+        // regardless of track orientation (N-S, E-W, or diagonal).
+        double off = 0.00005;  // ~5.5m in latitude
         build_line(s_sector_lines[i],
-                   td->sectors[i].lat - 0.00005, td->sectors[i].lon,
-                   td->sectors[i].lat + 0.00005, td->sectors[i].lon);
+                   td->sectors[i].lat - off, td->sectors[i].lon - off,
+                   td->sectors[i].lat + off, td->sectors[i].lon + off);
         s_sector_lines[i].active = true;
     }
 

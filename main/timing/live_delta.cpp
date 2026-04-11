@@ -47,9 +47,10 @@ void live_delta_update(double lat, double lon, uint32_t elapsed_ms,
 
     uint16_t &cursor = g_state.timing.ref_point_idx;
 
-    // Search forward from cursor within window
-    int start = (int)cursor;
-    int end   = start + SEARCH_WINDOW;
+    // Search bidirectionally around cursor to handle GPS jitter
+    int start = (int)cursor - (SEARCH_WINDOW / 4);  // look back ~1.5s
+    if (start < 0) start = 0;
+    int end = (int)cursor + SEARCH_WINDOW;
     if (end >= (int)ref_lap->point_count) end = (int)ref_lap->point_count - 1;
 
     double   best_d2  = 1e18;
