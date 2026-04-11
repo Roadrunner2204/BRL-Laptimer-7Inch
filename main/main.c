@@ -40,6 +40,7 @@
 #include "data/lap_data.h"
 #include "data/car_profile.h"
 #include "can/can_bus.h"
+#include "video/video_mgr.h"
 
 static const char *TAG = "brl-laptimer";
 
@@ -152,6 +153,10 @@ void app_main(void)
     /* ── WiFi (ESP32-C6 co-processor via SDIO / esp_hosted) ─── */
     ESP_LOGI(TAG, "wifi_mgr_init");
     wifi_mgr_init();
+
+    /* ── Video recording (USB camera, JPEG pipeline, AVI) ───── */
+    ESP_LOGI(TAG, "video_init");
+    video_init();
 
     /* ── OBD / CAN vehicle data ──────────────────────────────── */
     ESP_LOGI(TAG, "obd_bt_init");

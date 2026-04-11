@@ -25,6 +25,7 @@ static const char *TAG = "app";
 #include "../obd/obd_bt.h"
 #include "../can/can_bus.h"
 #include "../gps/gps.h"
+#include "../video/video_mgr.h"
 #include "driver/gpio.h"
 #include "../wifi/wifi_mgr.h"
 #include "../storage/session_store.h"
@@ -42,7 +43,7 @@ AppState g_state = {};
 // ---------------------------------------------------------------------------
 // Status bar handles (one set per long-lived screen)
 // ---------------------------------------------------------------------------
-struct SbH { lv_obj_t *gps, *wifi, *obd; };
+struct SbH { lv_obj_t *gps, *wifi, *obd, *rec; };
 static SbH sb_menu   = {};   // menu screen — cached, never rebuilt
 static SbH sb_sub    = {};   // tracks / history / settings — cleared on back
 static SbH sb_timing = {};   // timing screen — repopulated after every build
@@ -165,6 +166,11 @@ static void build_sb(lv_obj_t *scr, SbH *out) {
     lv_label_set_text(out->obd, LV_SYMBOL_DRIVE);
     brl_style_label(out->obd, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
     lv_obj_set_pos(out->obd, 350, 12);
+
+    out->rec = lv_label_create(bar);
+    lv_label_set_text(out->rec, "");
+    brl_style_label(out->rec, &BRL_FONT_14, BRL_CLR_DANGER);
+    lv_obj_set_pos(out->rec, 520, 12);
 }
 
 // Build a sub-screen header bar (back + title) at y=40, h=50
@@ -2191,6 +2197,48 @@ static void open_settings_screen() {
         lv_obj_add_event_cb(bopen, [](lv_event_t* /*e*/){ open_car_profiles_screen(); },
                             LV_EVENT_CLICKED, nullptr);
     }
+    // Camera / Video
+    {
+        lv_obj_t *r = make_setting_row(content, 0, RH2, LV_SYMBOL_IMAGE,
+                                        tr(TR_VIDEO_TITLE), tr(TR_VIDEO_SUB));
+        lv_obj_t *cam_status = lv_label_create(r);
+        VideoState vs = video_get_state();
+        if (vs == VIDEO_RECORDING) {
+            char rbuf[32];
+            snprintf(rbuf, sizeof(rbuf), "REC %lus", (unsigned long)video_get_rec_duration_s());
+            lv_label_set_text(cam_status, rbuf);
+            brl_style_label(cam_status, &BRL_FONT_16, BRL_CLR_DANGER);
+        } else if (video_camera_connected()) {
+            lv_label_set_text(cam_status, tr(TR_VIDEO_CONNECTED));
+            brl_style_label(cam_status, &BRL_FONT_16, lv_color_hex(0x00CC66));
+        } else {
+            lv_label_set_text(cam_status, tr(TR_VIDEO_NO_CAM));
+            brl_style_label(cam_status, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
+        }
+        lv_obj_set_width(cam_status, 140);
+        lv_obj_align(cam_status, LV_ALIGN_LEFT_MID, 0, 0);
+
+        if (vs == VIDEO_RECORDING) {
+            lv_obj_t *bstop = make_setting_btn(r, tr(TR_VIDEO_REC_STOP), BRL_CLR_DANGER, LV_ALIGN_RIGHT_MID);
+            lv_obj_add_event_cb(bstop, [](lv_event_t* /*e*/){
+                video_stop_recording();
+                open_settings_screen();
+            }, LV_EVENT_CLICKED, nullptr);
+        } else if (video_camera_connected()) {
+            // Record button
+            lv_obj_t *brec = make_setting_btn(r, tr(TR_VIDEO_REC_START), BRL_CLR_DANGER, LV_ALIGN_RIGHT_MID, -160);
+            lv_obj_add_event_cb(brec, [](lv_event_t* /*e*/){
+                video_start_recording();
+                open_settings_screen();
+            }, LV_EVENT_CLICKED, nullptr);
+            // Preview button
+            lv_obj_t *bprev = make_setting_btn(r, tr(TR_VIDEO_PREVIEW), BRL_CLR_ACCENT, LV_ALIGN_RIGHT_MID);
+            lv_obj_add_event_cb(bprev, [](lv_event_t* /*e*/){
+                video_start_preview();
+                // TODO: open camera preview sub-screen
+            }, LV_EVENT_CLICKED, nullptr);
+        }
+    }
     // Language
     {
         lv_obj_t *r = make_setting_row(content, 0, RH, LV_SYMBOL_SETTINGS,
@@ -2303,6 +2351,22 @@ static void update_sb(SbH &sb) {
         }
         lv_label_set_text(sb.wifi, wlbl);
         lv_obj_set_style_text_color(sb.wifi, wcol, 0);
+    }
+    // Recording indicator
+    if (sb.rec) {
+        if (g_state.video_recording) {
+            char rbuf[24];
+            uint32_t dur = video_get_rec_duration_s();
+            snprintf(rbuf, sizeof(rbuf), LV_SYMBOL_STOP " REC %lu:%02lu",
+                     (unsigned long)(dur / 60), (unsigned long)(dur % 60));
+            lv_label_set_text(sb.rec, rbuf);
+            lv_obj_set_style_text_color(sb.rec, BRL_CLR_DANGER, 0);
+        } else if (video_camera_connected()) {
+            lv_label_set_text(sb.rec, LV_SYMBOL_IMAGE " CAM");
+            lv_obj_set_style_text_color(sb.rec, lv_color_hex(0xAAAAAA), 0);
+        } else {
+            lv_label_set_text(sb.rec, "");
+        }
     }
     // Vehicle connection label (auto icon + OBD/CAN mode)
     if (sb.obd) {

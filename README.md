@@ -12,8 +12,9 @@ GPS lap timer for motorsport on the **Waveshare ESP32-P4-WIFI6-Touch-LCD-7B**.
 | Display          | 7" 1024x600 MIPI DSI (EK79007 driver)            |
 | Touch            | GT911 capacitive, 5-point, I2C                   |
 | Wi-Fi / BT       | ESP32-C6 co-processor (Wi-Fi 6 / BLE 5) via SDIO |
-| GPS              | u-blox TAU1201, UART + PPS                       |
+| GPS              | u-blox TAU1201, UART + PPS, 10 Hz, L1+L5         |
 | CAN Bus          | SN65HVD230 transceiver module                    |
+| Camera           | USB UVC (MJPEG), HD video recording with overlay  |
 | SD Card          | SDMMC 4-bit, FAT32                               |
 
 ## Pin Assignments
@@ -79,11 +80,11 @@ Display uses MIPI DSI (directly managed by BSP, no user-facing GPIOs).
 ## Architecture
 
 ```
-Core 0 — Logic Task         Core 1 — LVGL Task (BSP)
-  GPS parsing                 UI rendering
-  Lap timing                  Touch input
-  OBD-II BLE (NimBLE)         Screen management
-  CAN bus (TWAI)
+Core 0 — Logic Task         Core 0 — Video Tasks       Core 1 — LVGL Task (BSP)
+  GPS parsing                 UVC camera streaming       UI rendering
+  Lap timing                  HW JPEG decode/encode      Touch input
+  OBD-II BLE (NimBLE)         Data overlay render         Screen management
+  CAN bus (TWAI)              AVI file writer
   WiFi manager
   Session storage
 ```
@@ -108,6 +109,7 @@ Two modes selectable in Settings:
 - **WiFi:** `esp_hosted` + `esp_wifi_remote` (transparent proxy to C6)
 - **Bluetooth:** NimBLE host on P4, controller on C6 via VHCI
 - **CAN:** ESP32-P4 TWAI peripheral + SN65HVD230 transceiver
+- **Video:** USB UVC camera + HW JPEG codec + AVI container
 
 ## Project Structure
 
@@ -120,7 +122,7 @@ main/
     track_db.h          Built-in European track database (11 tracks)
     car_profile.cpp/h   Encrypted .brl profile parser, server download
   gps/
-    gps.cpp/h           u-blox TAU1201 NMEA parser, PPS handling
+    gps.cpp/h           u-blox TAU1201 NMEA parser, PPS, 10 Hz config
   timing/
     lap_timer.cpp/h     GPS-based lap/sector timing
     live_delta.cpp/h    Real-time delta calculation
@@ -128,6 +130,13 @@ main/
     can_bus.cpp/h       Direct CAN bus via TWAI + SN65HVD230
   obd/
     obd_bt.cpp/h        OBD-II via BLE (NimBLE, BRL OBD Adapter)
+  video/
+    video_mgr.cpp/h     Video recording manager (state machine)
+    uvc_stream.cpp/h    USB UVC camera driver
+    video_pipeline.cpp/h JPEG decode → overlay → encode pipeline
+    avi_writer.cpp/h    AVI/RIFF container writer
+    overlay.cpp/h       Data overlay renderer (bitmap font)
+    font8x16.c/h        8x16 bitmap font for overlay text
   wifi/
     wifi_mgr.cpp/h      AP mode (data server) + STA mode (internet)
     data_server.cpp/h   HTTP server for session download
@@ -168,3 +177,21 @@ N47F.brl;BMW;N47 F-Series
 S65E.brl;BMW;S65 E-Series
 i30N.brl;Hyundai;2.0 GDI
 ```
+
+## Video Recording
+
+Records HD video with data overlay from a USB UVC camera to SD card as AVI (MJPEG).
+
+**Pipeline:** Camera (MJPEG) → HW JPEG Decode → Overlay Render → HW JPEG Encode → AVI on SD
+
+**Overlay data:** Speed, lap time, best lap, delta, RPM, sector times, G-force
+
+**Recording modes:**
+- **Auto:** Starts when timing session begins, stops 3s after timing ends
+- **Manual:** Start/stop via button in Settings
+
+**Supported resolutions:** Depends on camera, typically 640x480 up to 1920x1080
+
+**Output:** `/sdcard/videos/<session_id>.avi` — playable in VLC, Windows Media Player, etc.
+
+**Crash safety:** AVI header is updated every 5 seconds so partial files are still playable after power loss.
