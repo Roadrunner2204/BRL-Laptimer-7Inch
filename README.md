@@ -13,17 +13,32 @@ GPS lap timer for motorsport on the **Waveshare ESP32-P4-WIFI6-Touch-LCD-7B**.
 | Touch            | GT911 capacitive, 5-point, I2C                   |
 | Wi-Fi / BT       | ESP32-C6 co-processor (Wi-Fi 6 / BLE 5) via SDIO |
 | GPS              | u-blox TAU1201, UART + PPS                       |
+| CAN Bus          | SN65HVD230 transceiver module                    |
 | SD Card          | SDMMC 4-bit, FAT32                               |
 
 ## Pin Assignments
 
 ### GPS Module (u-blox TAU1201)
 
-| Signal | GPIO | Notes                         |
-|--------|------|-------------------------------|
-| RX     | 21   | ESP32 RX <- TAU1201 TX        |
-| TX     | 22   | ESP32 TX -> TAU1201 RX        |
-| PPS    | 20   | Pulse-per-second input        |
+| Signal | GPIO | Header Pin | Notes                    |
+|--------|------|------------|--------------------------|
+| RX     | 2    | IO2        | ESP32 RX <- TAU1201 TX   |
+| TX     | 3    | IO3        | ESP32 TX -> TAU1201 RX   |
+| PPS    | 4    | IO4        | Pulse-per-second input   |
+
+### CAN Bus (SN65HVD230 Transceiver)
+
+| Signal | GPIO | Header Pin | Notes                         |
+|--------|------|------------|-------------------------------|
+| TX     | 5    | IO5        | ESP32 TX -> SN65HVD230 D pin  |
+| RX     | 28   | IO28       | SN65HVD230 R pin -> ESP32     |
+
+SN65HVD230 wiring:
+- **VCC** -> 3.3V
+- **GND** -> GND
+- **D** (Driver Input) -> GPIO 5
+- **R** (Receiver Output) -> GPIO 28
+- **CANH / CANL** -> Vehicle CAN bus (e.g. OBD-II pin 6/14)
 
 ### ESP32-C6 Co-Processor (esp_hosted, SDIO Slot 1)
 
@@ -51,6 +66,16 @@ The SD card uses the board's built-in SDMMC slot (directly on the Waveshare boar
 
 Display uses MIPI DSI (directly managed by BSP, no user-facing GPIOs).
 
+### Free Header Pins
+
+| GPIO | Header Pin | Status    |
+|------|------------|-----------|
+| 29   | IO29       | Available |
+| 30   | IO30       | Available |
+| 31   | IO31       | Available |
+| 34   | IO34       | Available |
+| 36   | IO36       | Available |
+
 ## Architecture
 
 ```
@@ -58,9 +83,22 @@ Core 0 — Logic Task         Core 1 — LVGL Task (BSP)
   GPS parsing                 UI rendering
   Lap timing                  Touch input
   OBD-II BLE (NimBLE)         Screen management
+  CAN bus (TWAI)
   WiFi manager
   Session storage
 ```
+
+## Vehicle Data Connection
+
+Two modes selectable in Settings:
+
+| Mode            | Hardware              | Data Source                    |
+|-----------------|-----------------------|--------------------------------|
+| **OBD Dongle**  | BRL BLE OBD Adapter   | Standard OBD-II PIDs via BLE   |
+| **CAN Bus**     | SN65HVD230 module     | Direct CAN signals via .brl profile |
+
+- **OBD Dongle:** Queries 5 standard PIDs (RPM, throttle, MAP, coolant, intake) at ~5 Hz via BLE
+- **CAN Bus:** Passive listener (listen-only mode), decodes all signals defined in the active car profile at full bus speed. Requires a `.brl` car profile to be loaded.
 
 ## Software Stack
 
@@ -69,6 +107,7 @@ Core 0 — Logic Task         Core 1 — LVGL Task (BSP)
 - **BSP:** `waveshare/esp32_p4_wifi6_touch_lcd_7b`
 - **WiFi:** `esp_hosted` + `esp_wifi_remote` (transparent proxy to C6)
 - **Bluetooth:** NimBLE host on P4, controller on C6 via VHCI
+- **CAN:** ESP32-P4 TWAI peripheral + SN65HVD230 transceiver
 
 ## Project Structure
 
@@ -85,8 +124,10 @@ main/
   timing/
     lap_timer.cpp/h     GPS-based lap/sector timing
     live_delta.cpp/h    Real-time delta calculation
+  can/
+    can_bus.cpp/h       Direct CAN bus via TWAI + SN65HVD230
   obd/
-    obd_bt.cpp/h        OBD-II via BLE (NimBLE, currently disabled)
+    obd_bt.cpp/h        OBD-II via BLE (NimBLE, BRL OBD Adapter)
   wifi/
     wifi_mgr.cpp/h      AP mode (data server) + STA mode (internet)
     data_server.cpp/h   HTTP server for session download

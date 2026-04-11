@@ -23,6 +23,7 @@ static const char *TAG = "app";
 #include "../data/track_db.h"
 #include "../timing/lap_timer.h"
 #include "../obd/obd_bt.h"
+#include "../can/can_bus.h"
 #include "../wifi/wifi_mgr.h"
 #include "../storage/session_store.h"
 #include "../storage/sd_mgr.h"
@@ -1923,20 +1924,61 @@ static void open_settings_screen() {
 
     const int RH = 56, RH2 = 68;
 
-    // OBD
+    // Vehicle connection mode (OBD BLE / CAN direct)
     {
-        lv_obj_t *r = make_setting_row(content, 0, RH2, LV_SYMBOL_BLUETOOTH,
-                                        "OBD Adapter", tr(TR_OBD_SUB));
+        lv_obj_t *r = make_setting_row(content, 0, RH2, LV_SYMBOL_DRIVE,
+                                        tr(TR_VEH_CONN_TITLE), tr(TR_VEH_CONN_SUB));
+
+        // Status label
         set_obd_status_lbl = lv_label_create(r);
-        lv_label_set_text(set_obd_status_lbl, tr(TR_NOT_CONNECTED));
-        brl_style_label(set_obd_status_lbl, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
+        if (g_state.veh_conn_mode == VEH_CONN_CAN_DIRECT) {
+            if (can_bus_active()) {
+                lv_label_set_text(set_obd_status_lbl, tr(TR_CONNECTED));
+                brl_style_label(set_obd_status_lbl, &BRL_FONT_16, lv_color_hex(0x00CC66));
+            } else if (!g_car_profile.loaded) {
+                lv_label_set_text(set_obd_status_lbl, tr(TR_VEH_CAN_NO_PROFILE));
+                brl_style_label(set_obd_status_lbl, &BRL_FONT_16, BRL_CLR_DANGER);
+            } else {
+                lv_label_set_text(set_obd_status_lbl, tr(TR_NOT_CONNECTED));
+                brl_style_label(set_obd_status_lbl, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
+            }
+        } else {
+            lv_label_set_text(set_obd_status_lbl, tr(TR_NOT_CONNECTED));
+            brl_style_label(set_obd_status_lbl, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
+        }
         lv_obj_set_width(set_obd_status_lbl, 140);
         lv_obj_align(set_obd_status_lbl, LV_ALIGN_LEFT_MID, 0, 0);
-        set_obd_btn = make_setting_btn(r, tr(TR_CONNECT_BTN), BRL_CLR_ACCENT, LV_ALIGN_RIGHT_MID);
-        lv_obj_add_event_cb(set_obd_btn, [](lv_event_t* /*e*/){
-            if (obd_bt_state() == OBD_CONNECTED || obd_bt_state() == OBD_REQUESTING)
+
+        // OBD BLE button
+        bool is_obd = (g_state.veh_conn_mode == VEH_CONN_OBD_BLE);
+        lv_obj_t *btn_obd = make_setting_btn(r, tr(TR_VEH_OBD_BLE),
+            is_obd ? BRL_CLR_ACCENT : lv_color_hex(0x333333), LV_ALIGN_RIGHT_MID, -160);
+        lv_obj_add_event_cb(btn_obd, [](lv_event_t* /*e*/){
+            if (g_state.veh_conn_mode == VEH_CONN_CAN_DIRECT) {
+                can_bus_stop();
+            }
+            g_state.veh_conn_mode = VEH_CONN_OBD_BLE;
+            g_dash_cfg.veh_conn_mode = VEH_CONN_OBD_BLE;
+            dash_config_save();
+            open_settings_screen();
+        }, LV_EVENT_CLICKED, nullptr);
+
+        // CAN Direct button
+        bool is_can = (g_state.veh_conn_mode == VEH_CONN_CAN_DIRECT);
+        lv_obj_t *btn_can = make_setting_btn(r, tr(TR_VEH_CAN_DIRECT),
+            is_can ? BRL_CLR_ACCENT : lv_color_hex(0x333333), LV_ALIGN_RIGHT_MID);
+        lv_obj_add_event_cb(btn_can, [](lv_event_t* /*e*/){
+            if (g_state.veh_conn_mode == VEH_CONN_OBD_BLE) {
                 obd_bt_disconnect();
-            else obd_bt_disconnect(); // resets to IDLE → poll restarts scan
+            }
+            g_state.veh_conn_mode = VEH_CONN_CAN_DIRECT;
+            g_dash_cfg.veh_conn_mode = VEH_CONN_CAN_DIRECT;
+            dash_config_save();
+            // Start CAN if profile is loaded
+            if (g_car_profile.loaded && !can_bus_active()) {
+                can_bus_init();
+            }
+            open_settings_screen();
         }, LV_EVENT_CLICKED, nullptr);
     }
     // WiFi AP — always active, only SSID/password can be configured
@@ -2415,8 +2457,9 @@ void app_init() {
     memcpy(g_state.wifi_ssid, wifi_ssid_was, sizeof(g_state.wifi_ssid));
 
     dash_config_load();
-    g_state.language = g_dash_cfg.language;
-    g_state.units    = g_dash_cfg.units;
+    g_state.language      = g_dash_cfg.language;
+    g_state.units         = g_dash_cfg.units;
+    g_state.veh_conn_mode = (VehicleConnMode)g_dash_cfg.veh_conn_mode;
     i18n_set_language(g_state.language);
 
     // Create the persistent menu screen now (so timing_screen_build can

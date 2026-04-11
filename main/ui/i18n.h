@@ -130,6 +130,12 @@ enum TrKey : uint8_t {
     TR_CAR_DOWNLOAD_OK,
     TR_CAR_DOWNLOAD_FAIL,
     TR_CAR_ALL_MAKES,
+    // Vehicle connection mode
+    TR_VEH_CONN_TITLE,
+    TR_VEH_CONN_SUB,
+    TR_VEH_OBD_BLE,
+    TR_VEH_CAN_DIRECT,
+    TR_VEH_CAN_NO_PROFILE,
     // WiFi scan
     TR_WIFI_SCAN,
     TR_WIFI_SCANNING,

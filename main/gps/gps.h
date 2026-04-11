@@ -28,9 +28,9 @@ extern "C" {
 
 // ---- Pin / UART configuration (ESP32-P4 Waveshare 7B board) ----
 #define GPS_UART_PORT   ((uart_port_t)UART_NUM_1)
-#define GPS_RX_PIN      21      // UART RX -- Tau1201 TX
-#define GPS_TX_PIN      22      // UART TX -- Tau1201 RX (optional)
-#define GPS_PPS_PIN     20      // PPS: pulse-per-second input
+#define GPS_RX_PIN      2       // UART RX -- Tau1201 TX  (Header IO2)
+#define GPS_TX_PIN      3       // UART TX -- Tau1201 RX  (Header IO3)
+#define GPS_PPS_PIN     4       // PPS: pulse-per-second   (Header IO4)
 #define GPS_BAUD        115200
 
 // ---- Public functions ----

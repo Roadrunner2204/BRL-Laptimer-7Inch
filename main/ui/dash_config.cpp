@@ -45,6 +45,8 @@ static const DashConfig DEFAULT_CFG = {
 
     // Zone 3: [RPM, Throttle, Boost, Coolant, None]
     .z3 = { FIELD_RPM, FIELD_THROTTLE, FIELD_BOOST, FIELD_COOLANT, FIELD_NONE },
+
+    .veh_conn_mode = 0,  // OBD BLE default
 };
 
 // ---------------------------------------------------------------------------
@@ -66,6 +68,7 @@ void dash_config_load()
     nvs_get_u8(h, "lang",  &g_dash_cfg.language);
     nvs_get_u8(h, "units", &g_dash_cfg.units);
     nvs_get_u16(h, "dscale", &g_dash_cfg.delta_scale_ms);
+    nvs_get_u8(h, "vconn", &g_dash_cfg.veh_conn_mode);
 
     size_t len;
 
@@ -104,6 +107,7 @@ void dash_config_save()
     nvs_set_u8(h, "lang",  g_dash_cfg.language);
     nvs_set_u8(h, "units", g_dash_cfg.units);
     nvs_set_u16(h, "dscale", g_dash_cfg.delta_scale_ms);
+    nvs_set_u8(h, "vconn", g_dash_cfg.veh_conn_mode);
     nvs_set_blob(h, "z1", g_dash_cfg.z1, sizeof(g_dash_cfg.z1));
     nvs_set_blob(h, "z2", g_dash_cfg.z2, sizeof(g_dash_cfg.z2));
     nvs_set_blob(h, "z3", g_dash_cfg.z3, sizeof(g_dash_cfg.z3));

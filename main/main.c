@@ -39,6 +39,7 @@
 #include "timing/live_delta.h"
 #include "data/lap_data.h"
 #include "data/car_profile.h"
+#include "can/can_bus.h"
 
 static const char *TAG = "brl-laptimer";
 
@@ -60,8 +61,11 @@ static void logic_task(void *param)
         lap_timer_poll();
         xSemaphoreGive(g_state_mutex);
 
-        /* OBD, WiFi and HTTP don't touch g_state directly in hot paths */
-        obd_bt_poll();
+        /* OBD/CAN, WiFi and HTTP don't touch g_state directly in hot paths */
+        if (g_state.veh_conn_mode == VEH_CONN_CAN_DIRECT)
+            can_bus_poll();
+        else
+            obd_bt_poll();
         wifi_mgr_poll();
         data_server_poll();
 
@@ -117,7 +121,7 @@ void app_main(void)
         bsp_display_unlock();
     }
 
-    /* ── GPS: UART (RX=GPIO21, TX=GPIO22, PPS=GPIO20) ────────── */
+    /* ── GPS: UART (RX=GPIO2, TX=GPIO3, PPS=GPIO4) ─────────── */
     ESP_LOGI(TAG, "gps_init");
     gps_init();
 
@@ -149,7 +153,7 @@ void app_main(void)
     ESP_LOGI(TAG, "wifi_mgr_init");
     wifi_mgr_init();
 
-    /* ── OBD Bluetooth LE (NimBLE host on P4, controller on C6 via VHCI) ── */
+    /* ── OBD / CAN vehicle data ──────────────────────────────── */
     ESP_LOGI(TAG, "obd_bt_init");
     obd_bt_init();
 
@@ -159,6 +163,12 @@ void app_main(void)
     lv_my_setup();
     bsp_display_unlock();
     ESP_LOGI(TAG, "lv_my_setup DONE");
+
+    /* ── CAN bus auto-start (config loaded by lv_my_setup → dash_config_load) */
+    if (g_state.veh_conn_mode == VEH_CONN_CAN_DIRECT && g_car_profile.loaded) {
+        ESP_LOGI(TAG, "can_bus_init (auto-start)");
+        can_bus_init();
+    }
 
     /* ── Spawn logic task on Core 0 ──────────────────────────── */
     xTaskCreatePinnedToCore(

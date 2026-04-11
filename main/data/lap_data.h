@@ -104,6 +104,14 @@ typedef enum {
 } WifiMode;
 
 // ---------------------------------------------------------------------------
+// Vehicle data connection mode
+// ---------------------------------------------------------------------------
+typedef enum {
+    VEH_CONN_OBD_BLE = 0,   // OBD-II via BRL BLE Adapter (default)
+    VEH_CONN_CAN_DIRECT,    // Direct CAN bus via SN65HVD230 transceiver
+} VehicleConnMode;
+
+// ---------------------------------------------------------------------------
 // Application state (single global instance)
 // ---------------------------------------------------------------------------
 typedef struct {
@@ -112,14 +120,15 @@ typedef struct {
     LapSession session;
     LiveTiming timing;
 
-    WifiMode   wifi_mode;
-    char       wifi_ssid[32];
-    bool       sd_available;
+    WifiMode       wifi_mode;
+    char           wifi_ssid[32];
+    bool           sd_available;
 
-    bool       obd_connected;
-    uint8_t    language;   // 0 = DE, 1 = EN
-    uint8_t    units;      // 0 = metric, 1 = imperial
-    int        active_track_idx;  // -1 = none selected
+    VehicleConnMode veh_conn_mode;  // OBD BLE or direct CAN
+    bool           obd_connected;
+    uint8_t        language;   // 0 = DE, 1 = EN
+    uint8_t        units;      // 0 = metric, 1 = imperial
+    int            active_track_idx;  // -1 = none selected
 } AppState;
 
 extern AppState g_state;
