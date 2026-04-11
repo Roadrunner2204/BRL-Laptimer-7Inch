@@ -38,6 +38,7 @@
 #include "timing/lap_timer.h"
 #include "timing/live_delta.h"
 #include "data/lap_data.h"
+#include "data/car_profile.h"
 
 static const char *TAG = "brl-laptimer";
 
@@ -123,11 +124,22 @@ void app_main(void)
     /* ── SD card ─────────────────────────────────────────────── */
     ESP_LOGI(TAG, "sd_mgr_init");
     sd_mgr_init();
+    g_state.sd_available = sd_mgr_available();
 
     /* ── Load tracks from SD ─────────────────────────────────── */
     ESP_LOGI(TAG, "session_store_load");
     session_store_load_user_tracks();
     session_store_load_builtin_overrides();
+
+    /* ── Load car profile from SD (if previously selected) ─── */
+    {
+        char active_car[32] = {};
+        car_profile_get_active(active_car, sizeof(active_car));
+        if (strlen(active_car) > 0) {
+            ESP_LOGI(TAG, "car_profile_load: %s", active_car);
+            car_profile_load(active_car);
+        }
+    }
 
     /* ── Lap timer ───────────────────────────────────────────── */
     ESP_LOGI(TAG, "lap_timer_init");
@@ -137,9 +149,9 @@ void app_main(void)
     ESP_LOGI(TAG, "wifi_mgr_init");
     wifi_mgr_init();
 
-    /* ── OBD Bluetooth LE (disabled — UART conflict with NimBLE HCI) ── */
-    ESP_LOGI(TAG, "obd_bt_init SKIPPED (NimBLE UART conflict — needs esp_hosted BLE)");
-    /* obd_bt_init(); */
+    /* ── OBD Bluetooth LE (NimBLE host on P4, controller on C6 via VHCI) ── */
+    ESP_LOGI(TAG, "obd_bt_init");
+    obd_bt_init();
 
     /* ── Build LVGL UI (Splash → Main Menu) ──────────────────── */
     ESP_LOGI(TAG, "lv_my_setup");

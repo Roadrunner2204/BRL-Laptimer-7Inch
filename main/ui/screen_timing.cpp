@@ -51,8 +51,7 @@ static int         s_name_secs      = 8;
 static bool        s_session_begun  = false;
 static int         s_last_track_idx = -2;  // track last opened; -2 = never
 
-// Delta bar scale — persists across screen rebuilds
-static int32_t    s_delta_scale_ms = 3000;  // ±3 s default
+// Delta bar scale — stored in g_dash_cfg.delta_scale_ms (persisted via NVS)
 
 // ── QWERTZ keyboard maps (static lifetime required by LVGL) ─────────────────
 static const char * const s_qwertz_lc[] = {
@@ -85,7 +84,7 @@ static const lv_btnmatrix_ctrl_t s_qwertz_ctrl[] = {
 };
 #undef _K
 
-int32_t timing_get_delta_scale() { return s_delta_scale_ms; }
+int32_t timing_get_delta_scale() { return (int32_t)g_dash_cfg.delta_scale_ms; }
 
 // ---------------------------------------------------------------------------
 // Field metadata
@@ -113,16 +112,24 @@ static const char *field_title(uint8_t f) {
     }
 }
 
-// Value font + color per field
+// Is this field a time value? (needs more chars → smaller font than pure numerics)
+static bool field_is_time(uint8_t f) {
+    return f == FIELD_LAPTIME || f == FIELD_BESTLAP || f == FIELD_DELTA_NUM
+        || f == FIELD_SECTOR1 || f == FIELD_SECTOR2 || f == FIELD_SECTOR3;
+}
+
+// Value font + color per field — sized for 1024×600 @ 7" readability in race use
 static const lv_font_t *field_font(uint8_t f, int zone, bool wide) {
-    // Zone 1: always large — wide slots get 64, narrow get 48
-    if (zone == 1) return wide ? &BRL_FONT_64 : &BRL_FONT_48;
-    switch (f) {
-        case FIELD_SECTOR1:
-        case FIELD_SECTOR2:
-        case FIELD_SECTOR3:   return &BRL_FONT_24;
-        default:              return &BRL_FONT_20;
+    if (zone == 1) {
+        // Time fields: ~60% of full size for longer strings like "1:23.456"
+        if (field_is_time(f)) return wide ? &BRL_FONT_96 : &BRL_FONT_64;
+        // Numeric fields (speed, lap nr): full racing size
+        return wide ? &BRL_FONT_160 : &BRL_FONT_128;
     }
+    // Zone 2: sector times — large enough for quick glance
+    if (zone == 2) return &BRL_FONT_40;
+    // Zone 3: OBD data
+    return &BRL_FONT_32;
 }
 
 static lv_color_t field_color(uint8_t f) {
@@ -231,6 +238,28 @@ static void close_picker() {
     }
 }
 
+// Apply a field change directly to existing labels — no screen rebuild needed.
+// Avoids heap corruption from deleting objects with XIP-PSRAM font references.
+static void apply_field_change(int zone, int slot, uint8_t fid) {
+    lv_obj_t **val_arr   = (zone == 1) ? tw.z1_val   : (zone == 2) ? tw.z2_val   : tw.z3_val;
+    lv_obj_t **title_arr = (zone == 1) ? tw.z1_title : (zone == 2) ? tw.z2_title : tw.z3_title;
+
+    // Update title label
+    if (title_arr[slot]) {
+        lv_label_set_text(title_arr[slot], fid == FIELD_NONE ? "---" : field_title(fid));
+    }
+
+    // Update value label font and color (if label exists)
+    if (val_arr[slot]) {
+        bool wide = (zone == 1 && slot <= 1);
+        lv_obj_set_style_text_font(val_arr[slot], field_font(fid, zone, wide), LV_STATE_DEFAULT);
+        lv_obj_set_style_text_color(val_arr[slot], field_color(fid), LV_STATE_DEFAULT);
+        lv_label_set_text(val_arr[slot], "---");
+    }
+    // Note: FIELD_NONE / FIELD_MAP slots (no value label) are silently skipped.
+    // A full rebuild is needed if the new field is FIELD_MAP or was FIELD_MAP before.
+}
+
 // Called when user taps a field button in the picker
 static void cb_pick_field(lv_event_t *e) {
     // user_data on the button encodes the FieldId
@@ -240,14 +269,31 @@ static void cb_pick_field(lv_event_t *e) {
     int zone  = token >> 8;
     int slot  = token & 0xFF;
 
+    // Remember old field to detect map transitions
+    uint8_t old_fid = 0;
     switch (zone) {
-        case 1: g_dash_cfg.z1[slot] = fid; break;
-        case 2: g_dash_cfg.z2[slot] = fid; break;
-        case 3: g_dash_cfg.z3[slot] = fid; break;
+        case 1: old_fid = g_dash_cfg.z1[slot]; g_dash_cfg.z1[slot] = fid; break;
+        case 2: old_fid = g_dash_cfg.z2[slot]; g_dash_cfg.z2[slot] = fid; break;
+        case 3: old_fid = g_dash_cfg.z3[slot]; g_dash_cfg.z3[slot] = fid; break;
     }
     dash_config_save();
-    close_picker();
-    timing_screen_rebuild();
+
+    // Close picker first (deferred to avoid use-after-free on the clicked button)
+    lv_timer_create([](lv_timer_t *t) {
+        lv_timer_delete(t);
+        close_picker();
+    }, 1, nullptr);
+
+    // If the field change involves FIELD_MAP (entering or leaving), a full rebuild
+    // is unavoidable. Otherwise update labels in-place — no screen deletion.
+    if (fid == FIELD_MAP || old_fid == FIELD_MAP) {
+        lv_timer_create([](lv_timer_t *t) {
+            lv_timer_delete(t);
+            timing_screen_rebuild();
+        }, 5, nullptr);
+    } else {
+        apply_field_change(zone, slot, fid);
+    }
 }
 
 // Laptimer-side field list (Zone 1 & 2)
@@ -274,10 +320,14 @@ static void open_field_picker(int zone, int slot, uint8_t current_field) {
     lv_obj_set_style_bg_opa(s_picker_overlay, LV_OPA_80, LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(s_picker_overlay, 0, LV_STATE_DEFAULT);
     lv_obj_remove_flag(s_picker_overlay, LV_OBJ_FLAG_SCROLLABLE);
-    // Tap backdrop to dismiss
+    // Tap backdrop to dismiss — defer delete to avoid use-after-free
     lv_obj_add_flag(s_picker_overlay, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(s_picker_overlay, [](lv_event_t * /*e*/) { close_picker(); },
-                        LV_EVENT_CLICKED, nullptr);
+    lv_obj_add_event_cb(s_picker_overlay, [](lv_event_t * /*e*/) {
+        lv_timer_create([](lv_timer_t *t) {
+            lv_timer_delete(t);
+            close_picker();
+        }, 1, nullptr);
+    }, LV_EVENT_CLICKED, nullptr);
 
     // Card
     lv_obj_t *card = lv_obj_create(s_picker_overlay);
@@ -293,7 +343,7 @@ static void open_field_picker(int zone, int slot, uint8_t current_field) {
 
     // Title
     lv_obj_t *ttl = lv_label_create(card);
-    lv_label_set_text_fmt(ttl, "Datenfeld wählen (Zone %d · Slot %d)", zone, slot + 1);
+    lv_label_set_text_fmt(ttl, "%s (Zone %d · Slot %d)", tr(TR_PICK_FIELD), zone, slot + 1);
     brl_style_label(ttl, &BRL_FONT_16, BRL_CLR_TEXT);
     lv_obj_align(ttl, LV_ALIGN_TOP_LEFT, 0, 0);
 
@@ -322,7 +372,7 @@ static void open_field_picker(int zone, int slot, uint8_t current_field) {
         lv_obj_add_event_cb(btn, cb_pick_field, LV_EVENT_CLICKED, (void*)(intptr_t)token);
 
         lv_obj_t *lbl = lv_label_create(btn);
-        lv_label_set_text(lbl, fid == FIELD_NONE ? "AUS" : field_title(fid));
+        lv_label_set_text(lbl, fid == FIELD_NONE ? (i18n_get_language() == 0 ? "AUS" : "OFF") : field_title(fid));
         brl_style_label(lbl, &BRL_FONT_14, BRL_CLR_TEXT);
         lv_obj_center(lbl);
     }
@@ -375,7 +425,7 @@ static lv_obj_t *mk_slot_card(lv_obj_t *row, int zone, int slot_idx,
     // Title label
     lv_obj_t *t = lv_label_create(c);
     lv_label_set_text(t, fid == FIELD_NONE ? "---" : field_title(fid));
-    brl_style_label(t, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+    brl_style_label(t, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
     lv_obj_align(t, LV_ALIGN_TOP_LEFT, 0, 0);
     if (title_out) *title_out = t;
 
@@ -394,12 +444,17 @@ static lv_obj_t *mk_slot_card(lv_obj_t *row, int zone, int slot_idx,
         return nullptr;
     }
 
-    // Value label
+    // Value label — Zone 1: centered, Zone 2+3: bottom with small margin
     bool wide = (zone == 1 && slot_idx <= 1);
     lv_obj_t *v = lv_label_create(c);
     lv_label_set_text(v, "---");
     brl_style_label(v, field_font(fid, zone, wide), field_color(fid));
-    lv_obj_align(v, LV_ALIGN_BOTTOM_MID, 0, 0);
+    if (zone == 1)
+        lv_obj_align(v, LV_ALIGN_CENTER, 0, 8);
+    else if (zone == 2)
+        lv_obj_align(v, LV_ALIGN_BOTTOM_MID, 0, -4);
+    else
+        lv_obj_align(v, LV_ALIGN_BOTTOM_MID, 0, -2);
     return v;
 }
 
@@ -437,7 +492,7 @@ static void name_countdown_cb(lv_timer_t * /*t*/) {
     s_name_secs--;
     if (s_name_count_lbl) {
         char buf[32];
-        snprintf(buf, sizeof(buf), "Auto-Start in %ds", s_name_secs);
+        snprintf(buf, sizeof(buf), tr(TR_AUTO_START), s_name_secs);
         lv_label_set_text(s_name_count_lbl, buf);
     }
     if (s_name_secs <= 0) name_dlg_confirm();
@@ -483,7 +538,7 @@ static void timing_show_session_name_dialog() {
     lv_obj_remove_flag(title_row, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *title = lv_label_create(title_row);
-    lv_label_set_text(title, "Session benennen");
+    lv_label_set_text(title, tr(TR_SESSION_NAME));
     brl_style_label(title, &BRL_FONT_16, BRL_CLR_TEXT);
     lv_obj_align(title, LV_ALIGN_LEFT_MID, 0, 0);
 
@@ -541,7 +596,7 @@ static void timing_show_session_name_dialog() {
     lv_obj_set_style_border_width(btn_skip, 1, LV_STATE_DEFAULT);
     lv_obj_set_style_radius(btn_skip, 8, LV_STATE_DEFAULT);
     lv_obj_t *skip_lbl = lv_label_create(btn_skip);
-    lv_label_set_text(skip_lbl, "Standard verwenden");
+    lv_label_set_text(skip_lbl, tr(TR_USE_DEFAULT));
     brl_style_label(skip_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
     lv_obj_center(skip_lbl);
     lv_obj_add_event_cb(btn_skip, [](lv_event_t * /*e*/) {
@@ -595,28 +650,28 @@ lv_obj_t *timing_screen_build() {
     brl_style_btn(back_btn, BRL_CLR_SURFACE2);
     lv_obj_t *blbl = lv_label_create(back_btn);
     lv_label_set_text_fmt(blbl, LV_SYMBOL_LEFT " %s", tr(TR_MENU_BTN));
-    brl_style_label(blbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+    brl_style_label(blbl, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, cb_back, LV_EVENT_CLICKED, nullptr);
 
     // GPS satellites — left of center
     tw.sb_gps_lbl = lv_label_create(sb);
     lv_label_set_text(tw.sb_gps_lbl, LV_SYMBOL_GPS " 0");
-    brl_style_label(tw.sb_gps_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
-    lv_obj_set_pos(tw.sb_gps_lbl, 130, 13);
+    brl_style_label(tw.sb_gps_lbl, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
+    lv_obj_set_pos(tw.sb_gps_lbl, 130, 12);
 
     // Track name — centered
     tw.track_name_lbl = lv_label_create(sb);
     const TrackDef *td = track_get(g_state.active_track_idx);
     lv_label_set_text(tw.track_name_lbl, td ? td->name : tr(TR_NO_TRACK));
-    brl_style_label(tw.track_name_lbl, &BRL_FONT_14, BRL_CLR_TEXT);
+    brl_style_label(tw.track_name_lbl, &BRL_FONT_16, BRL_CLR_TEXT);
     lv_obj_align(tw.track_name_lbl, LV_ALIGN_CENTER, 0, 0);
 
     // OBD — right side
     tw.sb_obd_lbl = lv_label_create(sb);
     lv_label_set_text(tw.sb_obd_lbl, LV_SYMBOL_BLUETOOTH " OBD --");
-    brl_style_label(tw.sb_obd_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
-    lv_obj_set_pos(tw.sb_obd_lbl, 900, 13);
+    brl_style_label(tw.sb_obd_lbl, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
+    lv_obj_set_pos(tw.sb_obd_lbl, 900, 12);
 
     // ── Delta bar (80 px, fixed) ──────────────────────────────────────────
     const int DBAR_GAP = 6;
@@ -656,14 +711,16 @@ lv_obj_t *timing_screen_build() {
 
     tw.delta_bar_lbl = lv_label_create(dbar);
     lv_label_set_text(tw.delta_bar_lbl, "\xC2\xB1" "0.00 s");
-    brl_style_label(tw.delta_bar_lbl, &BRL_FONT_48, BRL_CLR_TEXT);
+    brl_style_label(tw.delta_bar_lbl, &BRL_FONT_64, BRL_CLR_TEXT);
     lv_obj_align(tw.delta_bar_lbl, LV_ALIGN_CENTER, 0, 0);
 
     // Tap delta bar → scale picker
     lv_obj_add_flag(dbar, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(dbar, [](lv_event_t * /*e*/) {
         if (!s_timing_screen) return;
-        if (s_scale_overlay) { lv_obj_delete(s_scale_overlay); s_scale_overlay = nullptr; return; }
+        if (s_scale_overlay) {
+            lv_obj_delete(s_scale_overlay); s_scale_overlay = nullptr; return;
+        }
 
         s_scale_overlay = lv_obj_create(s_timing_screen);
         lv_obj_set_size(s_scale_overlay, BRL_SCREEN_W, BRL_SCREEN_H);
@@ -674,7 +731,10 @@ lv_obj_t *timing_screen_build() {
         lv_obj_remove_flag(s_scale_overlay, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(s_scale_overlay, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(s_scale_overlay, [](lv_event_t * /*e*/) {
-            if (s_scale_overlay) { lv_obj_delete(s_scale_overlay); s_scale_overlay = nullptr; }
+            lv_timer_create([](lv_timer_t *t) {
+                lv_timer_delete(t);
+                if (s_scale_overlay) { lv_obj_delete(s_scale_overlay); s_scale_overlay = nullptr; }
+            }, 1, nullptr);
         }, LV_EVENT_CLICKED, nullptr);
 
         lv_obj_t *card = lv_obj_create(s_scale_overlay);
@@ -688,7 +748,7 @@ lv_obj_t *timing_screen_build() {
                             LV_EVENT_CLICKED, nullptr);
 
         lv_obj_t *ttl = lv_label_create(card);
-        lv_label_set_text(ttl, "Delta-Skala");
+        lv_label_set_text(ttl, tr(TR_DELTA_SCALE));
         brl_style_label(ttl, &BRL_FONT_16, BRL_CLR_TEXT);
         lv_obj_align(ttl, LV_ALIGN_TOP_MID, 0, 0);
 
@@ -705,7 +765,7 @@ lv_obj_t *timing_screen_build() {
         for (int i = 0; i < 5; i++) {
             lv_obj_t *btn = lv_button_create(row);
             lv_obj_set_size(btn, 76, 80);
-            bool active = (s_delta_scale_ms == scales[i]);
+            bool active = (g_dash_cfg.delta_scale_ms == (uint16_t)scales[i]);
             brl_style_btn(btn, active ? BRL_CLR_ACCENT : BRL_CLR_SURFACE2);
             lv_obj_t *lbl = lv_label_create(btn);
             lv_label_set_text(lbl, labels[i]);
@@ -713,18 +773,23 @@ lv_obj_t *timing_screen_build() {
             lv_obj_center(lbl);
             lv_obj_set_user_data(btn, (void*)(intptr_t)scales[i]);
             lv_obj_add_event_cb(btn, [](lv_event_t *e) {
-                s_delta_scale_ms = (int32_t)(intptr_t)lv_obj_get_user_data(
+                g_dash_cfg.delta_scale_ms = (uint16_t)(intptr_t)lv_obj_get_user_data(
                     (lv_obj_t*)lv_event_get_target(e));
-                if (s_scale_overlay) { lv_obj_delete(s_scale_overlay); s_scale_overlay = nullptr; }
+                dash_config_save();
+                // Defer delete to next tick — button is child of overlay
+                lv_timer_create([](lv_timer_t *t) {
+                    lv_timer_delete(t);
+                    if (s_scale_overlay) { lv_obj_delete(s_scale_overlay); s_scale_overlay = nullptr; }
+                }, 1, nullptr);
             }, LV_EVENT_CLICKED, nullptr);
         }
     }, LV_EVENT_CLICKED, nullptr);
 
     // ── Content zones ─────────────────────────────────────────────────────
-    // Fixed heights: Z1=140, Z2=85, Z3=60 → total = 285, available = 480-cy_start-8
+    // Z1 shorter for racing fonts, Z2+Z3 taller for better readability
     const int avail_h = BRL_SCREEN_H - cy_start - 8;
-    const int h3 = 72;   // taller so title label doesn't overlap value
-    const int h2 = 85;
+    const int h3 = 90;
+    const int h2 = 110;
     const int h1 = avail_h - h2 - h3 - 12;   // 12 = 2×6 px gaps
 
     int cy = cy_start;
@@ -802,7 +867,6 @@ void timing_screen_rebuild() {
 
     s_picker_overlay = nullptr;
     s_scale_overlay  = nullptr;
-    s_session_begun  = false;   // new track selected → new session
     tw = {};
     if (s_timing_screen) {
         lv_obj_delete(s_timing_screen);
@@ -810,5 +874,5 @@ void timing_screen_rebuild() {
     }
     s_timing_screen = timing_screen_build();
     lv_screen_load(s_timing_screen);
-    timing_show_session_name_dialog();
+    if (!s_session_begun) timing_show_session_name_dialog();
 }

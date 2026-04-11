@@ -35,8 +35,9 @@ inline bool field_is_obd(uint8_t f) { return f >= 32; }
 #define Z3_SLOTS  5   // Zone 3: OBD
 
 typedef struct {
-    uint8_t language;   // 0 = Deutsch, 1 = English
-    uint8_t units;      // 0 = metric (km/h), 1 = imperial (mph)
+    uint8_t language;        // 0 = Deutsch, 1 = English
+    uint8_t units;           // 0 = metric (km/h), 1 = imperial (mph)
+    uint16_t delta_scale_ms; // Delta bar scale in ms (2000/3000/5000/10000/20000)
     uint8_t z1[Z1_SLOTS];
     uint8_t z2[Z2_SLOTS];
     uint8_t z3[Z3_SLOTS];

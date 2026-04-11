@@ -272,6 +272,26 @@ int session_store_list_summaries(SessionSummary *out, int max_count)
 }
 
 // ---------------------------------------------------------------------------
+// session_store_delete_session
+// ---------------------------------------------------------------------------
+bool session_store_delete_session(const char *session_id)
+{
+    if (!g_state.sd_available || !session_id || strlen(session_id) == 0) return false;
+
+    char fpath[64];
+    snprintf(fpath, sizeof(fpath), "/sessions/%s.json", session_id);
+
+    if (!sd_file_exists(fpath)) {
+        log_e("Session file not found: %s", fpath);
+        return false;
+    }
+
+    bool ok = sd_delete_file(fpath);
+    if (ok) log_i("Session deleted: %s", fpath);
+    return ok;
+}
+
+// ---------------------------------------------------------------------------
 // session_store_list
 // ---------------------------------------------------------------------------
 int session_store_list(char ids[][20], int max_count)

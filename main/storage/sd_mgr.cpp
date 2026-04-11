@@ -15,6 +15,7 @@
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 #include "driver/sdmmc_host.h"
+#include "sd_pwr_ctrl_by_on_chip_ldo.h"
 
 #include <sys/stat.h>
 #include <dirent.h>
@@ -64,15 +65,33 @@ bool sd_mgr_init(void)
     };
 
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    host.slot = SDMMC_HOST_SLOT_0;              // Waveshare board TF slot is on Slot 0
     host.max_freq_khz = SDMMC_FREQ_HIGHSPEED;
 
-    sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
-    slot.width = 4;   // Try 4-bit mode first (SDIO 3.0 TF slot)
+    // Power the SD card via on-chip LDO (channel 4)
+    sd_pwr_ctrl_ldo_config_t ldo_config = {
+        .ldo_chan_id = 4,
+    };
+    sd_pwr_ctrl_handle_t pwr_ctrl_handle = NULL;
+    esp_err_t ret = sd_pwr_ctrl_new_on_chip_ldo(&ldo_config, &pwr_ctrl_handle);
+    if (ret != ESP_OK) {
+        log_e("SD LDO power control init failed: %s", esp_err_to_name(ret));
+        return false;
+    }
+    host.pwr_ctrl_handle = pwr_ctrl_handle;
+
+    // Slot 0 uses IO MUX — no pin assignment needed
+    sdmmc_slot_config_t slot = {
+        .cd = SDMMC_SLOT_NO_CD,
+        .wp = SDMMC_SLOT_NO_WP,
+        .width = 4,
+        .flags = 0,
+    };
 
     log_i("Mounting SD card at " SD_MOUNT_POINT " ...");
 
-    esp_err_t ret = esp_vfs_fat_sdmmc_mount(SD_MOUNT_POINT, &host, &slot,
-                                             &mount_config, &s_card);
+    ret = esp_vfs_fat_sdmmc_mount(SD_MOUNT_POINT, &host, &slot,
+                                   &mount_config, &s_card);
 
     if (ret == ESP_ERR_NOT_FOUND || ret == ESP_ERR_TIMEOUT) {
         // Fall back to 1-bit mode
@@ -100,6 +119,7 @@ bool sd_mgr_init(void)
     // Create default directories (ignore errors if they already exist)
     sd_make_dir("/sessions");
     sd_make_dir("/tracks");
+    sd_make_dir("/cars");
 
     return true;
 }

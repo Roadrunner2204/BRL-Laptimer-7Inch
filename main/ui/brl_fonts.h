@@ -10,14 +10,18 @@
 
 #include <lvgl.h>
 
-LV_FONT_DECLARE(brl_font_montserrat_14)
-LV_FONT_DECLARE(brl_font_montserrat_16)
-LV_FONT_DECLARE(brl_font_montserrat_20)
-LV_FONT_DECLARE(brl_font_montserrat_24)
-LV_FONT_DECLARE(brl_font_montserrat_32)
-LV_FONT_DECLARE(brl_font_montserrat_40)
-LV_FONT_DECLARE(brl_font_montserrat_48)
-LV_FONT_DECLARE(brl_font_montserrat_64)
+// Non-const so fallback pointer can be patched at runtime (lv_code.cpp)
+extern lv_font_t brl_font_montserrat_14;
+extern lv_font_t brl_font_montserrat_16;
+extern lv_font_t brl_font_montserrat_20;
+extern lv_font_t brl_font_montserrat_24;
+extern lv_font_t brl_font_montserrat_32;
+extern lv_font_t brl_font_montserrat_40;
+extern lv_font_t brl_font_montserrat_48;
+extern lv_font_t brl_font_montserrat_64;
+extern lv_font_t brl_font_montserrat_96;
+extern lv_font_t brl_font_montserrat_128;
+extern lv_font_t brl_font_montserrat_160;
 
 #define BRL_FONT_14  brl_font_montserrat_14
 #define BRL_FONT_16  brl_font_montserrat_16
@@ -27,3 +31,6 @@ LV_FONT_DECLARE(brl_font_montserrat_64)
 #define BRL_FONT_40  brl_font_montserrat_40
 #define BRL_FONT_48  brl_font_montserrat_48
 #define BRL_FONT_64  brl_font_montserrat_64
+#define BRL_FONT_96  brl_font_montserrat_96
+#define BRL_FONT_128 brl_font_montserrat_128
+#define BRL_FONT_160 brl_font_montserrat_160

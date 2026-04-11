@@ -7,8 +7,8 @@ file(GLOB_RECURSE SRCS
 idf_component_register(
     SRCS ${SRCS}
     INCLUDE_DIRS "." "ui" "data" "gps" "timing" "obd" "wifi" "storage" "assets"
-    PRIV_REQUIRES nvs_flash driver esp_http_server esp_timer
-                  esp_event fatfs vfs json bt
+    PRIV_REQUIRES nvs_flash driver esp_http_server esp_http_client esp_timer
+                  esp_event fatfs vfs json bt mbedtls esp-tls
 )
 
 # LVGL configuration + suppress warnings-as-errors for our code

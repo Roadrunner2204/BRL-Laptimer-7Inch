@@ -2660,11 +2660,7 @@ static lv_font_fmt_txt_dsc_t font_dsc = {
  *----------------*/
 
 /*Initialize a public general font descriptor*/
-#if LVGL_VERSION_MAJOR >= 8
-const lv_font_t brl_font_montserrat_24 = {
-#else
 lv_font_t brl_font_montserrat_24 = {
-#endif
     .get_glyph_dsc = lv_font_get_glyph_dsc_fmt_txt,    /*Function pointer to get glyph's data*/
     .get_glyph_bitmap = lv_font_get_bitmap_fmt_txt,    /*Function pointer to get glyph's bitmap*/
     .line_height = 29,          /*The maximum line height required by the font*/

@@ -115,6 +115,32 @@ enum TrKey : uint8_t {
     TR_HIST_NO_SAVED,
     TR_HIST_BEST,
     TR_HIST_LAPS,
+    // History screen -- filter & delete
+    TR_HIST_ALL_TRACKS,
+    TR_HIST_DELETE_CONFIRM,
+    // Car profile manager
+    TR_CAR_PROFILES,
+    TR_CAR_PROFILES_SUB,
+    TR_CAR_LOADING,
+    TR_CAR_DOWNLOAD,
+    TR_CAR_ACTIVE,
+    TR_CAR_ON_DEVICE,
+    TR_CAR_ACTIVATE,
+    TR_CAR_NO_WIFI,
+    TR_CAR_DOWNLOAD_OK,
+    TR_CAR_DOWNLOAD_FAIL,
+    TR_CAR_ALL_MAKES,
+    // WiFi scan
+    TR_WIFI_SCAN,
+    TR_WIFI_SCANNING,
+    TR_WIFI_NO_NETWORKS,
+    TR_WIFI_MANUAL,
+    // Timing screen -- field picker & dialogs
+    TR_PICK_FIELD,
+    TR_SESSION_NAME,
+    TR_AUTO_START,
+    TR_USE_DEFAULT,
+    TR_DELTA_SCALE,
     // OBD -- intake air temp
     TR_INTAKE,
     TR_COUNT

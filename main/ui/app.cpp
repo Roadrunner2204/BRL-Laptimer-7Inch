@@ -26,6 +26,7 @@ static const char *TAG = "app";
 #include "../wifi/wifi_mgr.h"
 #include "../storage/session_store.h"
 #include "../storage/sd_mgr.h"
+#include "../data/car_profile.h"
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -325,7 +326,7 @@ static void build_menu_screen(bool is_rebuild = false) {
 
     lv_obj_t *brand = lv_label_create(strip);
     lv_label_set_text(brand, "BAVARIAN RACELABS  —  BRL LAPTIMER");
-    brl_style_label(brand, &BRL_FONT_16, BRL_CLR_ACCENT);
+    brl_style_label(brand, &BRL_FONT_20, BRL_CLR_ACCENT);
     lv_obj_align(brand, LV_ALIGN_CENTER, 0, 0);
 
     // 2×2 tile grid (y=96, available h=504)
@@ -350,19 +351,19 @@ static void build_menu_screen(bool is_rebuild = false) {
 
         lv_obj_t *ico = lv_label_create(tile);
         lv_label_set_text(ico, tiles[i].icon);
-        lv_obj_set_style_text_font(ico, &BRL_FONT_48, LV_STATE_DEFAULT);
+        lv_obj_set_style_text_font(ico, &BRL_FONT_64, LV_STATE_DEFAULT);
         lv_obj_set_style_text_color(ico, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
-        lv_obj_align(ico, LV_ALIGN_CENTER, 0, -36);
+        lv_obj_align(ico, LV_ALIGN_CENTER, 0, -40);
 
         lv_obj_t *lbl = lv_label_create(tile);
         lv_label_set_text(lbl, tr(tiles[i].label_key));
-        brl_style_label(lbl, &BRL_FONT_20, BRL_CLR_TEXT);
+        brl_style_label(lbl, &BRL_FONT_24, BRL_CLR_TEXT);
         lv_obj_align(lbl, LV_ALIGN_BOTTOM_MID, 0, -36);
 
         lv_obj_t *sub = lv_label_create(tile);
         lv_label_set_text(sub, tr(tiles[i].sub_key));
-        brl_style_label(sub, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
-        lv_obj_align(sub, LV_ALIGN_BOTTOM_MID, 0, -14);
+        brl_style_label(sub, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
+        lv_obj_align(sub, LV_ALIGN_BOTTOM_MID, 0, -12);
     }
 
     if (!is_rebuild) {
@@ -908,7 +909,7 @@ static void open_track_creator(lv_obj_t *scroll, int edit_idx) {
     s_tc_kb = lv_keyboard_create(lv_screen_active());
     lv_keyboard_set_map(s_tc_kb, LV_KEYBOARD_MODE_TEXT_LOWER, s_qwertz_lc, s_qwertz_ctrl);
     lv_keyboard_set_map(s_tc_kb, LV_KEYBOARD_MODE_TEXT_UPPER, s_qwertz_uc, s_qwertz_ctrl);
-    lv_obj_set_size(s_tc_kb, BRL_SCREEN_W, 200);
+    lv_obj_set_size(s_tc_kb, BRL_SCREEN_W, 266);
     lv_obj_align(s_tc_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_set_style_bg_color(s_tc_kb, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
     lv_obj_add_event_cb(s_tc_kb, [](lv_event_t *ev){
@@ -919,7 +920,7 @@ static void open_track_creator(lv_obj_t *scroll, int edit_idx) {
     // Numeric keyboard — bottom-right, for coordinate fields
     s_tc_kb_num = lv_keyboard_create(lv_screen_active());
     lv_keyboard_set_mode(s_tc_kb_num, LV_KEYBOARD_MODE_NUMBER);
-    lv_obj_set_size(s_tc_kb_num, 260, 300);
+    lv_obj_set_size(s_tc_kb_num, 340, 400);
     lv_obj_align(s_tc_kb_num, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
     lv_obj_set_style_bg_color(s_tc_kb_num, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
     lv_obj_add_event_cb(s_tc_kb_num, [](lv_event_t *ev){
@@ -983,6 +984,9 @@ static void hist_section_header(lv_obj_t *parent, const char *text) {
     lv_obj_set_style_pad_top(hdr, 6, LV_STATE_DEFAULT);
     lv_obj_set_style_pad_bottom(hdr, 2, LV_STATE_DEFAULT);
 }
+
+// Track filter state for history screen
+static char s_hist_filter_track[48] = {};
 
 static void open_history_screen() {
     lv_obj_t *scr = make_sub_screen(tr(TR_HISTORY_TITLE), cb_back_to_menu);
@@ -1048,10 +1052,77 @@ static void open_history_screen() {
         static SessionSummary s_summaries[30];
         int n = session_store_list_summaries(s_summaries, 30);
 
-        // Filter out current session
+        // ── Track filter dropdown ────────────────────────────────────────
+        // Collect unique track names from summaries
+        static char track_names[30][48];
+        int n_tracks = 0;
+        for (int i = 0; i < n; i++) {
+            if (strcmp(s_summaries[i].id, sess.session_id) == 0) continue;
+            if (strlen(s_summaries[i].track) == 0) continue;
+            bool found = false;
+            for (int t = 0; t < n_tracks; t++) {
+                if (strcmp(track_names[t], s_summaries[i].track) == 0) { found = true; break; }
+            }
+            if (!found && n_tracks < 30) {
+                strncpy(track_names[n_tracks], s_summaries[i].track, 47);
+                track_names[n_tracks][47] = '\0';
+                n_tracks++;
+            }
+        }
+
+        if (n_tracks > 1) {
+            static char dd_opts[512];
+            dd_opts[0] = '\0';
+            strncpy(dd_opts, tr(TR_HIST_ALL_TRACKS), sizeof(dd_opts) - 1);
+            int active_opt = 0;
+            for (int t = 0; t < n_tracks; t++) {
+                strncat(dd_opts, "\n", sizeof(dd_opts) - strlen(dd_opts) - 1);
+                strncat(dd_opts, track_names[t], sizeof(dd_opts) - strlen(dd_opts) - 1);
+                if (s_hist_filter_track[0] != '\0' && strcmp(s_hist_filter_track, track_names[t]) == 0)
+                    active_opt = t + 1;
+            }
+
+            lv_obj_t *dd = lv_dropdown_create(content);
+            lv_dropdown_set_options(dd, dd_opts);
+            lv_dropdown_set_selected(dd, (uint32_t)active_opt);
+            lv_obj_set_width(dd, 280);
+            lv_obj_set_height(dd, 40);
+            lv_obj_set_style_bg_color(dd, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_opa(dd, LV_OPA_COVER, LV_STATE_DEFAULT);
+            lv_obj_set_style_text_color(dd, BRL_CLR_TEXT, LV_STATE_DEFAULT);
+            lv_obj_set_style_text_font(dd, &BRL_FONT_16, LV_STATE_DEFAULT);
+            lv_obj_set_style_border_width(dd, 0, LV_STATE_DEFAULT);
+            lv_obj_set_style_shadow_width(dd, 0, LV_STATE_DEFAULT);
+            lv_obj_set_style_pad_hor(dd, 10, LV_STATE_DEFAULT);
+            lv_obj_t *ddlist = lv_dropdown_get_list(dd);
+            if (ddlist) {
+                lv_obj_set_style_bg_color(ddlist, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
+                lv_obj_set_style_text_color(ddlist, BRL_CLR_TEXT, LV_STATE_DEFAULT);
+                lv_obj_set_style_text_font(ddlist, &BRL_FONT_16, LV_STATE_DEFAULT);
+                lv_obj_set_style_border_width(ddlist, 0, LV_STATE_DEFAULT);
+                lv_obj_set_style_shadow_width(ddlist, 0, LV_STATE_DEFAULT);
+            }
+            lv_obj_add_event_cb(dd, [](lv_event_t *e) {
+                lv_obj_t *obj = (lv_obj_t*)lv_event_get_target(e);
+                uint32_t sel = lv_dropdown_get_selected(obj);
+                if (sel == 0) {
+                    s_hist_filter_track[0] = '\0';
+                } else {
+                    lv_dropdown_get_selected_str(obj, s_hist_filter_track,
+                                                 sizeof(s_hist_filter_track));
+                }
+                open_history_screen();
+            }, LV_EVENT_VALUE_CHANGED, nullptr);
+        }
+
+        // ── Session rows ─────────────────────────────────────────────────
         int shown = 0;
         for (int i = 0; i < n; i++) {
             if (strcmp(s_summaries[i].id, sess.session_id) == 0) continue;
+
+            // Apply track filter
+            if (s_hist_filter_track[0] != '\0' &&
+                strcmp(s_summaries[i].track, s_hist_filter_track) != 0) continue;
 
             lv_obj_t *row = lv_obj_create(content);
             lv_obj_set_width(row, LV_PCT(100)); lv_obj_set_height(row, 60);
@@ -1071,7 +1142,7 @@ static void open_history_screen() {
             brl_style_label(id_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
             lv_obj_align(id_lbl, LV_ALIGN_BOTTOM_LEFT, 0, 0);
 
-            // Right side: N laps + best lap
+            // Right side: N laps + best lap + delete button
             char info[48] = {};
             if (s_summaries[i].best_ms > 0) {
                 char bt[16]; fmt_laptime(bt, sizeof(bt), s_summaries[i].best_ms);
@@ -1085,7 +1156,27 @@ static void open_history_screen() {
             lv_obj_t *info_lbl = lv_label_create(row);
             lv_label_set_text(info_lbl, info);
             brl_style_label(info_lbl, &BRL_FONT_14, BRL_CLR_ACCENT);
-            lv_obj_align(info_lbl, LV_ALIGN_RIGHT_MID, 0, 0);
+            lv_obj_align(info_lbl, LV_ALIGN_RIGHT_MID, -60, 0);
+
+            // Delete button
+            lv_obj_t *del_btn = lv_button_create(row);
+            lv_obj_set_size(del_btn, 48, 40);
+            lv_obj_align(del_btn, LV_ALIGN_RIGHT_MID, 0, 0);
+            lv_obj_set_style_bg_color(del_btn, lv_color_hex(0x5A1A1A), LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_color(del_btn, BRL_CLR_DANGER, LV_STATE_PRESSED);
+            lv_obj_set_style_border_width(del_btn, 0, LV_STATE_DEFAULT);
+            lv_obj_set_style_radius(del_btn, 6, LV_STATE_DEFAULT);
+            lv_obj_set_style_shadow_width(del_btn, 0, LV_STATE_DEFAULT);
+            lv_obj_t *del_lbl = lv_label_create(del_btn);
+            lv_label_set_text(del_lbl, LV_SYMBOL_TRASH);
+            brl_style_label(del_lbl, &BRL_FONT_16, lv_color_hex(0xFF6666));
+            lv_obj_center(del_lbl);
+            lv_obj_set_user_data(del_btn, (void*)(intptr_t)i);
+            lv_obj_add_event_cb(del_btn, [](lv_event_t *e) {
+                int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e));
+                session_store_delete_session(s_summaries[idx].id);
+                open_history_screen();
+            }, LV_EVENT_CLICKED, nullptr);
 
             shown++;
         }
@@ -1114,23 +1205,23 @@ static lv_obj_t *make_setting_row(lv_obj_t *parent, int /*y*/, int h,
 
     lv_obj_t *ico = lv_label_create(row);
     lv_label_set_text(ico, icon);
-    brl_style_label(ico, &BRL_FONT_20, BRL_CLR_ACCENT);
+    brl_style_label(ico, &BRL_FONT_24, BRL_CLR_ACCENT);
     lv_obj_align(ico, LV_ALIGN_LEFT_MID, 0, subtitle ? -8 : 0);
 
     lv_obj_t *tit = lv_label_create(row);
     lv_label_set_text(tit, title);
-    brl_style_label(tit, &BRL_FONT_16, BRL_CLR_TEXT);
-    lv_obj_align(tit, LV_ALIGN_LEFT_MID, 32, subtitle ? -8 : 0);
+    brl_style_label(tit, &BRL_FONT_20, BRL_CLR_TEXT);
+    lv_obj_align(tit, LV_ALIGN_LEFT_MID, 36, subtitle ? -8 : 0);
 
     if (subtitle) {
         lv_obj_t *sub = lv_label_create(row);
         lv_label_set_text(sub, subtitle);
-        brl_style_label(sub, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
-        lv_obj_align(sub, LV_ALIGN_LEFT_MID, 32, 10);
+        brl_style_label(sub, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
+        lv_obj_align(sub, LV_ALIGN_LEFT_MID, 36, 12);
     }
 
     lv_obj_t *right = lv_obj_create(row);
-    lv_obj_set_size(right, 340, h - 16);
+    lv_obj_set_size(right, 420, h - 16);
     lv_obj_align(right, LV_ALIGN_RIGHT_MID, 0, 0);
     brl_style_transparent(right);
     lv_obj_remove_flag(right, LV_OBJ_FLAG_SCROLLABLE);
@@ -1140,14 +1231,14 @@ static lv_obj_t *make_setting_row(lv_obj_t *parent, int /*y*/, int h,
 static lv_obj_t *make_setting_btn(lv_obj_t *parent, const char *text,
                                    lv_color_t color, lv_align_t align, int x_ofs = 0) {
     lv_obj_t *btn = lv_button_create(parent);
-    lv_obj_set_size(btn, 120, 36);
+    lv_obj_set_size(btn, 140, 40);
     lv_obj_align(btn, align, x_ofs, 0);
     lv_obj_set_style_bg_color(btn, color, LV_STATE_DEFAULT);
     lv_obj_set_style_radius(btn, 6, LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(btn, 0, LV_STATE_DEFAULT);
     lv_obj_t *lbl = lv_label_create(btn);
     lv_label_set_text(lbl, text);
-    brl_style_label(lbl, &BRL_FONT_14, BRL_CLR_TEXT);
+    brl_style_label(lbl, &BRL_FONT_16, BRL_CLR_TEXT);
     lv_obj_center(lbl);
     return btn;
 }
@@ -1257,8 +1348,8 @@ static void open_wifi_ap_dialog() {
         return b;
     };
     char save_lbl[32], cancel_lbl[32];
-    snprintf(save_lbl,   sizeof(save_lbl),   LV_SYMBOL_OK    "  Speichern");
-    snprintf(cancel_lbl, sizeof(cancel_lbl), LV_SYMBOL_CLOSE "  Abbrechen");
+    snprintf(save_lbl,   sizeof(save_lbl),   LV_SYMBOL_OK    "  %s", tr(TR_SAVE_BTN));
+    snprintf(cancel_lbl, sizeof(cancel_lbl), LV_SYMBOL_CLOSE "  %s", tr(TR_CANCEL_BTN));
     lv_obj_t *bsave   = mk_btn(save_lbl,   BRL_CLR_ACCENT,    0);
     lv_obj_t *bcancel = mk_btn(cancel_lbl, BRL_CLR_SURFACE2, -240);
     lv_obj_add_event_cb(bsave,   cb_ap_dialog_save,   LV_EVENT_CLICKED, nullptr);
@@ -1268,7 +1359,7 @@ static void open_wifi_ap_dialog() {
     s_ap_kb = lv_keyboard_create(s_ap_dialog);
     lv_keyboard_set_map(s_ap_kb, LV_KEYBOARD_MODE_TEXT_LOWER, s_qwertz_lc, s_qwertz_ctrl);
     lv_keyboard_set_map(s_ap_kb, LV_KEYBOARD_MODE_TEXT_UPPER, s_qwertz_uc, s_qwertz_ctrl);
-    lv_obj_set_size(s_ap_kb, BRL_SCREEN_W, 170);
+    lv_obj_set_size(s_ap_kb, BRL_SCREEN_W, 266);
     lv_obj_align(s_ap_kb, LV_ALIGN_BOTTOM_LEFT, 0, 0);
     lv_obj_set_style_bg_color(s_ap_kb, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
     lv_obj_add_event_cb(s_ap_kb, [](lv_event_t *e){
@@ -1297,19 +1388,164 @@ static void cb_dlg_ta_focus(lv_event_t *e) {
         lv_obj_remove_flag(s_dlg_kb, LV_OBJ_FLAG_HIDDEN);
     }
 }
+// Scan results storage (shared between scan and dialog)
+static WifiScanResult s_scan_results[20];
+static int s_scan_count = 0;
+
+// Show the password-entry dialog for a specific SSID
+static void open_wifi_pass_dialog(const char *ssid);
+
 static void open_wifi_sta_dialog() {
     if (s_wifi_dialog) return;
     lv_obj_t *scr = lv_screen_active();
     s_wifi_dialog = lv_obj_create(scr);
-    lv_obj_set_size(s_wifi_dialog, BRL_SCREEN_W, BRL_SCREEN_H); lv_obj_set_pos(s_wifi_dialog, 0, 0);
+    lv_obj_set_size(s_wifi_dialog, BRL_SCREEN_W, BRL_SCREEN_H);
+    lv_obj_set_pos(s_wifi_dialog, 0, 0);
+    lv_obj_set_style_bg_color(s_wifi_dialog, lv_color_hex(0x000000), LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(s_wifi_dialog, LV_OPA_80, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(s_wifi_dialog, 0, LV_STATE_DEFAULT);
+    lv_obj_remove_flag(s_wifi_dialog, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Card — scan results list
+    lv_obj_t *card = lv_obj_create(s_wifi_dialog);
+    lv_obj_set_size(card, 560, 440);
+    lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
+    brl_style_card(card);
+    lv_obj_set_style_pad_all(card, 16, LV_STATE_DEFAULT);
+    lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Title
+    lv_obj_t *ttl = lv_label_create(card);
+    lv_label_set_text_fmt(ttl, LV_SYMBOL_WIFI "  %s", tr(TR_WIFI_DLG_TITLE));
+    brl_style_label(ttl, &BRL_FONT_20, BRL_CLR_TEXT);
+    lv_obj_align(ttl, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    // Scrollable list area
+    lv_obj_t *list = lv_obj_create(card);
+    lv_obj_set_size(list, 528, 310);
+    lv_obj_align(list, LV_ALIGN_TOP_LEFT, 0, 34);
+    brl_style_transparent(list);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(list, 4, LV_STATE_DEFAULT);
+
+    // Scan for networks
+    lv_obj_t *scanning_lbl = lv_label_create(list);
+    lv_label_set_text(scanning_lbl, tr(TR_WIFI_SCANNING));
+    brl_style_label(scanning_lbl, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
+    lv_refr_now(nullptr); // force display update before blocking scan
+
+    s_scan_count = wifi_scan_start();
+    if (s_scan_count > 0) {
+        s_scan_count = wifi_scan_get_results(s_scan_results, 20);
+    }
+    lv_obj_delete(scanning_lbl);
+
+    if (s_scan_count == 0) {
+        lv_obj_t *no_net = lv_label_create(list);
+        lv_label_set_text(no_net, tr(TR_WIFI_NO_NETWORKS));
+        brl_style_label(no_net, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
+    } else {
+        for (int i = 0; i < s_scan_count; i++) {
+            lv_obj_t *row = lv_obj_create(list);
+            lv_obj_set_width(row, LV_PCT(100));
+            lv_obj_set_height(row, 48);
+            lv_obj_set_style_bg_color(row, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_color(row, BRL_CLR_ACCENT_DIM, LV_STATE_PRESSED);
+            lv_obj_set_style_border_width(row, 0, LV_STATE_DEFAULT);
+            lv_obj_set_style_radius(row, 6, LV_STATE_DEFAULT);
+            lv_obj_set_style_pad_hor(row, 10, LV_STATE_DEFAULT);
+            lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+
+            // SSID name
+            lv_obj_t *name = lv_label_create(row);
+            lv_label_set_text(name, s_scan_results[i].ssid);
+            brl_style_label(name, &BRL_FONT_16, BRL_CLR_TEXT);
+            lv_obj_align(name, LV_ALIGN_LEFT_MID, 0, 0);
+
+            // RSSI + lock icon
+            char info[24];
+            snprintf(info, sizeof(info), "%s %d dBm",
+                     s_scan_results[i].authmode ? LV_SYMBOL_SETTINGS : "",
+                     (int)s_scan_results[i].rssi);
+            lv_obj_t *rssi_lbl = lv_label_create(row);
+            lv_label_set_text(rssi_lbl, info);
+            brl_style_label(rssi_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+            lv_obj_align(rssi_lbl, LV_ALIGN_RIGHT_MID, 0, 0);
+
+            // Click → password dialog
+            lv_obj_set_user_data(row, (void*)(intptr_t)i);
+            lv_obj_add_event_cb(row, [](lv_event_t *e) {
+                int idx = (int)(intptr_t)lv_obj_get_user_data(
+                    (lv_obj_t*)lv_event_get_target(e));
+                if (idx >= 0 && idx < s_scan_count) {
+                    // Close scan dialog first
+                    if (s_wifi_dialog) {
+                        lv_obj_delete(s_wifi_dialog);
+                        s_wifi_dialog = nullptr;
+                    }
+                    open_wifi_pass_dialog(s_scan_results[idx].ssid);
+                }
+            }, LV_EVENT_CLICKED, nullptr);
+        }
+    }
+
+    // Bottom buttons: Manual + Cancel
+    lv_obj_t *btn_row = lv_obj_create(card);
+    lv_obj_set_size(btn_row, 528, 44);
+    lv_obj_align(btn_row, LV_ALIGN_BOTTOM_MID, 0, 0);
+    brl_style_transparent(btn_row);
+    lv_obj_remove_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Manual entry button
+    lv_obj_t *bmanual = lv_button_create(btn_row);
+    lv_obj_set_size(bmanual, 200, 40);
+    lv_obj_align(bmanual, LV_ALIGN_LEFT_MID, 0, 0);
+    brl_style_btn(bmanual, BRL_CLR_SURFACE2);
+    lv_obj_t *ml = lv_label_create(bmanual);
+    lv_label_set_text_fmt(ml, LV_SYMBOL_EDIT "  %s", tr(TR_WIFI_MANUAL));
+    brl_style_label(ml, &BRL_FONT_14, BRL_CLR_TEXT);
+    lv_obj_center(ml);
+    lv_obj_add_event_cb(bmanual, [](lv_event_t* /*e*/) {
+        if (s_wifi_dialog) { lv_obj_delete(s_wifi_dialog); s_wifi_dialog = nullptr; }
+        open_wifi_pass_dialog("");
+    }, LV_EVENT_CLICKED, nullptr);
+
+    // Cancel button
+    lv_obj_t *bcancel = lv_button_create(btn_row);
+    lv_obj_set_size(bcancel, 140, 40);
+    lv_obj_align(bcancel, LV_ALIGN_RIGHT_MID, 0, 0);
+    brl_style_btn(bcancel, BRL_CLR_SURFACE2);
+    lv_obj_t *cl = lv_label_create(bcancel);
+    char cancel_buf[48];
+    snprintf(cancel_buf, sizeof(cancel_buf), LV_SYMBOL_CLOSE "  %s", tr(TR_CANCEL_DLG));
+    lv_label_set_text(cl, cancel_buf);
+    brl_style_label(cl, &BRL_FONT_14, BRL_CLR_TEXT);
+    lv_obj_center(cl);
+    lv_obj_add_event_cb(bcancel, cb_wifi_dialog_cancel, LV_EVENT_CLICKED, nullptr);
+}
+
+// Password entry dialog (after selecting SSID from scan or manual)
+static void open_wifi_pass_dialog(const char *ssid) {
+    if (s_wifi_dialog) return;
+    lv_obj_t *scr = lv_screen_active();
+
+    bool manual = (ssid == nullptr || strlen(ssid) == 0);
+
+    s_wifi_dialog = lv_obj_create(scr);
+    lv_obj_set_size(s_wifi_dialog, BRL_SCREEN_W, BRL_SCREEN_H);
+    lv_obj_set_pos(s_wifi_dialog, 0, 0);
     lv_obj_set_style_bg_color(s_wifi_dialog, lv_color_hex(0x000000), LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(s_wifi_dialog, LV_OPA_80, LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(s_wifi_dialog, 0, LV_STATE_DEFAULT);
     lv_obj_remove_flag(s_wifi_dialog, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *card = lv_obj_create(s_wifi_dialog);
-    lv_obj_set_size(card, 500, 300); lv_obj_center(card);
-    brl_style_card(card); lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_size(card, 500, manual ? 300 : 240);
+    lv_obj_align(card, LV_ALIGN_TOP_MID, 0, 40);
+    brl_style_card(card);
+    lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_pad_all(card, 16, LV_STATE_DEFAULT);
 
     lv_obj_t *ttl = lv_label_create(card);
@@ -1317,54 +1553,366 @@ static void open_wifi_sta_dialog() {
     brl_style_label(ttl, &BRL_FONT_20, BRL_CLR_TEXT);
     lv_obj_align(ttl, LV_ALIGN_TOP_LEFT, 0, 0);
 
-    auto mk_ta = [&](const char *hint, bool pw, int y) -> lv_obj_t* {
-        lv_obj_t *ta = lv_textarea_create(card);
-        lv_obj_set_size(ta, 468, 40); lv_obj_align(ta, LV_ALIGN_TOP_LEFT, 0, y);
-        lv_textarea_set_one_line(ta, true);
-        lv_textarea_set_placeholder_text(ta, hint);
-        if (pw) lv_textarea_set_password_mode(ta, true);
-        lv_obj_set_style_bg_color(ta, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
-        lv_obj_set_style_text_color(ta, BRL_CLR_TEXT, LV_STATE_DEFAULT);
-        lv_obj_add_event_cb(ta, cb_dlg_ta_focus, LV_EVENT_FOCUSED, nullptr);
-        return ta;
-    };
-    lv_obj_t *l1 = lv_label_create(card);
-    lv_label_set_text(l1, tr(TR_SSID_LABEL));
-    brl_style_label(l1, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
-    lv_obj_align(l1, LV_ALIGN_TOP_LEFT, 0, 36);
-    s_ta_ssid = mk_ta("MeinHeimnetz", false, 56);
+    int y = 36;
 
+    // SSID field — editable if manual, pre-filled if from scan
+    if (manual) {
+        lv_obj_t *l1 = lv_label_create(card);
+        lv_label_set_text(l1, tr(TR_SSID_LABEL));
+        brl_style_label(l1, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
+        lv_obj_align(l1, LV_ALIGN_TOP_LEFT, 0, y);
+        y += 24;
+        s_ta_ssid = lv_textarea_create(card);
+        lv_obj_set_size(s_ta_ssid, 468, 40);
+        lv_obj_align(s_ta_ssid, LV_ALIGN_TOP_LEFT, 0, y);
+        lv_textarea_set_one_line(s_ta_ssid, true);
+        lv_textarea_set_placeholder_text(s_ta_ssid, "SSID");
+        lv_obj_set_style_bg_color(s_ta_ssid, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
+        lv_obj_set_style_text_color(s_ta_ssid, BRL_CLR_TEXT, LV_STATE_DEFAULT);
+        lv_obj_add_event_cb(s_ta_ssid, cb_dlg_ta_focus, LV_EVENT_FOCUSED, nullptr);
+        y += 50;
+    } else {
+        // Show selected SSID as label
+        lv_obj_t *ssid_lbl = lv_label_create(card);
+        lv_label_set_text_fmt(ssid_lbl, "%s: %s", tr(TR_SSID_LABEL), ssid);
+        brl_style_label(ssid_lbl, &BRL_FONT_16, BRL_CLR_ACCENT);
+        lv_obj_align(ssid_lbl, LV_ALIGN_TOP_LEFT, 0, y);
+        // Store SSID in a hidden textarea so cb_wifi_dialog_save can read it
+        s_ta_ssid = lv_textarea_create(card);
+        lv_textarea_set_text(s_ta_ssid, ssid);
+        lv_obj_add_flag(s_ta_ssid, LV_OBJ_FLAG_HIDDEN);
+        y += 30;
+    }
+
+    // Password field
     lv_obj_t *l2 = lv_label_create(card);
     lv_label_set_text(l2, tr(TR_PASS_LABEL));
-    brl_style_label(l2, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
-    lv_obj_align(l2, LV_ALIGN_TOP_LEFT, 0, 106);
-    s_ta_pass = mk_ta("••••••••", true, 126);
+    brl_style_label(l2, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
+    lv_obj_align(l2, LV_ALIGN_TOP_LEFT, 0, y);
+    y += 24;
 
-    auto mk_btn = [&](const char *t, lv_color_t c, int x) -> lv_obj_t* {
-        lv_obj_t *b = lv_button_create(card);
-        lv_obj_set_size(b, 140, 40); lv_obj_align(b, LV_ALIGN_BOTTOM_RIGHT, x, 0);
-        lv_obj_set_style_bg_color(b, c, LV_STATE_DEFAULT);
-        lv_obj_set_style_radius(b, 6, LV_STATE_DEFAULT);
-        lv_obj_set_style_border_width(b, 0, LV_STATE_DEFAULT);
-        lv_obj_t *l = lv_label_create(b); lv_label_set_text(l, t);
-        brl_style_label(l, &BRL_FONT_14, BRL_CLR_TEXT); lv_obj_center(l);
-        return b;
-    };
+    s_ta_pass = lv_textarea_create(card);
+    lv_obj_set_size(s_ta_pass, 468, 40);
+    lv_obj_align(s_ta_pass, LV_ALIGN_TOP_LEFT, 0, y);
+    lv_textarea_set_one_line(s_ta_pass, true);
+    lv_textarea_set_placeholder_text(s_ta_pass, "••••••••");
+    lv_textarea_set_password_mode(s_ta_pass, true);
+    lv_obj_set_style_bg_color(s_ta_pass, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(s_ta_pass, BRL_CLR_TEXT, LV_STATE_DEFAULT);
+    lv_obj_add_event_cb(s_ta_pass, cb_dlg_ta_focus, LV_EVENT_FOCUSED, nullptr);
+
+    // Buttons
     char dlg_conn[48], dlg_cancel[48];
     snprintf(dlg_conn,   sizeof(dlg_conn),   LV_SYMBOL_OK    "  %s", tr(TR_CONNECT_DLG));
     snprintf(dlg_cancel, sizeof(dlg_cancel), LV_SYMBOL_CLOSE "  %s", tr(TR_CANCEL_DLG));
-    lv_obj_t *bsave = mk_btn(dlg_conn, BRL_CLR_ACCENT, 0);
+
+    lv_obj_t *bsave = lv_button_create(card);
+    lv_obj_set_size(bsave, 140, 40);
+    lv_obj_align(bsave, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    brl_style_btn(bsave, BRL_CLR_ACCENT);
+    lv_obj_t *sl = lv_label_create(bsave);
+    lv_label_set_text(sl, dlg_conn);
+    brl_style_label(sl, &BRL_FONT_14, BRL_CLR_TEXT);
+    lv_obj_center(sl);
     lv_obj_add_event_cb(bsave, cb_wifi_dialog_save, LV_EVENT_CLICKED, nullptr);
-    lv_obj_t *bcancel = mk_btn(dlg_cancel, BRL_CLR_SURFACE2, -150);
+
+    lv_obj_t *bcancel = lv_button_create(card);
+    lv_obj_set_size(bcancel, 140, 40);
+    lv_obj_align(bcancel, LV_ALIGN_BOTTOM_RIGHT, -150, 0);
+    brl_style_btn(bcancel, BRL_CLR_SURFACE2);
+    lv_obj_t *cl2 = lv_label_create(bcancel);
+    lv_label_set_text(cl2, dlg_cancel);
+    brl_style_label(cl2, &BRL_FONT_14, BRL_CLR_TEXT);
+    lv_obj_center(cl2);
     lv_obj_add_event_cb(bcancel, cb_wifi_dialog_cancel, LV_EVENT_CLICKED, nullptr);
 
+    // Keyboard
     s_dlg_kb = lv_keyboard_create(s_wifi_dialog);
     lv_keyboard_set_map(s_dlg_kb, LV_KEYBOARD_MODE_TEXT_LOWER, s_qwertz_lc, s_qwertz_ctrl);
     lv_keyboard_set_map(s_dlg_kb, LV_KEYBOARD_MODE_TEXT_UPPER, s_qwertz_uc, s_qwertz_ctrl);
-    lv_obj_set_size(s_dlg_kb, BRL_SCREEN_W, 200); lv_obj_align(s_dlg_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_size(s_dlg_kb, BRL_SCREEN_W, 266);
+    lv_obj_align(s_dlg_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_set_style_bg_color(s_dlg_kb, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
     lv_obj_add_event_cb(s_dlg_kb, cb_dlg_kb_ready, LV_EVENT_READY, nullptr);
     lv_obj_add_flag(s_dlg_kb, LV_OBJ_FLAG_HIDDEN);
+}
+
+// ============================================================================
+// CAR PROFILE MANAGER SCREEN
+// ============================================================================
+static void open_car_profiles_screen();
+
+// Merged profile entry for display
+struct ProfileItem {
+    char filename[CAR_NAME_LEN];
+    char make[CAR_NAME_LEN];
+    char display[CAR_NAME_LEN];
+    bool local;
+    bool active;
+};
+
+static ProfileItem s_profiles[50];
+static int         s_n_profiles = 0;
+static char        s_filter_make[CAR_NAME_LEN] = {};  // empty = show all
+
+static void open_car_profiles_screen() {
+    lv_obj_t *scr = make_sub_screen(tr(TR_CAR_PROFILES), cb_back_to_menu);
+    lv_obj_t *content = build_content_area(scr, true);
+    lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(content, 4, LV_STATE_DEFAULT);
+
+    // Get active profile
+    char active[CAR_NAME_LEN] = {};
+    car_profile_get_active(active, sizeof(active));
+
+    // Get local profiles on SD
+    static char local_files[20][CAR_NAME_LEN];
+    int n_local = car_profile_list(local_files, 20);
+
+    // Get server profiles (needs WiFi)
+    static CarProfileEntry server_entries[40];
+    int n_server = 0;
+
+    bool wifi_on = (g_state.wifi_mode == BRL_WIFI_AP || g_state.wifi_mode == BRL_WIFI_STA);
+
+    if (wifi_on) {
+        lv_obj_t *loading = lv_label_create(content);
+        lv_label_set_text(loading, tr(TR_CAR_LOADING));
+        brl_style_label(loading, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
+        lv_refr_now(nullptr);
+
+        n_server = car_profile_fetch_list(server_entries, 40);
+        lv_obj_delete(loading);
+    }
+
+    // Build merged profile list
+    s_n_profiles = 0;
+
+    auto is_local = [&](const char *name) -> bool {
+        for (int i = 0; i < n_local; i++)
+            if (strcmp(local_files[i], name) == 0) return true;
+        return false;
+    };
+
+    // Add server profiles first (they have make/display metadata)
+    for (int i = 0; i < n_server && s_n_profiles < 50; i++) {
+        auto &p = s_profiles[s_n_profiles];
+        strncpy(p.filename, server_entries[i].filename, CAR_NAME_LEN - 1);
+        strncpy(p.make, server_entries[i].make, CAR_NAME_LEN - 1);
+        strncpy(p.display, server_entries[i].display, CAR_NAME_LEN - 1);
+        p.local = is_local(p.filename);
+        p.active = (strlen(active) > 0 && strcmp(active, p.filename) == 0);
+        s_n_profiles++;
+    }
+
+    // Add local-only profiles (not on server)
+    for (int i = 0; i < n_local && s_n_profiles < 50; i++) {
+        bool on_server = false;
+        for (int j = 0; j < n_server; j++) {
+            if (strcmp(local_files[i], server_entries[j].filename) == 0) {
+                on_server = true; break;
+            }
+        }
+        if (!on_server) {
+            auto &p = s_profiles[s_n_profiles];
+            strncpy(p.filename, local_files[i], CAR_NAME_LEN - 1);
+            p.make[0] = '\0';
+            // Display: strip .brl extension
+            strncpy(p.display, local_files[i], CAR_NAME_LEN - 1);
+            char *dot = strrchr(p.display, '.');
+            if (dot) *dot = '\0';
+            p.local = true;
+            p.active = (strlen(active) > 0 && strcmp(active, p.filename) == 0);
+            s_n_profiles++;
+        }
+    }
+
+    // Collect unique makes for filter bar
+    char makes[10][CAR_NAME_LEN] = {};
+    int n_makes = 0;
+    for (int i = 0; i < s_n_profiles; i++) {
+        if (s_profiles[i].make[0] == '\0') continue;
+        bool found = false;
+        for (int j = 0; j < n_makes; j++) {
+            if (strcmp(makes[j], s_profiles[i].make) == 0) { found = true; break; }
+        }
+        if (!found && n_makes < 10) {
+            strncpy(makes[n_makes++], s_profiles[i].make, CAR_NAME_LEN - 1);
+        }
+    }
+
+    // Filter bar (only if we have more than one make)
+    if (n_makes > 1) {
+        lv_obj_t *filter_row = lv_obj_create(content);
+        lv_obj_set_width(filter_row, LV_PCT(100));
+        lv_obj_set_height(filter_row, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(filter_row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_style_pad_all(filter_row, 4, LV_STATE_DEFAULT);
+        lv_obj_set_style_pad_column(filter_row, 6, LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_opa(filter_row, LV_OPA_TRANSP, LV_STATE_DEFAULT);
+        lv_obj_set_style_border_width(filter_row, 0, LV_STATE_DEFAULT);
+        lv_obj_remove_flag(filter_row, LV_OBJ_FLAG_SCROLLABLE);
+
+        // "All" button
+        bool all_selected = (s_filter_make[0] == '\0');
+        lv_obj_t *btn_all = lv_button_create(filter_row);
+        lv_obj_set_height(btn_all, 32);
+        lv_obj_set_width(btn_all, LV_SIZE_CONTENT);
+        brl_style_btn(btn_all, all_selected ? BRL_CLR_ACCENT : lv_color_hex(0x333333));
+        lv_obj_t *lbl_all = lv_label_create(btn_all);
+        lv_label_set_text(lbl_all, tr(TR_CAR_ALL_MAKES));
+        brl_style_label(lbl_all, &BRL_FONT_14, BRL_CLR_TEXT);
+        lv_obj_center(lbl_all);
+        lv_obj_add_event_cb(btn_all, [](lv_event_t *e) {
+            (void)e;
+            s_filter_make[0] = '\0';
+            open_car_profiles_screen();
+        }, LV_EVENT_CLICKED, nullptr);
+
+        // Per-make buttons
+        for (int m = 0; m < n_makes; m++) {
+            bool selected = (strcmp(s_filter_make, makes[m]) == 0);
+            lv_obj_t *btn = lv_button_create(filter_row);
+            lv_obj_set_height(btn, 32);
+            lv_obj_set_width(btn, LV_SIZE_CONTENT);
+            brl_style_btn(btn, selected ? BRL_CLR_ACCENT : lv_color_hex(0x333333));
+            lv_obj_t *lbl = lv_label_create(btn);
+            lv_label_set_text(lbl, makes[m]);
+            brl_style_label(lbl, &BRL_FONT_14, BRL_CLR_TEXT);
+            lv_obj_center(lbl);
+            // Store make index in user_data
+            lv_obj_set_user_data(btn, (void*)(intptr_t)m);
+            lv_obj_add_event_cb(btn, [](lv_event_t *e) {
+                int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e));
+                // Lookup make name from s_profiles
+                char target[CAR_NAME_LEN] = {};
+                int seen = 0;
+                for (int i = 0; i < s_n_profiles; i++) {
+                    if (s_profiles[i].make[0] == '\0') continue;
+                    bool dup = false;
+                    for (int j = 0; j < i; j++) {
+                        if (strcmp(s_profiles[j].make, s_profiles[i].make) == 0) { dup = true; break; }
+                    }
+                    if (!dup) {
+                        if (seen == idx) {
+                            strncpy(target, s_profiles[i].make, CAR_NAME_LEN - 1);
+                            break;
+                        }
+                        seen++;
+                    }
+                }
+                strncpy(s_filter_make, target, CAR_NAME_LEN - 1);
+                open_car_profiles_screen();
+            }, LV_EVENT_CLICKED, nullptr);
+        }
+    }
+
+    if (!wifi_on && s_n_profiles == 0) {
+        lv_obj_t *hint = lv_label_create(content);
+        lv_label_set_text(hint, tr(TR_CAR_NO_WIFI));
+        brl_style_label(hint, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
+    }
+
+    for (int i = 0; i < s_n_profiles; i++) {
+        auto &p = s_profiles[i];
+
+        // Apply make filter
+        if (s_filter_make[0] != '\0' && strcmp(p.make, s_filter_make) != 0)
+            continue;
+
+        lv_obj_t *row = lv_obj_create(content);
+        lv_obj_set_width(row, LV_PCT(100));
+        lv_obj_set_height(row, 60);
+        brl_style_card(row);
+        lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+        // Profile display name (make + display)
+        char label_text[64];
+        if (p.make[0] != '\0') {
+            snprintf(label_text, sizeof(label_text), "%s  %s", p.make, p.display);
+        } else {
+            strncpy(label_text, p.display, sizeof(label_text) - 1);
+            label_text[sizeof(label_text) - 1] = '\0';
+        }
+
+        lv_obj_t *name_lbl = lv_label_create(row);
+        lv_label_set_text(name_lbl, label_text);
+        brl_style_label(name_lbl, &BRL_FONT_20, p.active ? BRL_CLR_ACCENT : BRL_CLR_TEXT);
+        lv_obj_align(name_lbl, LV_ALIGN_LEFT_MID, 0, -8);
+
+        // Status label
+        lv_obj_t *status_lbl = lv_label_create(row);
+        if (p.active) {
+            lv_label_set_text_fmt(status_lbl, LV_SYMBOL_OK "  %s", tr(TR_CAR_ACTIVE));
+            brl_style_label(status_lbl, &BRL_FONT_14, lv_color_hex(0x00CC66));
+        } else if (p.local) {
+            lv_label_set_text(status_lbl, tr(TR_CAR_ON_DEVICE));
+            brl_style_label(status_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+        } else {
+            lv_label_set_text(status_lbl, tr(TR_CAR_DOWNLOAD));
+            brl_style_label(status_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+        }
+        lv_obj_align(status_lbl, LV_ALIGN_LEFT_MID, 0, 10);
+
+        // Action buttons (right side)
+        if (p.local && !p.active) {
+            // Activate button
+            lv_obj_t *btn_act = lv_button_create(row);
+            lv_obj_set_size(btn_act, 120, 36);
+            lv_obj_align(btn_act, LV_ALIGN_RIGHT_MID, -70, 0);
+            brl_style_btn(btn_act, BRL_CLR_ACCENT);
+            lv_obj_t *al = lv_label_create(btn_act);
+            lv_label_set_text(al, tr(TR_CAR_ACTIVATE));
+            brl_style_label(al, &BRL_FONT_14, BRL_CLR_TEXT);
+            lv_obj_center(al);
+            lv_obj_set_user_data(btn_act, (void*)(intptr_t)i);
+            lv_obj_add_event_cb(btn_act, [](lv_event_t *e) {
+                int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e));
+                car_profile_set_active(s_profiles[idx].filename);
+                car_profile_load(s_profiles[idx].filename);
+                open_car_profiles_screen();
+            }, LV_EVENT_CLICKED, nullptr);
+
+            // Delete button
+            lv_obj_t *btn_del = lv_button_create(row);
+            lv_obj_set_size(btn_del, 48, 36);
+            lv_obj_align(btn_del, LV_ALIGN_RIGHT_MID, 0, 0);
+            lv_obj_set_style_bg_color(btn_del, lv_color_hex(0x5A1A1A), LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_color(btn_del, BRL_CLR_DANGER, LV_STATE_PRESSED);
+            lv_obj_set_style_border_width(btn_del, 0, LV_STATE_DEFAULT);
+            lv_obj_set_style_radius(btn_del, 6, LV_STATE_DEFAULT);
+            lv_obj_set_style_shadow_width(btn_del, 0, LV_STATE_DEFAULT);
+            lv_obj_t *dl = lv_label_create(btn_del);
+            lv_label_set_text(dl, LV_SYMBOL_TRASH);
+            brl_style_label(dl, &BRL_FONT_16, lv_color_hex(0xFF6666));
+            lv_obj_center(dl);
+            lv_obj_set_user_data(btn_del, (void*)(intptr_t)i);
+            lv_obj_add_event_cb(btn_del, [](lv_event_t *e) {
+                int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e));
+                car_profile_delete(s_profiles[idx].filename);
+                open_car_profiles_screen();
+            }, LV_EVENT_CLICKED, nullptr);
+        } else if (!p.local) {
+            // Download button
+            lv_obj_t *btn_dl = lv_button_create(row);
+            lv_obj_set_size(btn_dl, 140, 36);
+            lv_obj_align(btn_dl, LV_ALIGN_RIGHT_MID, 0, 0);
+            brl_style_btn(btn_dl, BRL_CLR_ACCENT);
+            lv_obj_t *dll = lv_label_create(btn_dl);
+            lv_label_set_text_fmt(dll, LV_SYMBOL_SAVE " %s", tr(TR_CAR_DOWNLOAD));
+            brl_style_label(dll, &BRL_FONT_14, BRL_CLR_TEXT);
+            lv_obj_center(dll);
+            lv_obj_set_user_data(btn_dl, (void*)(intptr_t)i);
+            lv_obj_add_event_cb(btn_dl, [](lv_event_t *e) {
+                int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e));
+                bool ok = car_profile_download(s_profiles[idx].filename);
+                (void)ok;
+                open_car_profiles_screen();
+            }, LV_EVENT_CLICKED, nullptr);
+        }
+    }
+
+    sub_screen_load(scr);
 }
 
 static void open_settings_screen() {
@@ -1381,7 +1929,8 @@ static void open_settings_screen() {
                                         "OBD Adapter", tr(TR_OBD_SUB));
         set_obd_status_lbl = lv_label_create(r);
         lv_label_set_text(set_obd_status_lbl, tr(TR_NOT_CONNECTED));
-        brl_style_label(set_obd_status_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+        brl_style_label(set_obd_status_lbl, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
+        lv_obj_set_width(set_obd_status_lbl, 140);
         lv_obj_align(set_obd_status_lbl, LV_ALIGN_LEFT_MID, 0, 0);
         set_obd_btn = make_setting_btn(r, tr(TR_CONNECT_BTN), BRL_CLR_ACCENT, LV_ALIGN_RIGHT_MID);
         lv_obj_add_event_cb(set_obd_btn, [](lv_event_t* /*e*/){
@@ -1396,7 +1945,8 @@ static void open_settings_screen() {
                                         tr(TR_WIFI_AP_TITLE), tr(TR_WIFI_AP_SUB));
         set_wifi_ap_status_lbl = lv_label_create(r);
         lv_label_set_text(set_wifi_ap_status_lbl, tr(TR_WIFI_AP_ON));
-        brl_style_label(set_wifi_ap_status_lbl, &BRL_FONT_14, lv_color_hex(0x00CC66));
+        brl_style_label(set_wifi_ap_status_lbl, &BRL_FONT_16, lv_color_hex(0x00CC66));
+        lv_obj_set_width(set_wifi_ap_status_lbl, 140);
         lv_obj_align(set_wifi_ap_status_lbl, LV_ALIGN_LEFT_MID, 0, 0);
 
         char cfg_lbl[48];
@@ -1411,17 +1961,41 @@ static void open_settings_screen() {
                                         tr(TR_WIFI_STA_TITLE), tr(TR_WIFI_STA_SUB));
         set_wifi_sta_status_lbl = lv_label_create(r);
         lv_label_set_text(set_wifi_sta_status_lbl, tr(TR_NOT_CONNECTED));
-        brl_style_label(set_wifi_sta_status_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+        brl_style_label(set_wifi_sta_status_lbl, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
+        lv_obj_set_width(set_wifi_sta_status_lbl, 120);
         lv_obj_align(set_wifi_sta_status_lbl, LV_ALIGN_LEFT_MID, 0, 0);
+
         char cfg_lbl[48];
-        snprintf(cfg_lbl, sizeof(cfg_lbl), LV_SYMBOL_SETTINGS " %s", tr(TR_CONFIGURE_BTN));
-        lv_obj_t *bcfg = make_setting_btn(r, cfg_lbl, BRL_CLR_ACCENT, LV_ALIGN_RIGHT_MID, -130);
+        snprintf(cfg_lbl, sizeof(cfg_lbl), LV_SYMBOL_WIFI " %s", tr(TR_WIFI_SCAN));
+        lv_obj_t *bcfg = make_setting_btn(r, cfg_lbl, BRL_CLR_ACCENT, LV_ALIGN_RIGHT_MID, -150);
         lv_obj_add_event_cb(bcfg, [](lv_event_t* /*e*/){ open_wifi_sta_dialog(); },
                             LV_EVENT_CLICKED, nullptr);
         char dis_lbl[48];
         snprintf(dis_lbl, sizeof(dis_lbl), LV_SYMBOL_CLOSE " %s", tr(TR_DISCONNECT_BTN));
         lv_obj_t *bdis = make_setting_btn(r, dis_lbl, BRL_CLR_SURFACE2, LV_ALIGN_RIGHT_MID);
         lv_obj_add_event_cb(bdis, [](lv_event_t* /*e*/){ wifi_set_mode(BRL_WIFI_OFF); },
+                            LV_EVENT_CLICKED, nullptr);
+    }
+    // Car Profiles
+    {
+        lv_obj_t *r = make_setting_row(content, 0, RH2, LV_SYMBOL_DRIVE,
+                                        tr(TR_CAR_PROFILES), tr(TR_CAR_PROFILES_SUB));
+        // Show active profile name if loaded
+        lv_obj_t *prof_lbl = lv_label_create(r);
+        if (g_car_profile.loaded) {
+            char prof_txt[48];
+            snprintf(prof_txt, sizeof(prof_txt), "%s %s", g_car_profile.make, g_car_profile.engine);
+            lv_label_set_text(prof_lbl, prof_txt);
+            brl_style_label(prof_lbl, &BRL_FONT_16, lv_color_hex(0x00CC66));
+        } else {
+            lv_label_set_text(prof_lbl, "---");
+            brl_style_label(prof_lbl, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
+        }
+        lv_obj_set_width(prof_lbl, 140);
+        lv_obj_align(prof_lbl, LV_ALIGN_LEFT_MID, 0, 0);
+
+        lv_obj_t *bopen = make_setting_btn(r, tr(TR_CONFIGURE_BTN), BRL_CLR_ACCENT, LV_ALIGN_RIGHT_MID);
+        lv_obj_add_event_cb(bopen, [](lv_event_t* /*e*/){ open_car_profiles_screen(); },
                             LV_EVENT_CLICKED, nullptr);
     }
     // Language

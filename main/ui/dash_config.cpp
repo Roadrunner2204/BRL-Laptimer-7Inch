@@ -33,8 +33,9 @@ DashConfig g_dash_cfg = {};
 // Default configuration
 // ---------------------------------------------------------------------------
 static const DashConfig DEFAULT_CFG = {
-    .language = 0,   // Deutsch
-    .units    = 0,   // km/h
+    .language       = 0,     // Deutsch
+    .units          = 0,     // km/h
+    .delta_scale_ms = 3000,  // ±3 s
 
     // Zone 1: [Speed, Laptime, Bestlap, Delta, LapNr]
     .z1 = { FIELD_SPEED, FIELD_LAPTIME, FIELD_BESTLAP, FIELD_DELTA_NUM, FIELD_LAP_NR },
@@ -64,6 +65,7 @@ void dash_config_load()
 
     nvs_get_u8(h, "lang",  &g_dash_cfg.language);
     nvs_get_u8(h, "units", &g_dash_cfg.units);
+    nvs_get_u16(h, "dscale", &g_dash_cfg.delta_scale_ms);
 
     size_t len;
 
@@ -101,6 +103,7 @@ void dash_config_save()
 
     nvs_set_u8(h, "lang",  g_dash_cfg.language);
     nvs_set_u8(h, "units", g_dash_cfg.units);
+    nvs_set_u16(h, "dscale", g_dash_cfg.delta_scale_ms);
     nvs_set_blob(h, "z1", g_dash_cfg.z1, sizeof(g_dash_cfg.z1));
     nvs_set_blob(h, "z2", g_dash_cfg.z2, sizeof(g_dash_cfg.z2));
     nvs_set_blob(h, "z3", g_dash_cfg.z3, sizeof(g_dash_cfg.z3));

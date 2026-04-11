@@ -26,6 +26,7 @@ typedef struct {
 } SessionSummary;
 
 int  session_store_list_summaries(SessionSummary *out, int max_count);
+bool session_store_delete_session(const char *session_id);
 void session_store_load_user_tracks(void);
 bool session_store_save_user_track(const TrackDef *td);
 bool session_store_delete_user_track(int u_slot);

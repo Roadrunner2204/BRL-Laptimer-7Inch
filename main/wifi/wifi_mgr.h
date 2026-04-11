@@ -37,6 +37,16 @@ const char *wifi_ap_ip(void);
 void wifi_ap_set_config(const char *ssid, const char *pass);
 const char *wifi_ap_pass(void);
 
+// WiFi scan — returns number of APs found (max max_results)
+typedef struct {
+    char ssid[33];
+    int8_t rssi;
+    uint8_t authmode;   // 0=open, else secured
+} WifiScanResult;
+
+int  wifi_scan_start(void);                           // blocking scan, returns count
+int  wifi_scan_get_results(WifiScanResult *out, int max_results);
+
 #ifdef __cplusplus
 }
 #endif
