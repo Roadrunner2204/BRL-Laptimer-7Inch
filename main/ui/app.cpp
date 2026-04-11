@@ -152,7 +152,7 @@ static void build_sb(lv_obj_t *scr, SbH *out) {
     lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
 
     out->gps = lv_label_create(bar);
-    lv_label_set_text(out->gps, LV_SYMBOL_GPS " 0");
+    lv_label_set_text(out->gps, LV_SYMBOL_GPS);
     brl_style_label(out->gps, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
     lv_obj_set_pos(out->gps, 8, 12);
 
@@ -162,7 +162,7 @@ static void build_sb(lv_obj_t *scr, SbH *out) {
     lv_obj_set_pos(out->wifi, 180, 12);
 
     out->obd = lv_label_create(bar);
-    lv_label_set_text(out->obd, LV_SYMBOL_BLUETOOTH " OBD --");
+    lv_label_set_text(out->obd, LV_SYMBOL_DRIVE);
     brl_style_label(out->obd, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
     lv_obj_set_pos(out->obd, 350, 12);
 }
@@ -2277,13 +2277,19 @@ static inline bool obd_is_scanning() {
 static void update_sb(SbH &sb) {
     if (!sb.gps && !sb.wifi && !sb.obd) return;
 
-    // GPS label
+    // GPS label: show arrow + Hz when fix, just arrow (gray) when no fix
     if (sb.gps) {
-        char buf[16];
-        snprintf(buf, sizeof(buf), LV_SYMBOL_GPS " %d", (int)g_state.gps.satellites);
-        lv_label_set_text(sb.gps, buf);
-        lv_obj_set_style_text_color(sb.gps,
-            g_state.gps.valid ? lv_color_hex(0x00CC66) : lv_color_hex(0xAAAAAA), 0);
+        if (g_state.gps.valid) {
+            char buf[24];
+            uint8_t hz = gps_get_update_rate();
+            snprintf(buf, sizeof(buf), LV_SYMBOL_GPS " %dHz %dSat",
+                     (int)hz, (int)g_state.gps.satellites);
+            lv_label_set_text(sb.gps, buf);
+            lv_obj_set_style_text_color(sb.gps, lv_color_hex(0x00CC66), 0);
+        } else {
+            lv_label_set_text(sb.gps, LV_SYMBOL_GPS);
+            lv_obj_set_style_text_color(sb.gps, lv_color_hex(0xAAAAAA), 0);
+        }
     }
     // WiFi label
     if (sb.wifi) {
@@ -2298,12 +2304,19 @@ static void update_sb(SbH &sb) {
         lv_label_set_text(sb.wifi, wlbl);
         lv_obj_set_style_text_color(sb.wifi, wcol, 0);
     }
-    // OBD label
+    // Vehicle connection label (auto icon + OBD/CAN mode)
     if (sb.obd) {
-        bool conn = obd_is_connected();
-        lv_label_set_text(sb.obd, conn ? LV_SYMBOL_BLUETOOTH " OBD" : LV_SYMBOL_BLUETOOTH);
-        lv_obj_set_style_text_color(sb.obd,
-            conn ? lv_color_hex(0x00CC66) : lv_color_hex(0xAAAAAA), 0);
+        if (g_state.veh_conn_mode == VEH_CONN_CAN_DIRECT) {
+            bool active = can_bus_active();
+            lv_label_set_text(sb.obd, active ? LV_SYMBOL_DRIVE " CAN" : LV_SYMBOL_DRIVE " CAN");
+            lv_obj_set_style_text_color(sb.obd,
+                active ? lv_color_hex(0x00CC66) : lv_color_hex(0xAAAAAA), 0);
+        } else {
+            bool conn = obd_is_connected();
+            lv_label_set_text(sb.obd, conn ? LV_SYMBOL_DRIVE " OBD" : LV_SYMBOL_DRIVE " OBD");
+            lv_obj_set_style_text_color(sb.obd,
+                conn ? lv_color_hex(0x00CC66) : lv_color_hex(0xAAAAAA), 0);
+        }
     }
 }
 
