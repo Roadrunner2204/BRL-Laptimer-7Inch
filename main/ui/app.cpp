@@ -30,6 +30,7 @@ static const char *TAG = "app";
 #include "../wifi/wifi_mgr.h"
 #include "../storage/session_store.h"
 #include "../storage/sd_mgr.h"
+#include "../storage/track_update.h"
 #include "../data/car_profile.h"
 #include <dirent.h>
 #include <sys/stat.h>
@@ -509,6 +510,67 @@ static void open_tracks_screen() {
     snprintf(new_btn_label, sizeof(new_btn_label), LV_SYMBOL_PLUS " %s", tr(TR_NEW_TRACK));
     lv_obj_t *scr = make_sub_screen(tr(TR_SELECT_TRACK), cb_back_to_menu,
                                      &new_btn, new_btn_label);
+
+    // Second header button: "UPDATE" — downloads the latest .tbrl bundle
+    // from the BRL server (language picked automatically) and reloads it.
+    // Placed to the left of "NEW TRACK".
+    {
+        lv_obj_t *hdr = new_btn ? lv_obj_get_parent(new_btn) : nullptr;
+        if (hdr) {
+            lv_obj_t *upd = lv_button_create(hdr);
+            lv_obj_set_size(upd, 140, 38);
+            lv_obj_align(upd, LV_ALIGN_RIGHT_MID, -6 - 140 - 8, 0);
+            brl_style_btn(upd, BRL_CLR_SURFACE2);
+            lv_obj_t *ul = lv_label_create(upd);
+            lv_label_set_text(ul, tr(TR_TRACK_UPDATE));
+            brl_style_label(ul, &BRL_FONT_14, BRL_CLR_TEXT);
+            lv_obj_center(ul);
+            lv_obj_set_user_data(upd, ul);   // label ref for busy-state swap
+            lv_obj_add_event_cb(upd, [](lv_event_t *e) {
+                lv_obj_t *btn = (lv_obj_t *)lv_event_get_target(e);
+                lv_obj_t *lbl = (lv_obj_t *)lv_obj_get_user_data(btn);
+
+                if (g_state.wifi_mode != BRL_WIFI_STA) {
+                    lv_obj_t *mb = lv_msgbox_create(nullptr);
+                    lv_msgbox_add_title(mb, "WiFi");
+                    lv_msgbox_add_text(mb,
+                        "Fuer das Update zuerst mit Internet verbinden\n"
+                        "(Einstellungen → WLAN → STA).");
+                    lv_msgbox_add_close_button(mb);
+                    return;
+                }
+                // Busy feedback while the HTTPS download runs
+                if (lbl) lv_label_set_text(lbl, "...");
+                lv_obj_add_state(btn, LV_STATE_DISABLED);
+
+                xTaskCreate([](void * /*arg*/) {
+                    extern int track_update_run_blocking(void);
+                    int n = track_update_run_blocking();
+                    lv_async_call([](void *argn) {
+                        int r = (int)(intptr_t)argn;
+                        lv_obj_t *mb = lv_msgbox_create(nullptr);
+                        if (r > 0) {
+                            char buf[96];
+                            snprintf(buf, sizeof(buf),
+                                     tr(TR_TRACK_UPDATE_OK), r);
+                            lv_msgbox_add_title(mb, tr(TR_TRACK_UPDATE));
+                            lv_msgbox_add_text(mb, buf);
+                            lv_msgbox_add_close_button(mb);
+                            open_tracks_screen();   // rebuilds with new list
+                        } else {
+                            lv_msgbox_add_title(mb, tr(TR_TRACK_UPDATE_FAIL));
+                            lv_msgbox_add_text(mb,
+                                "Download oder SD-Schreiben fehlgeschlagen.");
+                            lv_msgbox_add_close_button(mb);
+                            open_tracks_screen();   // re-enables the button
+                        }
+                    }, (void*)(intptr_t)n);
+                    vTaskDelete(nullptr);
+                }, "trk_upd", 8192, nullptr, 4, nullptr);
+            }, LV_EVENT_CLICKED, nullptr);
+        }
+    }
+
     lv_obj_t *content = build_content_area(scr, true);
     lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(content, 4, LV_STATE_DEFAULT);
@@ -787,26 +849,50 @@ static void cb_tc_save(lv_event_t* /*e*/) {
         session_store_save_builtin_override(s_tc_edit_idx, &td);
         save_idx = s_tc_edit_idx;
 
-    // ── Case B: new track or editing an existing user track ───────────────
+    // ── Case B: editing a bundle track → in-place edit (session-only) ────
+    } else if (s_tc_edit_idx >= TRACK_DB_BUILTIN_COUNT + g_user_track_count
+               && g_bundle_tracks) {
+        int b = s_tc_edit_idx - TRACK_DB_BUILTIN_COUNT - g_user_track_count;
+        if (b >= 0 && b < g_bundle_track_count) {
+            TrackDef &td = g_bundle_tracks[b];
+            // Keep name/country/length, only overwrite user-editable coords.
+            td.is_circuit = s_tc_is_circuit;
+            tc_fill_coords(td);
+            // Bundle is PSRAM-only — edits live until next boot (bundle is
+            // reparsed from /sdcard/Tracks.tbrl fresh). We deliberately do
+            // NOT persist, because that would drift from the canonical
+            // server-maintained catalog. Users who want persistence should
+            // instead add a new user track.
+            save_idx = s_tc_edit_idx;
+        } else {
+            return;
+        }
+
+    // ── Case C: new track or editing an existing user track ──────────────
     } else {
         int u_slot = -1;
-        if (s_tc_edit_idx >= TRACK_DB_BUILTIN_COUNT)
+        if (s_tc_edit_idx >= TRACK_DB_BUILTIN_COUNT &&
+            s_tc_edit_idx < TRACK_DB_BUILTIN_COUNT + g_user_track_count)
             u_slot = s_tc_edit_idx - TRACK_DB_BUILTIN_COUNT;
-        // Bundle tracks (u_slot >= g_user_track_count) are read-only; we
-        // cannot edit in place. Fall through to "new user track" mode.
-        if (u_slot >= g_user_track_count) u_slot = -1;
         if (u_slot < 0) {
             if (g_user_track_count >= MAX_USER_TRACKS) return;
             u_slot = g_user_track_count;
         }
         TrackDef &td = g_user_tracks[u_slot];
-        memset(&td, 0, sizeof(td));
-        strncpy(td.name, name, sizeof(td.name)-1);
-        strncpy(td.country, tr(TR_CUSTOM_COUNTRY), sizeof(td.country)-1);
+        // Preserve existing name/country when editing; zero only on create
+        bool is_new = (u_slot == g_user_track_count);
+        if (is_new) {
+            memset(&td, 0, sizeof(td));
+            strncpy(td.name, name, sizeof(td.name)-1);
+            strncpy(td.country, tr(TR_CUSTOM_COUNTRY), sizeof(td.country)-1);
+        } else {
+            // Allow name edit too
+            strncpy(td.name, name, sizeof(td.name)-1);
+        }
         td.is_circuit   = s_tc_is_circuit;
         td.user_created = true;
         tc_fill_coords(td);
-        if (u_slot == g_user_track_count) g_user_track_count++;
+        if (is_new) g_user_track_count++;
         session_store_save_user_track(&td);
         save_idx = TRACK_DB_BUILTIN_COUNT + u_slot;
     }

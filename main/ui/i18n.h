@@ -60,6 +60,10 @@ enum TrKey : uint8_t {
     // Track selection screen
     TR_SELECT_TRACK,
     TR_NEW_TRACK,
+    TR_TRACK_UPDATE,
+    TR_TRACK_UPDATE_BUSY,
+    TR_TRACK_UPDATE_OK,
+    TR_TRACK_UPDATE_FAIL,
     TR_NO_GPS_HINT,
     TR_NO_TRACK,
     // Track creator

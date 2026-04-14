@@ -1,4 +1,5 @@
 #include "i18n.h"
+#include <lvgl.h>
 
 static uint8_t s_lang = 0;  // 0 = DE, 1 = EN
 
@@ -59,6 +60,10 @@ static const char* const s_str[2][TR_COUNT] = {
     /* TR_TILE_SETTINGS_SUB*/"WiFi · OBD · Sprache",
     /* TR_SELECT_TRACK    */ "STRECKE WÄHLEN",
     /* TR_NEW_TRACK       */ "NEUE STRECKE",
+    /* TR_TRACK_UPDATE    */ LV_SYMBOL_REFRESH " UPDATE",
+    /* TR_TRACK_UPDATE_BUSY */ "Strecken-Datenbank wird aktualisiert…",
+    /* TR_TRACK_UPDATE_OK   */ "Strecken-Datenbank aktualisiert: %d Strecken",
+    /* TR_TRACK_UPDATE_FAIL */ "Update fehlgeschlagen",
     /* TR_NO_GPS_HINT     */ "Kein GPS-Fix — Sortierung nach Name",
     /* TR_NO_TRACK        */ "Keine Strecke",
     /* TR_CIRCUIT_BTN     */ "RUNDKURS",
@@ -211,6 +216,10 @@ static const char* const s_str[2][TR_COUNT] = {
     /* TR_TILE_SETTINGS_SUB*/"WiFi · OBD · Language",
     /* TR_SELECT_TRACK    */ "SELECT TRACK",
     /* TR_NEW_TRACK       */ "NEW TRACK",
+    /* TR_TRACK_UPDATE    */ LV_SYMBOL_REFRESH " UPDATE",
+    /* TR_TRACK_UPDATE_BUSY */ "Updating track database…",
+    /* TR_TRACK_UPDATE_OK   */ "Track database updated: %d tracks",
+    /* TR_TRACK_UPDATE_FAIL */ "Update failed",
     /* TR_NO_GPS_HINT     */ "No GPS fix — sorted by name",
     /* TR_NO_TRACK        */ "No Track",
     /* TR_CIRCUIT_BTN     */ "CIRCUIT",
