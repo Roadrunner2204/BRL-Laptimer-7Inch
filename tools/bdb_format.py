@@ -396,13 +396,15 @@ class Track:
             "is_circuit": bool(is_circuit),
         }
         # VBOX speichert S/F- und Sektorlinien als 2 Punkte ENTLANG der
-        # Fahrtrichtung (Approach + Past-Point). Der BRL-Laptimer erwartet
-        # eine Linie QUER zur Strecke (zwei Randpunkte). Wir rotieren die
-        # Linien beim Export um 90° — die resultierende Breite entspricht
-        # dem Original-Approach-zu-Past-Abstand (typisch 10-30 m), was
-        # räumlich fast exakt auf der echten Timing-Loop-Position liegt.
+        # Fahrtrichtung (Approach + Past-Point), typischer Abstand 10-30 m.
+        # Der BRL-Laptimer erwartet eine Linie QUER zur Strecke — als
+        # echtes GPS-Segment zwischen zwei Randpunkten. Wir rotieren die
+        # VBOX-Linie um 90° und SPANNEN sie auf TRIGGER_WIDTH_M, damit
+        # sie garantiert die gesamte Fahrbahnbreite inklusive Reserven
+        # abdeckt (breiter als jede reale Rennstrecke).
+        TRIGGER_WIDTH_M = 40.0
         if self.sf_line:
-            perp = self.sf_line.perpendicular()
+            perp = self.sf_line.perpendicular(width_m=TRIGGER_WIDTH_M)
             d["sf"] = [
                 round(perp.p1.lat, 7), round(perp.p1.lon, 7),
                 round(perp.p2.lat, 7), round(perp.p2.lon, 7),
@@ -410,7 +412,7 @@ class Track:
         if self.sectors:
             d["sectors"] = []
             for i, s in enumerate(self.sectors):
-                perp = s.perpendicular()
+                perp = s.perpendicular(width_m=TRIGGER_WIDTH_M)
                 d["sectors"].append({
                     "name": f"S{i+1}",
                     "lat1": round(perp.p1.lat, 7), "lon1": round(perp.p1.lon, 7),

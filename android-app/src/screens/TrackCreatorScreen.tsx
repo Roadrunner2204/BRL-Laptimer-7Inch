@@ -26,6 +26,7 @@ import { C } from '../theme';
 import { Track, SectorDef, SectorLineDef } from '../types';
 import { postTrack } from '../api';
 import { saveLocalTrack } from '../storage';
+import { preferCellularDefault, unbindDefault } from '../network';
 
 type Props = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'TrackCreator'>;
@@ -78,6 +79,15 @@ export default function TrackCreatorScreen({ navigation, route }: Props) {
 
   const webviewRef = useRef<WebView>(null);
   const readyRef = useRef(false);
+
+  // While this screen is open, bind the process default network to cellular
+  // so OSM map tiles + Nominatim search can reach the internet — the
+  // laptimer WiFi stays connected but display calls (postTrack etc.) go
+  // through wifiFetch which explicitly targets the WiFi transport.
+  useEffect(() => {
+    preferCellularDefault();
+    return () => { unbindDefault(); };
+  }, []);
 
   // On mount: in edit-mode center on the track itself, otherwise on the
   // phone's current GPS position.
@@ -555,21 +565,59 @@ const MAP_HTML = `<!DOCTYPE html>
 <style>
   html,body{margin:0;padding:0;background:#0d1117;height:100%;overflow:hidden;}
   #map{width:100%;height:100vh;background:#0d1117;}
-  .leaflet-tile-pane{filter:brightness(0.9) saturate(0.8);}
   .leaflet-container{background:#0d1117;}
+  .leaflet-tile-pane.osm-tinted{filter:brightness(0.9) saturate(0.8);}
   .leaflet-control-zoom a{background:rgba(13,17,23,0.9);color:#fff;border:none;
     width:34px;height:34px;line-height:34px;font-size:18px;}
   .leaflet-control-zoom a:hover{background:#0096FF;color:#000;}
   .pt-label{background:rgba(0,0,0,0.8);color:#fff;border:1px solid #0096FF;
     border-radius:4px;padding:1px 5px;font:bold 10px sans-serif;white-space:nowrap;}
+  #layerToggle{position:absolute;top:8px;right:8px;z-index:1000;
+    display:flex;background:rgba(13,17,23,0.92);border:1px solid #1C3A5C;
+    border-radius:8px;overflow:hidden;font-family:sans-serif;font-size:12px;}
+  #layerToggle button{background:transparent;color:#7A8FA6;border:none;
+    padding:7px 12px;font-size:12px;font-weight:700;cursor:pointer;}
+  #layerToggle button.active{background:#0096FF;color:#000;}
 </style>
 </head><body>
 <div id="map"></div>
+<div id="layerToggle">
+  <button id="btnMap" class="active">Karte</button>
+  <button id="btnSat">Satellit</button>
+</div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 const map = L.map('map',{zoomControl:true,attributionControl:false,tap:true})
   .setView([51.0, 10.0], 6);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:20}).addTo(map);
+
+// Two tile layers — user toggles via the buttons at the top-right.
+// OSM: dark-tinted vector-style basemap. ESRI World Imagery: satellite.
+const osmLayer = L.tileLayer(
+  'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+  { maxZoom: 20, attribution: '© OpenStreetMap' });
+const satLayer = L.tileLayer(
+  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+  { maxZoom: 19, attribution: 'Tiles © Esri' });
+
+let activeLayer = 'map';
+function setLayer(which) {
+  const tilePane = map.getPane('tilePane');
+  if (which === 'sat') {
+    if (map.hasLayer(osmLayer)) map.removeLayer(osmLayer);
+    if (!map.hasLayer(satLayer)) satLayer.addTo(map);
+    tilePane.classList.remove('osm-tinted');
+  } else {
+    if (map.hasLayer(satLayer)) map.removeLayer(satLayer);
+    if (!map.hasLayer(osmLayer)) osmLayer.addTo(map);
+    tilePane.classList.add('osm-tinted');
+  }
+  activeLayer = which;
+  document.getElementById('btnMap').classList.toggle('active', which === 'map');
+  document.getElementById('btnSat').classList.toggle('active', which === 'sat');
+}
+setLayer('map');
+document.getElementById('btnMap').addEventListener('click', () => setLayer('map'));
+document.getElementById('btnSat').addEventListener('click', () => setLayer('sat'));
 
 let currentMode = null;
 let markers = {};        // keyed: sf1, sf2, fin1, fin2, sector_0 ...

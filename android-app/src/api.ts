@@ -1,4 +1,11 @@
 import { Session, Lap, DeviceSessionSummary, Track, DeviceTrackSummary } from './types';
+import { wifiFetch } from './network';
+
+// All display calls go through wifiFetch so they reach the laptimer AP
+// even while the default process network is temporarily bound to cellular
+// (e.g. TrackCreator map view). Falls back to plain fetch on iOS /
+// older builds without the native module.
+const dfetch = wifiFetch;
 
 let baseUrl = 'http://192.168.4.1';
 
@@ -26,7 +33,7 @@ export async function fetchDeviceInfo(): Promise<{ device: string; version: stri
   const url = `${baseUrl}/`;
   log('GET', url);
   try {
-    const r = await withTimeout(fetch(url), 15000, 'fetchDeviceInfo');
+    const r = await withTimeout(dfetch(url), 15000, 'fetchDeviceInfo');
     log('device info status:', r.status);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const json = await r.json();
@@ -41,7 +48,7 @@ export async function fetchDeviceInfo(): Promise<{ device: string; version: stri
 export async function fetchSessionList(): Promise<DeviceSessionSummary[]> {
   const url = `${baseUrl}/sessions`;
   log('GET', url);
-  const r = await withTimeout(fetch(url), 15000, 'fetchSessionList');
+  const r = await withTimeout(dfetch(url), 15000, 'fetchSessionList');
   log('sessions status:', r.status);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const raw = await r.json();
@@ -57,7 +64,7 @@ export async function fetchSessionList(): Promise<DeviceSessionSummary[]> {
 export async function fetchSession(id: string): Promise<Session> {
   const url = `${baseUrl}/session/${id}`;
   log('GET', url);
-  const r = await withTimeout(fetch(url), 30000, 'fetchSession');
+  const r = await withTimeout(dfetch(url), 30000, 'fetchSession');
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const raw = await r.json();
   return enrichSession(raw);
@@ -77,7 +84,7 @@ export interface DeviceVideo { id: string; size: number; }
 export async function fetchVideoList(): Promise<DeviceVideo[]> {
   const url = `${baseUrl}/videos`;
   log('GET', url);
-  const r = await withTimeout(fetch(url), 15000, 'fetchVideoList');
+  const r = await withTimeout(dfetch(url), 15000, 'fetchVideoList');
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
@@ -100,7 +107,7 @@ export async function deleteVideoOnDevice(id: string): Promise<void> {
 export async function fetchTracks(): Promise<DeviceTrackSummary[]> {
   const url = `${baseUrl}/tracks`;
   log('GET', url);
-  const r = await withTimeout(fetch(url), 15000, 'fetchTracks');
+  const r = await withTimeout(dfetch(url), 15000, 'fetchTracks');
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
@@ -109,7 +116,7 @@ export async function fetchTracks(): Promise<DeviceTrackSummary[]> {
 export async function fetchTrackDetails(idx: number): Promise<Track> {
   const url = `${baseUrl}/track/${idx}`;
   log('GET', url);
-  const r = await withTimeout(fetch(url), 15000, 'fetchTrackDetails');
+  const r = await withTimeout(dfetch(url), 15000, 'fetchTrackDetails');
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
