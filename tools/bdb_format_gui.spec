@@ -3,7 +3,7 @@
 # PyInstaller Spec für BDB → BRL Track-Konverter (GUI)
 #
 # Bauen (vom Repo-Root):
-#   pip install pyinstaller
+#   pip install pyinstaller pycryptodome
 #   pyinstaller tools/bdb_format_gui.spec
 #
 # Ausgabe: dist/BDB-Track-Konverter/BDB-Track-Konverter.exe
@@ -27,15 +27,17 @@ a = Analysis(
     hiddenimports=[
         "bdb_format",
         "tkinter",
-        "tkinter.ttk",
         "tkinter.filedialog",
         "tkinter.messagebox",
+        "Crypto",
+        "Crypto.Cipher",
+        "Crypto.Cipher.AES",
+        "Crypto.Cipher._mode_cbc",
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["pytest", "numpy", "pandas", "matplotlib",
-              "Crypto", "openpyxl"],
+    excludes=["pytest", "numpy", "pandas", "matplotlib", "openpyxl"],
     noarchive=False,
 )
 

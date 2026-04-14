@@ -24,7 +24,7 @@ jobs:
           - name: BDB-Track-Konverter
             spec: tools/bdb_format_gui.spec
             iss:  installer/bdb_setup.iss
-            pkgs: ""
+            pkgs: "pycryptodome"
           - name: BRL-Format-Tool
             spec: tools/brl_format_gui.spec
             iss:  installer/brl_setup.iss

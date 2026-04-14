@@ -69,10 +69,74 @@ Sowohl CPU-intern als auch als Integer bleiben die Koordinaten exakt.
 from __future__ import annotations
 
 import json
+import os
 import struct
+import zlib
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional, List, Iterator, Tuple
+
+# ── .tbrl Verschlüsselung ────────────────────────────────────────────────────
+# Gleicher AES-256-CBC-Key wie .brl (Fahrzeugprofile). Die Firmware kann
+# beide Formate mit der gleichen AES-Routine entschlüsseln, unterschieden
+# am Magic-Header.
+TBRL_KEY         = bytes.fromhex(
+    "4d358275a7ea02f81df7c5689c073f8edbd464066f563717e6cbaf60addb710a"
+)
+TBRL_MAGIC       = b"TBRL"   # 4 Byte
+TBRL_VERSION     = 1
+TBRL_HEADER_SIZE = 32        # Magic(4) + Ver(1)+Res(3) + IV(16) + Size(4) + CRC(4)
+
+
+def _pkcs7_pad(data: bytes) -> bytes:
+    pad = 16 - (len(data) % 16)
+    return data + bytes([pad] * pad)
+
+
+def encrypt_tbrl(plaintext: bytes) -> bytes:
+    """Verschlüsselt einen .tbrl-Bundle-Blob.
+
+    Layout (identisch zu .brl, nur anderes Magic):
+        "TBRL" | ver(1) | res(3) | iv(16) | size(LE32) | crc32(LE32) | ciphertext
+    """
+    from Crypto.Cipher import AES   # pycryptodome
+    iv = os.urandom(16)
+    cipher = AES.new(TBRL_KEY, AES.MODE_CBC, iv)
+    encrypted = cipher.encrypt(_pkcs7_pad(plaintext))
+    crc = zlib.crc32(encrypted) & 0xFFFFFFFF
+    header = (
+        TBRL_MAGIC
+        + bytes([TBRL_VERSION, 0, 0, 0])
+        + iv
+        + struct.pack("<I", len(encrypted))
+        + struct.pack("<I", crc)
+    )
+    assert len(header) == TBRL_HEADER_SIZE
+    return header + encrypted
+
+
+def decrypt_tbrl(data: bytes) -> bytes:
+    """Entschlüsselt und prüft einen .tbrl-Bundle-Blob."""
+    from Crypto.Cipher import AES
+    if len(data) < TBRL_HEADER_SIZE:
+        raise ValueError("Datei zu kurz für TBRL-Header")
+    if data[:4] != TBRL_MAGIC:
+        raise ValueError(f"Kein gültiges TBRL-Magic: {data[:4]!r}")
+    iv           = data[8:24]
+    size         = struct.unpack_from("<I", data, 24)[0]
+    expected_crc = struct.unpack_from("<I", data, 28)[0]
+    encrypted    = data[TBRL_HEADER_SIZE: TBRL_HEADER_SIZE + size]
+    if len(encrypted) != size:
+        raise ValueError("Unvollständige Payload")
+    if (zlib.crc32(encrypted) & 0xFFFFFFFF) != expected_crc:
+        raise ValueError("CRC32 stimmt nicht")
+    cipher = AES.new(TBRL_KEY, AES.MODE_CBC, iv)
+    plain  = cipher.decrypt(encrypted)
+    pad    = plain[-1]
+    if pad < 1 or pad > 16:
+        raise ValueError(f"Ungültiges PKCS7-Padding: {pad}")
+    return plain[:-pad]
+
 
 # ── Konstanten ──────────────────────────────────────────────────────────────
 TAG_FILE     = 0xA1
