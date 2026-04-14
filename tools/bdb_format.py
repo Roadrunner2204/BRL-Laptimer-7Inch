@@ -299,6 +299,47 @@ class Line:
     def mid_lon(self) -> float:
         return (self.p1.lon + self.p2.lon) / 2.0
 
+    def perpendicular(self, width_m: float = None) -> "Line":
+        """
+        Gibt eine um 90° um den Mittelpunkt gedrehte Linie zurück.
+
+        VBOX BDB speichert Start-/Ziel- und Sektorlinien als 2 Punkte
+        ENTLANG der Fahrtrichtung (Approach + Past-Point). Der BRL-Laptimer
+        erwartet aber eine Linie QUER zur Strecke (zwei Randpunkte). Diese
+        Funktion wandelt das eine in das andere um.
+
+        width_m: Ziellänge der resultierenden Linie in Metern. Wenn None,
+                 wird die Original-Länge beibehalten.
+        """
+        import math
+
+        mlat = self.mid_lat
+        mlon = self.mid_lon
+
+        # Lokale Cartesian-Umrechnung (Näherung für <1 km)
+        DEG2M = 111320.0
+        cos_lat = math.cos(math.radians(mlat)) or 1e-9
+
+        dy = (self.p1.lat - mlat) * DEG2M                 # Nord-Delta [m]
+        dx = (self.p1.lon - mlon) * DEG2M * cos_lat       # Ost-Delta  [m]
+
+        # 90°-Rotation: (dx, dy) → (-dy, dx)
+        rx = -dy
+        ry = dx
+
+        if width_m is not None:
+            cur_len = math.hypot(rx, ry) or 1.0
+            scale   = (width_m / 2.0) / cur_len
+            rx *= scale
+            ry *= scale
+
+        new_dlat = ry / DEG2M
+        new_dlon = rx / (DEG2M * cos_lat)
+
+        p1 = Point(lat=mlat + new_dlat, lon=mlon + new_dlon)
+        p2 = Point(lat=mlat - new_dlat, lon=mlon - new_dlon)
+        return Line(p1=p1, p2=p2)
+
 
 @dataclass
 class Track:
@@ -354,25 +395,29 @@ class Track:
             "length_km":  float(length_km),
             "is_circuit": bool(is_circuit),
         }
+        # VBOX speichert S/F- und Sektorlinien als 2 Punkte ENTLANG der
+        # Fahrtrichtung (Approach + Past-Point). Der BRL-Laptimer erwartet
+        # eine Linie QUER zur Strecke (zwei Randpunkte). Wir rotieren die
+        # Linien beim Export um 90° — die resultierende Breite entspricht
+        # dem Original-Approach-zu-Past-Abstand (typisch 10-30 m), was
+        # räumlich fast exakt auf der echten Timing-Loop-Position liegt.
         if self.sf_line:
+            perp = self.sf_line.perpendicular()
             d["sf"] = [
-                round(self.sf_line.p1.lat, 7), round(self.sf_line.p1.lon, 7),
-                round(self.sf_line.p2.lat, 7), round(self.sf_line.p2.lon, 7),
+                round(perp.p1.lat, 7), round(perp.p1.lon, 7),
+                round(perp.p2.lat, 7), round(perp.p2.lon, 7),
             ]
-        # VBOX-Sektor-Linien 1:1 als 2-Punkt-Linien (lat1/lon1/lat2/lon2).
-        # Die Laptimer-Firmware wird später so angepasst, dass sie dieses
-        # Format nativ verarbeitet -- damit geht keine VBOX-Präzision verloren.
         if self.sectors:
-            d["sectors"] = [
-                {
+            d["sectors"] = []
+            for i, s in enumerate(self.sectors):
+                perp = s.perpendicular()
+                d["sectors"].append({
                     "name": f"S{i+1}",
-                    "lat1": round(s.p1.lat, 7), "lon1": round(s.p1.lon, 7),
-                    "lat2": round(s.p2.lat, 7), "lon2": round(s.p2.lon, 7),
-                }
-                for i, s in enumerate(self.sectors)
-            ]
+                    "lat1": round(perp.p1.lat, 7), "lon1": round(perp.p1.lon, 7),
+                    "lat2": round(perp.p2.lat, 7), "lon2": round(perp.p2.lon, 7),
+                })
 
-        # Zusätzliche VBOX-Metadaten (Bounding-Box, Flags)
+        # Zusätzliche VBOX-Metadaten (Bounding-Box, Flags, Original-Linien)
         vbox: dict = {
             "group_index": self.group,
             "offset":      f"0x{self.offset:x}",
@@ -381,6 +426,21 @@ class Track:
             vbox["bbox"] = [
                 round(self.bbox.p1.lat, 7), round(self.bbox.p1.lon, 7),
                 round(self.bbox.p2.lat, 7), round(self.bbox.p2.lon, 7),
+            ]
+        # Original-Richtungsvektoren aufheben — sind direction-sensitive
+        # (VBOX nutzt die Approach→Past-Richtung zum Erkennen der Fahrrichtung).
+        # Der Laptimer ignoriert unbekannte Felder; für zukünftige Features
+        # wie Direction-Matching bleibt die Info so erhalten.
+        if self.sf_line:
+            vbox["sf_raw"] = [
+                round(self.sf_line.p1.lat, 7), round(self.sf_line.p1.lon, 7),
+                round(self.sf_line.p2.lat, 7), round(self.sf_line.p2.lon, 7),
+            ]
+        if self.sectors:
+            vbox["sectors_raw"] = [
+                [round(s.p1.lat, 7), round(s.p1.lon, 7),
+                 round(s.p2.lat, 7), round(s.p2.lon, 7)]
+                for s in self.sectors
             ]
         if self.flags:
             vbox["flags"] = list(self.flags)

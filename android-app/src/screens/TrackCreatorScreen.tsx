@@ -114,6 +114,7 @@ export default function TrackCreatorScreen({ navigation, route }: Props) {
       sf1, sf2, fin1, fin2,
       sectors,
       showFin: !isCircuit,
+      sfLabel: isCircuit ? 'S/F' : 'Start',
     });
   }, [sf1, sf2, fin1, fin2, sectors, isCircuit]);
 
@@ -314,9 +315,10 @@ export default function TrackCreatorScreen({ navigation, route }: Props) {
   }
 
   const modeHint = (() => {
+    const startWord = isCircuit ? 'Start/Ziel' : 'Start';
     switch (mode) {
-      case 'sf1':    return 'Tippe Punkt 1 der Start/Ziel-Linie';
-      case 'sf2':    return 'Tippe Punkt 2 der Start/Ziel-Linie';
+      case 'sf1':    return `Tippe Punkt 1 der ${startWord}-Linie`;
+      case 'sf2':    return `Tippe Punkt 2 der ${startWord}-Linie`;
       case 'fin1':   return 'Tippe Punkt 1 der Ziel-Linie';
       case 'fin2':   return 'Tippe Punkt 2 der Ziel-Linie';
       case 'sector': return `Tippe Sektor ${sectors.length + 1} (max ${MAX_SECTORS})`;
@@ -340,7 +342,22 @@ export default function TrackCreatorScreen({ navigation, route }: Props) {
           originWhitelist={['*']}
           mixedContentMode="always"
           onMessage={onMessage}
-          onLoadEnd={() => { readyRef.current = true; }}
+          onLoadEnd={() => {
+            readyRef.current = true;
+            // Replay state to the map now that the WebView is live.
+            // (The mount-time effects fired before the HTML finished loading
+            // and were silently dropped because ready was still false.)
+            postToMap({
+              type: 'markers',
+              sf1, sf2, fin1, fin2, sectors,
+              showFin: !isCircuit,
+              sfLabel: isCircuit ? 'S/F' : 'Start',
+            });
+            postToMap({ type: 'mode', mode });
+            if (editing && sf1) {
+              postToMap({ type: 'center', lat: sf1.lat, lon: sf1.lon, zoom: 16 });
+            }
+          }}
           androidLayerType="hardware"
         />
         <View style={s.mapOverlay} pointerEvents="box-none">
@@ -398,12 +415,16 @@ export default function TrackCreatorScreen({ navigation, route }: Props) {
       {/* Mode bar */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.modeBar}
                   contentContainerStyle={{ paddingHorizontal: 8, gap: 6 }}>
-        <ModeBtn label={`S/F 1${sf1 ? ' ✓' : ''}`} active={mode==='sf1'} onPress={() => setMode('sf1')} />
-        <ModeBtn label={`S/F 2${sf2 ? ' ✓' : ''}`} active={mode==='sf2'} onPress={() => setMode('sf2')} />
+        <ModeBtn label={`${isCircuit ? 'S/F' : 'Start'} 1${sf1 ? ' ✓' : ''}`}
+                 active={mode==='sf1'} onPress={() => setMode('sf1')} />
+        <ModeBtn label={`${isCircuit ? 'S/F' : 'Start'} 2${sf2 ? ' ✓' : ''}`}
+                 active={mode==='sf2'} onPress={() => setMode('sf2')} />
         {!isCircuit && (
           <>
-            <ModeBtn label={`Ziel 1${fin1 ? ' ✓' : ''}`} active={mode==='fin1'} onPress={() => setMode('fin1')} />
-            <ModeBtn label={`Ziel 2${fin2 ? ' ✓' : ''}`} active={mode==='fin2'} onPress={() => setMode('fin2')} />
+            <ModeBtn label={`Finish 1${fin1 ? ' ✓' : ''}`}
+                     active={mode==='fin1'} onPress={() => setMode('fin1')} />
+            <ModeBtn label={`Finish 2${fin2 ? ' ✓' : ''}`}
+                     active={mode==='fin2'} onPress={() => setMode('fin2')} />
           </>
         )}
         <ModeBtn label={`+ Sektor (${sectors.length}/${MAX_SECTORS})`}
@@ -455,12 +476,14 @@ export default function TrackCreatorScreen({ navigation, route }: Props) {
 
         {/* Point summary */}
         <Text style={s.section}>Punkte</Text>
-        <PointRow label="S/F Punkt 1" p={sf1} onEdit={() => setMode('sf1')} />
-        <PointRow label="S/F Punkt 2" p={sf2} onEdit={() => setMode('sf2')} />
+        <PointRow label={isCircuit ? 'S/F Punkt 1' : 'Start Punkt 1'}
+                  p={sf1} onEdit={() => setMode('sf1')} />
+        <PointRow label={isCircuit ? 'S/F Punkt 2' : 'Start Punkt 2'}
+                  p={sf2} onEdit={() => setMode('sf2')} />
         {!isCircuit && (
           <>
-            <PointRow label="Ziel Punkt 1" p={fin1} onEdit={() => setMode('fin1')} />
-            <PointRow label="Ziel Punkt 2" p={fin2} onEdit={() => setMode('fin2')} />
+            <PointRow label="Finish Punkt 1" p={fin1} onEdit={() => setMode('fin1')} />
+            <PointRow label="Finish Punkt 2" p={fin2} onEdit={() => setMode('fin2')} />
           </>
         )}
         {sectors.map((p, i) => (
@@ -591,7 +614,14 @@ function setMarkers(msg){
   ['sf1','sf2','fin1','fin2'].forEach(k=>clearMarker(k));
   clearAllSectors();
   const COLOR = { sf1:'#44E0A8', sf2:'#44E0A8', fin1:'#FF3B30', fin2:'#FF3B30' };
-  const LABEL = { sf1:'S/F 1', sf2:'S/F 2', fin1:'Z 1', fin2:'Z 2' };
+  // Map-marker tooltips. S/F wird im A-B-Fall durch msg.showFin umetikettiert:
+  // wir haben hier keine isCircuit-Info, senden zusätzlich msg.sfLabel aus RN.
+  const LABEL = {
+    sf1:  msg.sfLabel ? (msg.sfLabel + ' 1') : 'S/F 1',
+    sf2:  msg.sfLabel ? (msg.sfLabel + ' 2') : 'S/F 2',
+    fin1: 'Finish 1',
+    fin2: 'Finish 2',
+  };
   ['sf1','sf2'].forEach(k=>{
     const p = msg[k]; if(p) markers[k]=mkMarker([p.lat,p.lon],COLOR[k],LABEL[k]);
   });
