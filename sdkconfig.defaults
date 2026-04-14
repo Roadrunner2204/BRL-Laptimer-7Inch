@@ -32,6 +32,20 @@ CONFIG_FREERTOS_HZ=1000
 # prvTaskDeleteWithCaps. Bumped to 4 KB.
 CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=3072
 
+# FreeRTOS TLSP:
+# - Keep CONFIG_FREERTOS_TLSP_DELETION_CALLBACKS DISABLED. When enabled,
+#   the TLSP array's second half is repurposed as callback storage
+#   (N/2 usable logical slots). Non-pthread tasks (lwIP in sys_arch.c,
+#   WiFi driver internals) write raw data pointers into what the kernel
+#   then treats as del-callback slots → on task delete FreeRTOS aborts
+#   with "TLSP deletion callback at index 0 overwritten with non-executable
+#   pointer 0x4800703a" exactly when switching to STA mode.
+# - 2 slots (pthread + lwIP/others) is enough; pthread cleanup then uses
+#   the non-callback variant which is explicitly handled in
+#   pthread_internal_local_storage_destructor_callback on pthread exit.
+CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS=2
+# CONFIG_FREERTOS_TLSP_DELETION_CALLBACKS is not set
+
 # LVGL configuration
 CONFIG_LV_USE_CLIB_MALLOC=y
 CONFIG_LV_USE_CLIB_STRING=y
