@@ -438,7 +438,7 @@ static double haversine_km(double lat1, double lon1, double lat2, double lon2) {
 }
 
 static void cb_track_select(lv_event_t *e) {
-    int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e));
+    int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_current_target(e));
     g_state.active_track_idx = idx;
     lap_timer_set_track(idx);
     const TrackDef *td = track_get(idx);
@@ -456,12 +456,12 @@ static void cb_open_creator(lv_event_t *e) {
 
 static void cb_edit_track(lv_event_t *e) {
     lv_obj_t *scroll = (lv_obj_t*)lv_event_get_user_data(e);
-    int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e));
+    int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_current_target(e));
     if (scroll) open_track_creator(scroll, idx);
 }
 
 static void cb_delete_track(lv_event_t *e) {
-    int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e));
+    int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_current_target(e));
     if (idx < TRACK_DB_BUILTIN_COUNT) return;   // no built-in deletion
     int u_slot = idx - TRACK_DB_BUILTIN_COUNT;
     // Bundle tracks (loaded from Tracks.tbrl) are read-only — reject.
@@ -1330,7 +1330,12 @@ static void open_history_screen() {
             lv_obj_center(rl2);
             lv_obj_set_user_data(ref_btn, (void*)(intptr_t)i);
             lv_obj_add_event_cb(ref_btn, [](lv_event_t *e){
-                int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e));
+                // Use current_target so we read the BUTTON's user_data,
+                // not the inner label's (LVGL bubbles the click event,
+                // so target may be the label which has no user_data → 0,
+                // which made every "Set Ref" button select Lap 1).
+                lv_obj_t *btn = (lv_obj_t*)lv_event_get_current_target(e);
+                int idx = (int)(intptr_t)lv_obj_get_user_data(btn);
                 lap_timer_set_ref_lap((uint8_t)idx);
                 open_history_screen();
             }, LV_EVENT_CLICKED, nullptr);
@@ -1470,7 +1475,7 @@ static void open_history_screen() {
             lv_obj_center(del_lbl);
             lv_obj_set_user_data(del_btn, (void*)(intptr_t)i);
             lv_obj_add_event_cb(del_btn, [](lv_event_t *e) {
-                int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e));
+                int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_current_target(e));
                 session_store_delete_session(s_summaries[idx].id);
                 open_history_screen();
             }, LV_EVENT_CLICKED, nullptr);
@@ -2208,7 +2213,7 @@ static void open_car_profiles_screen() {
             // Store make index in user_data
             lv_obj_set_user_data(btn, (void*)(intptr_t)m);
             lv_obj_add_event_cb(btn, [](lv_event_t *e) {
-                int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e));
+                int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_current_target(e));
                 // Lookup make name from s_profiles
                 char target[CAR_NAME_LEN] = {};
                 int seen = 0;
@@ -2292,7 +2297,7 @@ static void open_car_profiles_screen() {
             lv_obj_center(al);
             lv_obj_set_user_data(btn_act, (void*)(intptr_t)i);
             lv_obj_add_event_cb(btn_act, [](lv_event_t *e) {
-                int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e));
+                int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_current_target(e));
                 car_profile_set_active(s_profiles[idx].filename);
                 car_profile_load(s_profiles[idx].filename);
                 open_car_profiles_screen();
@@ -2313,7 +2318,7 @@ static void open_car_profiles_screen() {
             lv_obj_center(dl);
             lv_obj_set_user_data(btn_del, (void*)(intptr_t)i);
             lv_obj_add_event_cb(btn_del, [](lv_event_t *e) {
-                int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e));
+                int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_current_target(e));
                 car_profile_delete(s_profiles[idx].filename);
                 open_car_profiles_screen();
             }, LV_EVENT_CLICKED, nullptr);
@@ -2329,7 +2334,7 @@ static void open_car_profiles_screen() {
             lv_obj_center(dll);
             lv_obj_set_user_data(btn_dl, (void*)(intptr_t)i);
             lv_obj_add_event_cb(btn_dl, [](lv_event_t *e) {
-                int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e));
+                int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_current_target(e));
                 bool ok = car_profile_download(s_profiles[idx].filename);
                 (void)ok;
                 open_car_profiles_screen();

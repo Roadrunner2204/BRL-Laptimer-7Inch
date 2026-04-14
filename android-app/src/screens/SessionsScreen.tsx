@@ -35,6 +35,9 @@ export default function SessionsScreen({ navigation, route }: Props) {
   const [downloading, setDownloading] = useState<string | null>(null);
   const [refreshing, setRefreshing]   = useState(false);
   const [showDevice, setShowDevice]   = useState(route.params?.mode === 'device');
+  const [selectMode, setSelectMode]   = useState(false);
+  const [selected, setSelected]       = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy]       = useState(false);
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
@@ -91,6 +94,53 @@ export default function SessionsScreen({ navigation, route }: Props) {
     ]);
   }
 
+  function toggleSelect(id: string) {
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    setSelected(next);
+  }
+
+  function exitSelectMode() {
+    setSelectMode(false);
+    setSelected(new Set());
+  }
+
+  async function bulkDelete() {
+    if (selected.size === 0) return;
+    const targets = Array.from(selected);
+    Alert.alert(
+      `${targets.length} Session${targets.length === 1 ? '' : 's'} löschen?`,
+      showDevice
+        ? 'Diese Sessions werden vom Gerät UND aus der lokalen Kopie (falls vorhanden) entfernt. Nicht rückgängig.'
+        : 'Lokale Kopie wird entfernt.',
+      [
+        { text: 'Abbrechen', style: 'cancel' },
+        { text: 'Löschen', style: 'destructive', onPress: async () => {
+          setBulkBusy(true);
+          let okCount = 0;
+          const fails: string[] = [];
+          for (const id of targets) {
+            try {
+              if (showDevice) await deleteSessionOnDevice(id);
+              await deleteSession(id);   // also drop local copy if any
+              okCount++;
+            } catch (e: any) {
+              fails.push(`${id}: ${e?.message ?? String(e)}`);
+            }
+          }
+          setBulkBusy(false);
+          exitSelectMode();
+          await refresh();
+          if (fails.length === 0) {
+            Alert.alert('Fertig', `${okCount} Session${okCount === 1 ? '' : 's'} gelöscht.`);
+          } else {
+            Alert.alert('Teilweise fehlgeschlagen',
+              `${okCount} OK, ${fails.length} Fehler:\n\n${fails.join('\n')}`);
+          }
+        }},
+      ]);
+  }
+
   // Unified render: device view shows device summaries merged with local flag,
   // local view shows only downloaded sessions.
   type Row = {
@@ -135,12 +185,54 @@ export default function SessionsScreen({ navigation, route }: Props) {
   return (
     <View style={s.root}>
       <View style={s.toggle}>
-        <TouchableOpacity style={[s.tab, !showDevice && s.tabActive]} onPress={() => setShowDevice(false)}>
+        <TouchableOpacity
+          style={[s.tab, !showDevice && s.tabActive]}
+          onPress={() => { exitSelectMode(); setShowDevice(false); }}
+        >
           <Text style={[s.tabTxt, !showDevice && s.tabTxtActive]}>Lokal ({local.length})</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={[s.tab, showDevice && s.tabActive]} onPress={() => { setShowDevice(true); refresh(); }}>
+        <TouchableOpacity
+          style={[s.tab, showDevice && s.tabActive]}
+          onPress={() => { exitSelectMode(); setShowDevice(true); refresh(); }}
+        >
           <Text style={[s.tabTxt, showDevice && s.tabTxtActive]}>Gerät ({deviceSessions.length})</Text>
         </TouchableOpacity>
+      </View>
+
+      {/* Select-mode action bar */}
+      <View style={s.selectBar}>
+        {!selectMode ? (
+          <TouchableOpacity style={s.selectStartBtn} onPress={() => setSelectMode(true)}>
+            <Text style={s.selectStartTxt}>Mehrfach auswählen</Text>
+          </TouchableOpacity>
+        ) : (
+          <View style={s.selectActions}>
+            <TouchableOpacity style={s.selectExitBtn} onPress={exitSelectMode}>
+              <Text style={s.selectExitTxt}>✕ Abbrechen</Text>
+            </TouchableOpacity>
+            <Text style={s.selectCount}>{selected.size} ausgewählt</Text>
+            <TouchableOpacity
+              style={[s.selectAllBtn, selected.size === rows.length && s.selectAllBtnActive]}
+              onPress={() => {
+                if (selected.size === rows.length) setSelected(new Set());
+                else setSelected(new Set(rows.map(r => r.id)));
+              }}
+            >
+              <Text style={s.selectAllTxt}>
+                {selected.size === rows.length ? 'Keine' : 'Alle'}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[s.selectDelBtn, (selected.size === 0 || bulkBusy) && { opacity: 0.4 }]}
+              onPress={bulkDelete}
+              disabled={selected.size === 0 || bulkBusy}
+            >
+              {bulkBusy
+                ? <ActivityIndicator color="#fff" size="small" />
+                : <Text style={s.selectDelTxt}>🗑  Löschen</Text>}
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
 
       <FlatList
@@ -155,13 +247,28 @@ export default function SessionsScreen({ navigation, route }: Props) {
         }
         renderItem={({ item: r }) => {
           const isDownloading = downloading === r.id;
+          const isSelected = selected.has(r.id);
           return (
             <TouchableOpacity
-              style={s.card}
-              onPress={() => r.isLocal ? openSession(r.id) : undefined}
-              disabled={!r.isLocal}
-              activeOpacity={r.isLocal ? 0.6 : 1}
+              style={[s.card, isSelected && s.cardSelected]}
+              onPress={() => {
+                if (selectMode) toggleSelect(r.id);
+                else if (r.isLocal) openSession(r.id);
+              }}
+              onLongPress={() => {
+                if (!selectMode) {
+                  setSelectMode(true);
+                  toggleSelect(r.id);
+                }
+              }}
+              disabled={!selectMode && !r.isLocal}
+              activeOpacity={selectMode || r.isLocal ? 0.6 : 1}
             >
+              {selectMode && (
+                <View style={s.checkbox}>
+                  <Text style={s.checkboxMark}>{isSelected ? '✓' : ''}</Text>
+                </View>
+              )}
               {/* Header line: date/time + saved badge */}
               <View style={s.cardTop}>
                 <Text style={s.date}>{r.date}</Text>
@@ -273,4 +380,30 @@ const s = StyleSheet.create({
                   borderWidth:1, borderColor: C.accent, marginBottom:8,
                   alignSelf:'flex-start' },
   videoBadgeTxt:{ color: C.accent, fontSize:12, fontWeight:'600' },
+
+  // Multi-select bar
+  selectBar:        { paddingHorizontal:12, paddingBottom:8 },
+  selectStartBtn:   { backgroundColor: C.surface2, borderRadius:8, paddingVertical:8,
+                      alignItems:'center', borderWidth:1, borderColor: C.border },
+  selectStartTxt:   { color: C.dim, fontSize:13, fontWeight:'600' },
+  selectActions:    { flexDirection:'row', alignItems:'center', gap:6 },
+  selectExitBtn:    { paddingHorizontal:12, paddingVertical:8, borderRadius:8,
+                      backgroundColor: C.surface2, borderWidth:1, borderColor: C.border },
+  selectExitTxt:    { color: C.dim, fontSize:12, fontWeight:'700' },
+  selectCount:      { color: C.text, fontSize:13, fontWeight:'700', flex:1, textAlign:'center' },
+  selectAllBtn:     { paddingHorizontal:12, paddingVertical:8, borderRadius:8,
+                      backgroundColor: C.surface2, borderWidth:1, borderColor: C.border },
+  selectAllBtnActive:{ backgroundColor: C.accent, borderColor: C.accent },
+  selectAllTxt:     { color: C.text, fontSize:12, fontWeight:'700' },
+  selectDelBtn:     { paddingHorizontal:14, paddingVertical:8, borderRadius:8,
+                      backgroundColor: C.danger ?? '#FF3B30' },
+  selectDelTxt:     { color:'#fff', fontSize:13, fontWeight:'800' },
+
+  // Selected card visual
+  cardSelected:     { borderWidth:2, borderColor: C.accent },
+  checkbox:         { position:'absolute', top:10, right:10, width:24, height:24,
+                      borderRadius:12, borderWidth:2, borderColor: C.accent,
+                      alignItems:'center', justifyContent:'center',
+                      backgroundColor: C.bg },
+  checkboxMark:     { color: C.accent, fontSize:14, fontWeight:'900', lineHeight:14 },
 });

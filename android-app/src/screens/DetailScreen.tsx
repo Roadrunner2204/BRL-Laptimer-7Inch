@@ -5,7 +5,7 @@ import {
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RouteProp } from '@react-navigation/native';
 import { RootStackParamList } from '../App';
-import { loadSession } from '../storage';
+import { loadSession, saveSession } from '../storage';
 import { Session, Lap } from '../types';
 import { fmtTime, fmtDelta } from '../utils';
 import { C } from '../theme';
@@ -32,6 +32,20 @@ export default function DetailScreen({ navigation, route }: Props) {
   const validLaps = session.laps.filter(l => l.total_ms > 0);
   const avgMs = validLaps.length > 0
     ? validLaps.reduce((s, l) => s + l.total_ms, 0) / validLaps.length : 0;
+
+  // Reference lap — defaults to the fastest lap, user can pick any lap
+  // by tapping its row. Persisted on the session JSON so ChartsScreen
+  // and any other consumer pick it up.
+  const refIdx = session.ref_lap_idx ?? session.best_lap_idx;
+  const ref    = session.laps[refIdx];
+
+  async function setRefLap(idx: number) {
+    if (!session) return;
+    if (session.laps[idx]?.total_ms <= 0) return;   // skip invalid laps
+    const next: Session = { ...session, ref_lap_idx: idx };
+    setSession(next);
+    try { await saveSession(next); } catch { /* keep in-memory anyway */ }
+  }
 
   const sectorCount = best?.sectors?.length ?? 0;
 
@@ -82,6 +96,13 @@ export default function DetailScreen({ navigation, route }: Props) {
         <StatCard label="Durchschnitt" value={fmtTime(avgMs)} />
       </View>
 
+      {/* Ref-lap hint */}
+      <Text style={s.refHint}>
+        Referenz: Runde {ref?.lap ?? '—'} ({fmtTime(ref?.total_ms ?? 0)})
+        {refIdx === session.best_lap_idx ? '  · Bestzeit' : ''}
+        {'  ·  '}Tippe auf eine Runde um sie als Referenz zu setzen
+      </Text>
+
       {/* Lap table */}
       <ScrollView contentContainerStyle={{ padding: 12 }}>
         {/* Table header */}
@@ -96,22 +117,30 @@ export default function DetailScreen({ navigation, route }: Props) {
 
         {session.laps.map((lap, idx) => {
           const isBest = idx === session.best_lap_idx;
-          const delta  = lap.total_ms - (best?.total_ms ?? 0);
+          const isRef  = idx === refIdx;
+          const delta  = lap.total_ms - (ref?.total_ms ?? 0);
           return (
-            <View key={idx} style={[s.lapRow, isBest && s.lapBest]}>
+            <TouchableOpacity
+              key={idx}
+              style={[s.lapRow, isBest && s.lapBest, isRef && s.lapRef]}
+              onPress={() => setRefLap(idx)}
+              activeOpacity={0.7}
+            >
               <Text style={[s.col0, s.lapTxt, isBest && s.lapBestTxt]}>{lap.lap}</Text>
               <Text style={[s.col1, s.lapTxt, isBest && { color: C.accent, fontWeight:'700' }]}>
                 {fmtTime(lap.total_ms)}
               </Text>
-              <Text style={[s.col2, s.lapTxt, delta < 0 ? s.faster : delta > 0 ? s.slower : s.lapTxt]}>
-                {idx === session.best_lap_idx ? '★ BEST' : fmtDelta(delta)}
+              <Text style={[s.col2, s.lapTxt, isRef ? s.refTxt
+                            : delta < 0 ? s.faster
+                            : delta > 0 ? s.slower : s.lapTxt]}>
+                {isRef ? '▸ REF' : fmtDelta(delta)}
               </Text>
               {lap.sectors?.map((sec, si) => (
                 <Text key={si} style={[s.colS, s.lapTxt, s.secTxt]}>
                   {fmtTime(sec)}
                 </Text>
               ))}
-            </View>
+            </TouchableOpacity>
           );
         })}
       </ScrollView>
@@ -162,11 +191,15 @@ const s = StyleSheet.create({
   hdrTxt:     { color: C.dim, fontSize:11, fontWeight:'600', textTransform:'uppercase' },
   lapRow:     { flexDirection:'row', paddingVertical:10, borderBottomWidth:1, borderColor:'#1a1a1a', alignItems:'center' },
   lapBest:    { backgroundColor: C.highlight, borderRadius:6 },
+  lapRef:     { borderLeftWidth:3, borderLeftColor: C.accent, paddingLeft:4 },
   lapTxt:     { color: C.text, fontSize:14 },
   lapBestTxt: { color: C.text, fontWeight:'700' },
   faster:     { color: C.faster },
   slower:     { color: C.warn },
+  refTxt:     { color: C.accent, fontWeight:'800' },
   secTxt:     { color: C.dim, fontSize:12 },
+  refHint:    { color: C.dim, fontSize:11, paddingHorizontal:14, paddingBottom:8,
+                paddingTop:2, fontStyle:'italic' },
   col0:       { width:28, marginRight:4 },
   col1:       { width:88 },
   col2:       { width:72 },
