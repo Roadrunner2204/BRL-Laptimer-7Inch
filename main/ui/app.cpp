@@ -457,8 +457,10 @@ static void cb_edit_track(lv_event_t *e) {
 
 static void cb_delete_track(lv_event_t *e) {
     int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e));
-    if (idx < TRACK_DB_BUILTIN_COUNT) return;   // only user tracks
+    if (idx < TRACK_DB_BUILTIN_COUNT) return;   // no built-in deletion
     int u_slot = idx - TRACK_DB_BUILTIN_COUNT;
+    // Bundle tracks (loaded from Tracks.tbrl) are read-only — reject.
+    if (u_slot >= g_user_track_count) return;
     // Adjust active track pointer
     if (g_state.active_track_idx == idx)
         g_state.active_track_idx = -1;
@@ -790,6 +792,9 @@ static void cb_tc_save(lv_event_t* /*e*/) {
         int u_slot = -1;
         if (s_tc_edit_idx >= TRACK_DB_BUILTIN_COUNT)
             u_slot = s_tc_edit_idx - TRACK_DB_BUILTIN_COUNT;
+        // Bundle tracks (u_slot >= g_user_track_count) are read-only; we
+        // cannot edit in place. Fall through to "new user track" mode.
+        if (u_slot >= g_user_track_count) u_slot = -1;
         if (u_slot < 0) {
             if (g_user_track_count >= MAX_USER_TRACKS) return;
             u_slot = g_user_track_count;

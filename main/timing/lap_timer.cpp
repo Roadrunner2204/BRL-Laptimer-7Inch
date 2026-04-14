@@ -33,12 +33,17 @@ struct TimingLine {
     bool   active;
 };
 
-// Sector gates use an X-shape (two crossed lines) so they trigger
-// regardless of track direction (N-S, E-W, or any diagonal).
+// Sector gates support two geometries (picked per-sector at track load):
+//   is_line=false → X-shape (two crossed diagonals, from single-point data).
+//                   Triggers on any car-direction crossing.
+//   is_line=true  → one straight segment from (x1,y1) to (x2,y2) in line_a,
+//                   line_b unused. Used when the source data already carries
+//                   a perpendicular 2-point line (VBOX .tbrl tracks).
 struct SectorGate {
-    TimingLine line_a;   // NE-SW diagonal
-    TimingLine line_b;   // NW-SE diagonal
+    TimingLine line_a;   // X-shape NE-SW diagonal  OR  straight 2-point line
+    TimingLine line_b;   // X-shape NW-SE diagonal  (ignored when is_line=true)
     bool       active;
+    bool       is_line;  // true → use only line_a; false → X-shape (a+b)
 };
 
 static TimingLine s_sf_line;
@@ -254,23 +259,36 @@ void lap_timer_set_track(int track_idx) {
     s_sector_count = td->sector_count;
     if (s_sector_count > MAX_SECTORS) s_sector_count = MAX_SECTORS;
     for (uint8_t i = 0; i < s_sector_count; i++) {
-        // X-shaped gate: two crossed lines (~30m across each) centered on the
-        // sector point. Catches crossings at any track direction, because
-        // with two perpendicular diagonals at least one is never parallel
-        // to the car's travel direction.
-        double lat_off = SECTOR_GATE_M / DEG2M_LAT;                  // ~15m in latitude
-        double lon_off = SECTOR_GATE_M / (DEG2M_LAT * cos(td->sectors[i].lat * M_PI / 180.0));
-        double slat = td->sectors[i].lat;
-        double slon = td->sectors[i].lon;
+        const SectorLine &sl = td->sectors[i];
+        bool have_p2 = (sl.lat2 != 0.0 || sl.lon2 != 0.0);
 
-        // Line A: SW → NE
-        build_line(s_sector_gates[i].line_a,
-                   slat - lat_off, slon - lon_off,
-                   slat + lat_off, slon + lon_off);
-        // Line B: NW → SE
-        build_line(s_sector_gates[i].line_b,
-                   slat + lat_off, slon - lon_off,
-                   slat - lat_off, slon + lon_off);
+        if (have_p2) {
+            // 2-point straight line (from VBOX .tbrl data, or any future
+            // source that already provides a precise perpendicular segment).
+            build_line(s_sector_gates[i].line_a,
+                       sl.lat,  sl.lon,
+                       sl.lat2, sl.lon2);
+            s_sector_gates[i].line_b.active = false;
+            s_sector_gates[i].is_line = true;
+        } else {
+            // X-shaped gate: two crossed lines (~30m across each) centered
+            // on the single sector point. Catches crossings at any track
+            // direction because with two perpendicular diagonals at least
+            // one is never parallel to the car's travel direction.
+            double lat_off = SECTOR_GATE_M / DEG2M_LAT;   // ~15 m in latitude
+            double lon_off = SECTOR_GATE_M /
+                             (DEG2M_LAT * cos(sl.lat * M_PI / 180.0));
+            double slat = sl.lat;
+            double slon = sl.lon;
+
+            build_line(s_sector_gates[i].line_a,
+                       slat - lat_off, slon - lon_off,
+                       slat + lat_off, slon + lon_off);
+            build_line(s_sector_gates[i].line_b,
+                       slat + lat_off, slon - lon_off,
+                       slat - lat_off, slon + lon_off);
+            s_sector_gates[i].is_line = false;
+        }
         s_sector_gates[i].active = true;
     }
 
@@ -442,9 +460,14 @@ void lap_timer_poll() {
         for (uint8_t i = lt.current_sector; i < end; i++) {
             if (!s_sector_gates[i].active) continue;
             const TimingLine &la = s_sector_gates[i].line_a;
-            const TimingLine &lb = s_sector_gates[i].line_b;
-            bool cross_a = segments_intersect(px, py, cx, cy, la.x1, la.y1, la.x2, la.y2);
-            bool cross_b = segments_intersect(px, py, cx, cy, lb.x1, lb.y1, lb.x2, lb.y2);
+            bool cross_a = segments_intersect(px, py, cx, cy,
+                                              la.x1, la.y1, la.x2, la.y2);
+            bool cross_b = false;
+            if (!s_sector_gates[i].is_line) {
+                const TimingLine &lb = s_sector_gates[i].line_b;
+                cross_b = segments_intersect(px, py, cx, cy,
+                                             lb.x1, lb.y1, lb.x2, lb.y2);
+            }
             if (cross_a || cross_b) {
                 uint32_t sector_ms = now_ms - lt.sector_start_ms;
                 g_state.session.laps[g_state.session.lap_count].sector_ms[lt.current_sector]

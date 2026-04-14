@@ -144,6 +144,13 @@ void app_main(void)
     ESP_LOGI(TAG, "session_store_load");
     session_store_load_user_tracks();
     session_store_load_builtin_overrides();
+    /* Decrypt + parse optional /sdcard/Tracks.tbrl bundle — populates
+       g_bundle_tracks[] in PSRAM. Harmless no-op if the file is absent. */
+    {
+        extern int tbrl_loader_load_default(void);
+        int n = tbrl_loader_load_default();
+        ESP_LOGI(TAG, "tbrl bundle: %d tracks", n);
+    }
 
     /* ── Load car profile from SD (if previously selected) ─── */
     {

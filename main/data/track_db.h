@@ -5,15 +5,30 @@
 #include "lap_data.h"   // MAX_SECTORS
 
 // ---------------------------------------------------------------------------
-// Sector point
+// Sector line
+//
+// Two modes — chosen automatically by lap_timer:
+//  (A) Single-point crosspoint (lat2==0 && lon2==0):
+//      lap_timer builds an X-shape gate centered on (lat,lon). Used by all
+//      built-in tracks and user-created sectors from the Android app, where
+//      only a single waypoint is recorded.
+//  (B) 2-point straight line (lat2!=0 || lon2!=0):
+//      lap_timer treats (lat,lon) → (lat2,lon2) as one segment perpendicular
+//      to the racing line. Used by .tbrl tracks imported from the VBOX
+//      database — higher precision, no "which crossing direction" ambiguity.
 // ---------------------------------------------------------------------------
 #define SECTOR_NAME_LEN  16
 
 typedef struct {
-    double lat;
+    double lat;                     // point 1 / single-point crosspoint
     double lon;
-    char   name[SECTOR_NAME_LEN];  // e.g. "S1", "Eau Rouge", ""
-} SectorPoint;
+    char   name[SECTOR_NAME_LEN];   // e.g. "S1", "Eau Rouge", ""
+    double lat2;                    // point 2 (0,0 → X-shape fallback)
+    double lon2;
+} SectorLine;
+
+// Back-compat alias so older code can still compile
+typedef SectorLine SectorPoint;
 
 // ---------------------------------------------------------------------------
 // Track definition
@@ -39,7 +54,7 @@ typedef struct {
     double       fin_lat2, fin_lon2;
 
     // Sectors (optional, sector_count = 0 if none)
-    SectorPoint  sectors[MAX_SECTORS];
+    SectorLine   sectors[MAX_SECTORS];
     uint8_t      sector_count;
 
     bool         is_circuit;      // true = closed loop, false = A-B stage
@@ -47,111 +62,21 @@ typedef struct {
 } TrackDef;
 
 // ---------------------------------------------------------------------------
-// Built-in track database
+// Built-in track database — DEPRECATED
+//
+// No tracks are shipped in firmware anymore. The user catalog is fed
+// exclusively by:
+//   1. User-created tracks from the Android app → /sdcard/tracks/*.json
+//   2. Encrypted bundle imported from .tbrl → loaded into PSRAM at boot
+//      (see main/storage/tbrl_loader.*)
+//
+// The empty TRACK_DB[] + TRACK_DB_BUILTIN_COUNT=0 keep the rest of the
+// codebase (track_get, builtin override storage) compiling without
+// structural changes — every `idx < TRACK_DB_BUILTIN_COUNT` check just
+// evaluates false and control falls through to user/bundle tiers.
 // ---------------------------------------------------------------------------
-static const TrackDef TRACK_DB[] = {
-    // -- S/F-Linie: 2 Punkte SENKRECHT zur Fahrlinie, ~10 m Breite --------
-    // Format: sf_lat1/lon1 = linke Seite, sf_lat2/lon2 = rechte Seite
-    // Koordinaten aus oeffentlichen GPS-Daten & OpenStreetMap (WGS84)
-    {
-        // Hauptgerade, Hoehe Zieldurchfahrt / pit-lane exit
-        "Nürburgring GP",        "Deutschland",  5.148f,
-        50.33558,  6.94930,   50.33510,  6.94975,
-        0,0,  0,0,
-        {}, 0,
-        true, false
-    },
-    {
-        // Nordschleife-Zeitmesslinie (Touristenfahrten / NLS) -- Doettinger Hoehe
-        // Einfahrt Nordschleife, ~100 m vor der Karusell-Seite
-        "Nürburgring Nordschleife", "Deutschland", 20.832f,
-        50.33591,  6.94714,   50.33547,  6.94758,
-        0,0,  0,0,
-        {}, 0,
-        true, false
-    },
-    {
-        // Hauptgerade Mercedes-Arena, Hoehe Zielstrahl
-        "Hockenheimring",        "Deutschland",  4.574f,
-        49.32825,  8.56556,   49.32782,  8.56594,
-        0,0,  0,0,
-        {}, 0,
-        true, false
-    },
-    {
-        // Zielgerade vor dem Start/Ziel
-        "Red Bull Ring",         "Österreich",   4.318f,
-        47.21990, 14.76485,   47.21950, 14.76520,
-        0,0,  0,0,
-        {}, 0,
-        true, false
-    },
-    {
-        // Hauptgerade, Hoehe Start/Ziel-Tribuene -- S/F-Linie senkrecht zur Fahrlinie
-        // S1: nach erstem Komplex (Eingang Bergkurve)
-        // S2: Ende Rueckegrade vor letztem Schikanen-Komplex
-        // S3: Eingang letztes Kurvenpaket vor Zielgerade
-        "Salzburgring",          "Österreich",   4.241f,
-        47.78340, 13.18460,   47.78320, 13.18460,
-        0,0,  0,0,
-        {
-            { 47.78415, 13.18400, "S1" },
-            { 47.78270, 13.18510, "S2" },
-            { 47.78290, 13.18325, "S3" },
-        }, 3,
-        true, false
-    },
-    {
-        // La Source-Seite der Hauptgeraden, Hoehe Zeitmessung
-        "Spa-Francorchamps",     "Belgien",      7.004f,
-        50.43718,  5.97126,   50.43677,  5.97162,
-        0,0,  0,0,
-        {}, 0,
-        true, false
-    },
-    {
-        // Hauptgerade vor der Variante del Rettifilo
-        "Monza",                 "Italien",      5.793f,
-        45.61618,  9.28118,   45.61569,  9.28155,
-        0,0,  0,0,
-        {}, 0,
-        true, false
-    },
-    {
-        // Wellington Straight, Zielstrahl vor dem Wing-Gebaeude
-        "Silverstone GP",        "Großbritannien", 5.891f,
-        52.07882, -1.01699,   52.07841, -1.01658,
-        0,0,  0,0,
-        {}, 0,
-        true, false
-    },
-    {
-        // Hauptgerade vor dem Zielbereich
-        "Circuit de Catalunya",  "Spanien",      4.655f,
-        41.57001,  2.26095,   41.56959,  2.26138,
-        0,0,  0,0,
-        {}, 0,
-        true, false
-    },
-    {
-        // Lausitz Eurospeedway Infield, Zielgerade
-        "Lausitzring",           "Deutschland",  4.534f,
-        51.53643, 13.93625,   51.53600, 13.93662,
-        0,0,  0,0,
-        {}, 0,
-        true, false
-    },
-    {
-        // Hauptgerade vor dem Start/Ziel
-        "Sachsenring",           "Deutschland",  3.645f,
-        50.79389, 12.68842,   50.79348, 12.68879,
-        0,0,  0,0,
-        {}, 0,
-        true, false
-    },
-};
-
-static const int TRACK_DB_BUILTIN_COUNT = (int)(sizeof(TRACK_DB) / sizeof(TRACK_DB[0]));
+static const TrackDef TRACK_DB[1] = { {} };
+static const int TRACK_DB_BUILTIN_COUNT = 0;
 
 // ---------------------------------------------------------------------------
 // User-created tracks (loaded from SD at runtime, max 20)
@@ -167,7 +92,18 @@ extern int        g_user_track_count;
 extern TrackDef   g_builtin_overrides[MAX_BUILTIN_TRACKS];
 extern bool       g_builtin_override_set[MAX_BUILTIN_TRACKS];
 
-// Combined access: idx 0..(BUILTIN-1) = built-in, idx BUILTIN..N = user
+// ---------------------------------------------------------------------------
+// Bundle tracks (decrypted .tbrl loaded from SD at boot, PSRAM-allocated).
+// Third tier after built-in + user. Pointer is nullptr until the loader
+// finishes; count stays 0 until then.
+// ---------------------------------------------------------------------------
+extern TrackDef  *g_bundle_tracks;       // malloc'd in PSRAM, nullptr if empty
+extern int        g_bundle_track_count;  // 0 if no Tracks.tbrl on SD
+
+// Combined access order:
+//   idx 0..BUILTIN-1                         = built-in (with overrides)
+//   idx BUILTIN..BUILTIN+USER-1              = user-created
+//   idx BUILTIN+USER..BUILTIN+USER+BUNDLE-1  = .tbrl bundle
 static inline const TrackDef *track_get(int idx) {
     if (idx < 0) return NULL;
     if (idx < TRACK_DB_BUILTIN_COUNT) {
@@ -177,9 +113,11 @@ static inline const TrackDef *track_get(int idx) {
     }
     int u = idx - TRACK_DB_BUILTIN_COUNT;
     if (u < g_user_track_count) return &g_user_tracks[u];
+    int b = u - g_user_track_count;
+    if (g_bundle_tracks && b < g_bundle_track_count) return &g_bundle_tracks[b];
     return NULL;
 }
 
 static inline int track_total_count() {
-    return TRACK_DB_BUILTIN_COUNT + g_user_track_count;
+    return TRACK_DB_BUILTIN_COUNT + g_user_track_count + g_bundle_track_count;
 }

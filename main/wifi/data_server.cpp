@@ -489,25 +489,37 @@ static esp_err_t handle_track_post(httpd_req_t *req)
     }
 
     // Sectors (optional, up to MAX_SECTORS)
+    // Accept single-point ({lat,lon,name}) and VBOX-style 2-point
+    // ({lat1,lon1,lat2,lon2,name}). lap_timer picks X-shape or straight
+    // line based on whether lat2/lon2 are non-zero.
     cJSON *secs = cJSON_GetObjectItem(doc, "sectors");
     if (cJSON_IsArray(secs)) {
         int n = cJSON_GetArraySize(secs);
         for (int i = 0; i < n && td.sector_count < MAX_SECTORS; i++) {
             cJSON *sp = cJSON_GetArrayItem(secs, i);
             if (!sp) continue;
-            cJSON *lat  = cJSON_GetObjectItem(sp, "lat");
-            cJSON *lon  = cJSON_GetObjectItem(sp, "lon");
+            SectorLine &sl = td.sectors[td.sector_count];
+            memset(&sl, 0, sizeof(sl));
+
+            cJSON *lat1 = cJSON_GetObjectItem(sp, "lat1");
+            if (!cJSON_IsNumber(lat1)) lat1 = cJSON_GetObjectItem(sp, "lat");
+            cJSON *lon1 = cJSON_GetObjectItem(sp, "lon1");
+            if (!cJSON_IsNumber(lon1)) lon1 = cJSON_GetObjectItem(sp, "lon");
+            if (!cJSON_IsNumber(lat1) || !cJSON_IsNumber(lon1)) continue;
+            sl.lat = lat1->valuedouble;
+            sl.lon = lon1->valuedouble;
+
+            cJSON *lat2 = cJSON_GetObjectItem(sp, "lat2");
+            cJSON *lon2 = cJSON_GetObjectItem(sp, "lon2");
+            if (cJSON_IsNumber(lat2)) sl.lat2 = lat2->valuedouble;
+            if (cJSON_IsNumber(lon2)) sl.lon2 = lon2->valuedouble;
+
             cJSON *sname = cJSON_GetObjectItem(sp, "name");
-            if (!cJSON_IsNumber(lat) || !cJSON_IsNumber(lon)) continue;
-            td.sectors[td.sector_count].lat = lat->valuedouble;
-            td.sectors[td.sector_count].lon = lon->valuedouble;
-            if (cJSON_IsString(sname)) {
-                strncpy(td.sectors[td.sector_count].name, sname->valuestring,
-                        SECTOR_NAME_LEN - 1);
-            } else {
-                snprintf(td.sectors[td.sector_count].name, SECTOR_NAME_LEN,
-                         "S%d", td.sector_count + 1);
-            }
+            if (cJSON_IsString(sname))
+                strncpy(sl.name, sname->valuestring, SECTOR_NAME_LEN - 1);
+            else
+                snprintf(sl.name, SECTOR_NAME_LEN, "S%d", td.sector_count + 1);
+
             td.sector_count++;
         }
     }

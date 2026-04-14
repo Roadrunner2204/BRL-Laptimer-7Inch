@@ -403,7 +403,11 @@ void session_store_load_user_tracks()
             }
         }
 
-        // Sectors
+        // Sectors — accepts two JSON shapes:
+        //   single-point: { "lat": …, "lon": …, "name": "S1" }
+        //   2-point:      { "lat1":…, "lon1":…, "lat2":…, "lon2":…, "name":"S1" }
+        // Any field missing → 0, and lap_timer treats (lat2==0 && lon2==0)
+        // as "fall back to X-shape around (lat,lon)".
         cJSON *secs = cJSON_GetObjectItem(doc, "sectors");
         td.sector_count = 0;
         if (cJSON_IsArray(secs)) {
@@ -411,17 +415,27 @@ void session_store_load_user_tracks()
             for (int i = 0; i < n && td.sector_count < MAX_SECTORS; i++) {
                 cJSON *sp = cJSON_GetArrayItem(secs, i);
                 if (!sp) continue;
+                SectorLine &sl = td.sectors[td.sector_count];
+                memset(&sl, 0, sizeof(sl));
 
-                j = cJSON_GetObjectItem(sp, "lat");
-                if (cJSON_IsNumber(j)) td.sectors[td.sector_count].lat = j->valuedouble;
+                // Point 1: prefer explicit "lat1/lon1", else fall back to "lat/lon"
+                j = cJSON_GetObjectItem(sp, "lat1");
+                if (!cJSON_IsNumber(j)) j = cJSON_GetObjectItem(sp, "lat");
+                if (cJSON_IsNumber(j)) sl.lat = j->valuedouble;
 
-                j = cJSON_GetObjectItem(sp, "lon");
-                if (cJSON_IsNumber(j)) td.sectors[td.sector_count].lon = j->valuedouble;
+                j = cJSON_GetObjectItem(sp, "lon1");
+                if (!cJSON_IsNumber(j)) j = cJSON_GetObjectItem(sp, "lon");
+                if (cJSON_IsNumber(j)) sl.lon = j->valuedouble;
+
+                // Point 2 (optional — only set for true 2-point lines)
+                j = cJSON_GetObjectItem(sp, "lat2");
+                if (cJSON_IsNumber(j)) sl.lat2 = j->valuedouble;
+                j = cJSON_GetObjectItem(sp, "lon2");
+                if (cJSON_IsNumber(j)) sl.lon2 = j->valuedouble;
 
                 j = cJSON_GetObjectItem(sp, "name");
                 if (cJSON_IsString(j))
-                    strncpy(td.sectors[td.sector_count].name, j->valuestring,
-                            SECTOR_NAME_LEN - 1);
+                    strncpy(sl.name, j->valuestring, SECTOR_NAME_LEN - 1);
 
                 td.sector_count++;
             }
