@@ -1067,6 +1067,20 @@ static void open_track_creator(lv_obj_t *scroll, int edit_idx) {
     s_tc_is_circuit = true;
     const TrackDef *edit_td = (edit_idx >= 0) ? track_get(edit_idx) : nullptr;
     if (edit_td) s_tc_is_circuit = edit_td->is_circuit;
+    // Diagnostic: which physical entry is being edited and which coords
+    // we're about to populate the textareas with. If you tap "Nurburgring
+    // GP" expecting your edit but see bundle coords here, the dedupe
+    // missed because of a hidden name difference (trailing space etc.).
+    if (edit_td) {
+        int u_max = TRACK_DB_BUILTIN_COUNT + g_user_track_count;
+        const char *kind = (edit_idx < TRACK_DB_BUILTIN_COUNT) ? "BUILTIN"
+                          : (edit_idx < u_max) ? "USER" : "BUNDLE";
+        ESP_LOGI("open_tc",
+            "edit_idx=%d (%s) name='%s' sf=[%.6f, %.6f -> %.6f, %.6f]",
+            edit_idx, kind, edit_td->name,
+            edit_td->sf_lat1, edit_td->sf_lon1,
+            edit_td->sf_lat2, edit_td->sf_lon2);
+    }
 
     // Clear the existing list and build creator form in place
     lv_obj_clean(scroll);
@@ -1203,19 +1217,34 @@ static void open_track_creator(lv_obj_t *scroll, int edit_idx) {
             if (s_tc_fin_box) lv_obj_remove_flag(s_tc_fin_box, LV_OBJ_FLAG_HIDDEN);
         }
 
-        // S/F coordinates
+        // S/F coordinates — set + force-invalidate so LVGL definitely
+        // re-rasterises the textarea label even if its internal dirty
+        // tracking missed the update.
         char buf[24];
-        snprintf(buf, sizeof(buf), "%.7f", edit_td->sf_lat1); lv_textarea_set_text(s_tc_sf1_lat, buf);
-        snprintf(buf, sizeof(buf), "%.7f", edit_td->sf_lon1); lv_textarea_set_text(s_tc_sf1_lon, buf);
-        snprintf(buf, sizeof(buf), "%.7f", edit_td->sf_lat2); lv_textarea_set_text(s_tc_sf2_lat, buf);
-        snprintf(buf, sizeof(buf), "%.7f", edit_td->sf_lon2); lv_textarea_set_text(s_tc_sf2_lon, buf);
+        auto fill = [&](lv_obj_t *ta, double v) {
+            char b[24];
+            snprintf(b, sizeof(b), "%.7f", v);
+            lv_textarea_set_text(ta, b);
+            lv_obj_invalidate(ta);
+        };
+        fill(s_tc_sf1_lat, edit_td->sf_lat1);
+        fill(s_tc_sf1_lon, edit_td->sf_lon1);
+        fill(s_tc_sf2_lat, edit_td->sf_lat2);
+        fill(s_tc_sf2_lon, edit_td->sf_lon2);
+        (void)buf;
+
+        ESP_LOGI("open_tc", "Textareas after fill: sf1=[%s, %s] sf2=[%s, %s]",
+                 lv_textarea_get_text(s_tc_sf1_lat),
+                 lv_textarea_get_text(s_tc_sf1_lon),
+                 lv_textarea_get_text(s_tc_sf2_lat),
+                 lv_textarea_get_text(s_tc_sf2_lon));
 
         // Finish line (A-B)
         if (!edit_td->is_circuit && s_tc_fin1_lat) {
-            snprintf(buf, sizeof(buf), "%.7f", edit_td->fin_lat1); lv_textarea_set_text(s_tc_fin1_lat, buf);
-            snprintf(buf, sizeof(buf), "%.7f", edit_td->fin_lon1); lv_textarea_set_text(s_tc_fin1_lon, buf);
-            snprintf(buf, sizeof(buf), "%.7f", edit_td->fin_lat2); lv_textarea_set_text(s_tc_fin2_lat, buf);
-            snprintf(buf, sizeof(buf), "%.7f", edit_td->fin_lon2); lv_textarea_set_text(s_tc_fin2_lon, buf);
+            fill(s_tc_fin1_lat, edit_td->fin_lat1);
+            fill(s_tc_fin1_lon, edit_td->fin_lon1);
+            fill(s_tc_fin2_lat, edit_td->fin_lat2);
+            fill(s_tc_fin2_lon, edit_td->fin_lon2);
         }
 
         // Sectors
@@ -1223,10 +1252,8 @@ static void open_track_creator(lv_obj_t *scroll, int edit_idx) {
             char sec_lbl[8]; snprintf(sec_lbl, sizeof(sec_lbl), "S%d", i+1);
             mk_coord_row(s_tc_sec_container, sec_lbl,
                          &s_tc_sec_lat[i], &s_tc_sec_lon[i]);
-            snprintf(buf, sizeof(buf), "%.7f", edit_td->sectors[i].lat);
-            lv_textarea_set_text(s_tc_sec_lat[i], buf);
-            snprintf(buf, sizeof(buf), "%.7f", edit_td->sectors[i].lon);
-            lv_textarea_set_text(s_tc_sec_lon[i], buf);
+            fill(s_tc_sec_lat[i], edit_td->sectors[i].lat);
+            fill(s_tc_sec_lon[i], edit_td->sectors[i].lon);
             s_tc_sec_count = i + 1;
         }
         if (s_tc_sec_count >= MAX_SECTORS && s_tc_add_sec_btn)

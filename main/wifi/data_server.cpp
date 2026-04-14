@@ -609,17 +609,40 @@ static esp_err_t handle_track_post(httpd_req_t *req)
     bool locked = (g_state_mutex &&
                    xSemaphoreTake(g_state_mutex, pdMS_TO_TICKS(2000)) == pdTRUE);
 
+    // ---- Diagnostics: log received coords so we can verify roundtrip ----
+    ESP_LOGI(TAG, "POST /track RX: name='%s' country='%s' is_circuit=%d "
+                  "sf=[%.6f, %.6f -> %.6f, %.6f] sectors=%u",
+             td.name, td.country, td.is_circuit ? 1 : 0,
+             td.sf_lat1, td.sf_lon1, td.sf_lat2, td.sf_lon2,
+             (unsigned)td.sector_count);
+
     bool saved = session_store_save_user_track(&td);
     if (saved) session_store_load_user_tracks();
 
     if (locked) xSemaphoreGive(g_state_mutex);
 
     if (!saved) {
+        ESP_LOGE(TAG, "POST /track: save_user_track FAILED for '%s'", td.name);
         return send_err(req, "500 Internal Server Error", "save failed");
     }
 
-    ESP_LOGI(TAG, "POST /track -- saved '%s' (%s, %u sectors)",
-             td.name, td.is_circuit ? "circuit" : "A-B", td.sector_count);
+    // Verify what's now in g_user_tracks for the same name
+    bool found = false;
+    for (int u = 0; u < g_user_track_count; u++) {
+        if (strcmp(g_user_tracks[u].name, td.name) == 0) {
+            const TrackDef &v = g_user_tracks[u];
+            ESP_LOGI(TAG, "POST /track OK: g_user_tracks[%d] '%s' "
+                          "sf=[%.6f, %.6f -> %.6f, %.6f]",
+                     u, v.name,
+                     v.sf_lat1, v.sf_lon1, v.sf_lat2, v.sf_lon2);
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        ESP_LOGW(TAG, "POST /track: '%s' was not in g_user_tracks after reload! "
+                      "(count=%d)", td.name, g_user_track_count);
+    }
 
     set_cors_headers(req);
     httpd_resp_set_type(req, "application/json");

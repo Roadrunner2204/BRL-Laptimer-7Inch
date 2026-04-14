@@ -457,7 +457,8 @@ void session_store_load_user_tracks()
         }
 
         g_user_track_count++;
-        log_i("Loaded user track: %s", td.name);
+        log_i("Loaded user track: %s  sf=[%.6f, %.6f -> %.6f, %.6f]",
+              td.name, td.sf_lat1, td.sf_lon1, td.sf_lat2, td.sf_lon2);
 
         cJSON_Delete(doc);
     }

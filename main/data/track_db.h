@@ -100,15 +100,62 @@ extern bool       g_builtin_override_set[MAX_BUILTIN_TRACKS];
 extern TrackDef  *g_bundle_tracks;       // malloc'd in PSRAM, nullptr if empty
 extern int        g_bundle_track_count;  // 0 if no Tracks.tbrl on SD
 
+// Normalize a track name for comparison: lowercase ASCII, German umlauts
+// folded (ä→a, ö→o, ü→u, ß→ss), trailing whitespace stripped. The VBOX
+// bundle stores names like "Nürburgring GP" while user-created tracks
+// frequently end up as "Nurburgring GP" (no umlaut). Without
+// normalization the dedupe and transparent shadow logic miss the match
+// → user sees both entries and edits the wrong one. Output is
+// null-terminated, max 64 bytes.
+static inline void track_norm_name(const char *in, char *out, size_t out_sz) {
+    size_t o = 0;
+    if (!in || out_sz == 0) { if (out_sz) out[0] = 0; return; }
+    while (*in && o + 1 < out_sz) {
+        unsigned char c0 = (unsigned char)*in;
+        // UTF-8 2-byte sequences for German diacritics
+        if (c0 == 0xC3 && (unsigned char)in[1]) {
+            unsigned char c1 = (unsigned char)in[1];
+            const char *rep = NULL;
+            switch (c1) {
+                case 0xA4: case 0x84: rep = "a"; break;   // ä Ä
+                case 0xB6: case 0x96: rep = "o"; break;   // ö Ö
+                case 0xBC: case 0x9C: rep = "u"; break;   // ü Ü
+                case 0x9F:            rep = "ss"; break;  // ß
+                default: break;
+            }
+            if (rep) {
+                while (*rep && o + 1 < out_sz) out[o++] = *rep++;
+                in += 2;
+                continue;
+            }
+        }
+        // ASCII path: lowercase A-Z, drop control chars, keep rest
+        if (c0 >= 'A' && c0 <= 'Z') c0 = (unsigned char)(c0 - 'A' + 'a');
+        if (c0 >= 0x20) out[o++] = (char)c0;
+        in++;
+    }
+    // Strip trailing whitespace
+    while (o > 0 && (out[o-1] == ' ' || out[o-1] == '\t')) o--;
+    out[o] = 0;
+}
+
+static inline bool track_names_equivalent(const char *a, const char *b) {
+    char na[64], nb[64];
+    track_norm_name(a, na, sizeof(na));
+    track_norm_name(b, nb, sizeof(nb));
+    return strcmp(na, nb) == 0;
+}
+
 // Combined access order:
 //   idx 0..BUILTIN-1                         = built-in (with overrides)
 //   idx BUILTIN..BUILTIN+USER-1              = user-created
 //   idx BUILTIN+USER..BUILTIN+USER+BUNDLE-1  = .tbrl bundle
 //
 // When the requested bundle track is "shadowed" by a user-created edit
-// with the same name, we transparently return the user track instead —
-// every path in the firmware (timing screen, lap_timer, app API, active
-// track) then sees the edit, not the pristine catalog entry.
+// with the same (normalized) name, we transparently return the user
+// track instead — every path in the firmware (timing screen, lap_timer,
+// app API, active track) then sees the edit, not the pristine catalog
+// entry.
 static inline const TrackDef *track_get(int idx) {
     if (idx < 0) return NULL;
     if (idx < TRACK_DB_BUILTIN_COUNT) {
@@ -121,9 +168,8 @@ static inline const TrackDef *track_get(int idx) {
     int b = u - g_user_track_count;
     if (g_bundle_tracks && b < g_bundle_track_count) {
         const TrackDef *bt = &g_bundle_tracks[b];
-        // Transparent shadow: prefer a same-named user track if present
         for (int uu = 0; uu < g_user_track_count; uu++) {
-            if (strcmp(g_user_tracks[uu].name, bt->name) == 0)
+            if (track_names_equivalent(g_user_tracks[uu].name, bt->name))
                 return &g_user_tracks[uu];
         }
         return bt;
@@ -136,9 +182,10 @@ static inline int track_total_count() {
 }
 
 // A bundle track is "shadowed" when a user-created track with the same
-// name exists — the user version is the intended edit, the bundle entry
-// is the pristine catalog original. Renderers (display + app) should skip
-// shadowed bundle entries so the user doesn't see duplicates.
+// (normalized) name exists — the user version is the intended edit, the
+// bundle entry is the pristine catalog original. Renderers (display +
+// app) should skip shadowed bundle entries so the user doesn't see
+// duplicates.
 static inline bool track_is_shadowed(int idx) {
     int u_base = TRACK_DB_BUILTIN_COUNT + g_user_track_count;
     if (idx < u_base) return false;                 // not a bundle idx
@@ -147,7 +194,7 @@ static inline bool track_is_shadowed(int idx) {
     const char *bn = g_bundle_tracks[b].name;
     if (!bn || !bn[0]) return false;
     for (int u = 0; u < g_user_track_count; u++) {
-        if (strcmp(g_user_tracks[u].name, bn) == 0) return true;
+        if (track_names_equivalent(g_user_tracks[u].name, bn)) return true;
     }
     return false;
 }

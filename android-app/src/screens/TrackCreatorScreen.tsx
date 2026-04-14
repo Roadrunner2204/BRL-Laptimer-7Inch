@@ -145,6 +145,26 @@ export default function TrackCreatorScreen({ navigation, route }: Props) {
       const msg = JSON.parse(e.nativeEvent.data);
       if (msg.type === 'tap' && typeof msg.lat === 'number' && typeof msg.lon === 'number') {
         applyPlacement(msg.lat, msg.lon);
+      } else if (msg.type === 'drag' && typeof msg.key === 'string'
+                 && typeof msg.lat === 'number' && typeof msg.lon === 'number') {
+        // User dragged an existing marker — update the matching state
+        // directly without going through the placement-mode dance.
+        const p = { lat: msg.lat, lon: msg.lon };
+        switch (msg.key) {
+          case 'sf1':  setSf1(p); break;
+          case 'sf2':  setSf2(p); break;
+          case 'fin1': setFin1(p); break;
+          case 'fin2': setFin2(p); break;
+          default:
+            if (msg.key.startsWith('sector_')) {
+              const i = parseInt(msg.key.slice(7), 10);
+              if (!isNaN(i) && i >= 0 && i < sectors.length) {
+                const next = [...sectors];
+                next[i] = p;
+                setSectors(next);
+              }
+            }
+        }
       }
     } catch { /* ignore malformed msg */ }
   }
@@ -632,18 +652,39 @@ function clearAllSectors(){
   Object.keys(markers).filter(k=>k.startsWith('sector_')).forEach(clearMarker);
 }
 
-function mkMarker(latlng, color, label){
+function mkMarker(latlng, color, label, key){
+  // Larger touch target (28 px), draggable so the user can drag any
+  // existing point to a new position without first selecting a mode.
   const icon = L.divIcon({
     className:'',
-    html:'<div style="width:18px;height:18px;border-radius:50%;'+
-         'background:'+color+';border:3px solid #fff;box-shadow:0 0 6px #000;'+
+    html:'<div style="width:24px;height:24px;border-radius:50%;'+
+         'background:'+color+';border:3px solid #fff;box-shadow:0 0 8px #000;'+
          'transform:translate(-50%,-50%);"></div>',
-    iconSize:[18,18], iconAnchor:[0,0],
+    iconSize:[24,24], iconAnchor:[0,0],
   });
-  const m = L.marker(latlng,{icon, interactive:false}).addTo(map);
+  const m = L.marker(latlng,{icon, draggable: true, autoPan: true}).addTo(map);
   if(label){
-    m.bindTooltip(label,{permanent:true,direction:'top',offset:[0,-10],className:'pt-label'});
+    m.bindTooltip(label,{permanent:true,direction:'top',offset:[0,-12],className:'pt-label'});
   }
+  // While dragging redraw lines live so user sees the new geometry.
+  m.on('drag', () => redrawLines());
+  // On dragend send the new coords back to RN — host code updates the
+  // sf1/sf2/fin1/fin2/sectors[] React state and the next markers-message
+  // round-trips back here. No mode-button required.
+  // Force-enable dragging in case Leaflet's auto-init missed it on touch.
+  if (m.dragging) try { m.dragging.enable(); } catch (_) {}
+  m.on('dragend', () => {
+    const ll = m.getLatLng();
+    const payload = JSON.stringify({
+      type: 'drag', key: key, lat: ll.lat, lon: ll.lng,
+    });
+    // Belt + braces: try both message bridges
+    if (window.ReactNativeWebView) {
+      window.ReactNativeWebView.postMessage(payload);
+    } else if (typeof postMessage === 'function') {
+      postMessage(payload);
+    }
+  });
   return m;
 }
 
@@ -673,15 +714,15 @@ function setMarkers(msg){
     fin2: 'Finish 2',
   };
   ['sf1','sf2'].forEach(k=>{
-    const p = msg[k]; if(p) markers[k]=mkMarker([p.lat,p.lon],COLOR[k],LABEL[k]);
+    const p = msg[k]; if(p) markers[k]=mkMarker([p.lat,p.lon],COLOR[k],LABEL[k],k);
   });
   if(msg.showFin){
     ['fin1','fin2'].forEach(k=>{
-      const p = msg[k]; if(p) markers[k]=mkMarker([p.lat,p.lon],COLOR[k],LABEL[k]);
+      const p = msg[k]; if(p) markers[k]=mkMarker([p.lat,p.lon],COLOR[k],LABEL[k],k);
     });
   }
   (msg.sectors||[]).forEach((p,i)=>{
-    markers['sector_'+i] = mkMarker([p.lat,p.lon],'#FFEE55','S'+(i+1));
+    markers['sector_'+i] = mkMarker([p.lat,p.lon],'#FFEE55','S'+(i+1),'sector_'+i);
   });
   redrawLines();
 }
