@@ -22,8 +22,9 @@ __NEEDS_ONBOARD
 /android-app/build/
 /android-app/.expo/
 
-# Installer binaries (large, regenerable from tools/*.spec)
-/installer/
+# Installer binaries (large, regenerable) — but keep the .iss scripts
+/installer/*
+!/installer/*.iss
 
 # Editor
 /.vscode/
