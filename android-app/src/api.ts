@@ -72,7 +72,7 @@ export async function fetchSession(id: string): Promise<Session> {
 
 export async function deleteSessionOnDevice(id: string): Promise<void> {
   await withTimeout(
-    fetch(`${baseUrl}/session/${id}`, { method: 'DELETE' }),
+    dfetch(`${baseUrl}/session/${id}`, { method: 'DELETE' }),
     10000,
     'deleteSession',
   );
@@ -96,7 +96,7 @@ export function videoUrl(id: string): string {
 
 export async function deleteVideoOnDevice(id: string): Promise<void> {
   await withTimeout(
-    fetch(`${baseUrl}/video/${id}`, { method: 'DELETE' }),
+    dfetch(`${baseUrl}/video/${id}`, { method: 'DELETE' }),
     10000,
     'deleteVideo',
   );
@@ -129,13 +129,16 @@ export async function fetchTrackDetails(idx: number): Promise<Track> {
 export async function postTrack(track: Track): Promise<{ ok: boolean; name: string; total: number }> {
   const url = `${baseUrl}/track`;
   log('POST', url, track.name);
+  // Route via wifiFetch explicitly — TrackCreator binds the process
+  // default to cellular for map tiles; without wifiFetch here the POST
+  // would try 192.168.4.1 over mobile data and hang.
   const r = await withTimeout(
-    fetch(url, {
+    dfetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(track),
     }),
-    15000,
+    30000,
     'postTrack',
   );
   const json = await r.json().catch(() => ({}));

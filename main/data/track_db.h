@@ -104,6 +104,11 @@ extern int        g_bundle_track_count;  // 0 if no Tracks.tbrl on SD
 //   idx 0..BUILTIN-1                         = built-in (with overrides)
 //   idx BUILTIN..BUILTIN+USER-1              = user-created
 //   idx BUILTIN+USER..BUILTIN+USER+BUNDLE-1  = .tbrl bundle
+//
+// When the requested bundle track is "shadowed" by a user-created edit
+// with the same name, we transparently return the user track instead —
+// every path in the firmware (timing screen, lap_timer, app API, active
+// track) then sees the edit, not the pristine catalog entry.
 static inline const TrackDef *track_get(int idx) {
     if (idx < 0) return NULL;
     if (idx < TRACK_DB_BUILTIN_COUNT) {
@@ -114,10 +119,35 @@ static inline const TrackDef *track_get(int idx) {
     int u = idx - TRACK_DB_BUILTIN_COUNT;
     if (u < g_user_track_count) return &g_user_tracks[u];
     int b = u - g_user_track_count;
-    if (g_bundle_tracks && b < g_bundle_track_count) return &g_bundle_tracks[b];
+    if (g_bundle_tracks && b < g_bundle_track_count) {
+        const TrackDef *bt = &g_bundle_tracks[b];
+        // Transparent shadow: prefer a same-named user track if present
+        for (int uu = 0; uu < g_user_track_count; uu++) {
+            if (strcmp(g_user_tracks[uu].name, bt->name) == 0)
+                return &g_user_tracks[uu];
+        }
+        return bt;
+    }
     return NULL;
 }
 
 static inline int track_total_count() {
     return TRACK_DB_BUILTIN_COUNT + g_user_track_count + g_bundle_track_count;
+}
+
+// A bundle track is "shadowed" when a user-created track with the same
+// name exists — the user version is the intended edit, the bundle entry
+// is the pristine catalog original. Renderers (display + app) should skip
+// shadowed bundle entries so the user doesn't see duplicates.
+static inline bool track_is_shadowed(int idx) {
+    int u_base = TRACK_DB_BUILTIN_COUNT + g_user_track_count;
+    if (idx < u_base) return false;                 // not a bundle idx
+    int b = idx - u_base;
+    if (!g_bundle_tracks || b < 0 || b >= g_bundle_track_count) return false;
+    const char *bn = g_bundle_tracks[b].name;
+    if (!bn || !bn[0]) return false;
+    for (int u = 0; u < g_user_track_count; u++) {
+        if (strcmp(g_user_tracks[u].name, bn) == 0) return true;
+    }
+    return false;
 }

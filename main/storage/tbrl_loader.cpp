@@ -26,6 +26,8 @@
 #include "esp_heap_caps.h"
 #include "cJSON.h"
 #include "mbedtls/aes.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -233,8 +235,22 @@ extern "C" int tbrl_loader_load_default(void) {
         free(file);
         return 0;
     }
-    if (!aes_decrypt_cbc(iv, cipher, cipher_len, plain)) {
-        ESP_LOGE(TAG, "AES decrypt failed");
+    // HW-AES on ESP32-P4 needs contiguous DMA-capable internal DRAM for
+    // its descriptor array; right after switching to STA the heap is
+    // fragmented (LVGL + WebView + WiFi/TLS all hot) and the first call
+    // regularly fails with "Failed to allocate memory for the array of
+    // DMA descriptors". Retry a few times — heap defrags between tries.
+    bool dec_ok = false;
+    for (int attempt = 1; attempt <= 4; attempt++) {
+        if (aes_decrypt_cbc(iv, cipher, cipher_len, plain)) {
+            dec_ok = true;
+            break;
+        }
+        ESP_LOGW(TAG, "AES attempt %d/4 failed, retrying...", attempt);
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+    if (!dec_ok) {
+        ESP_LOGE(TAG, "AES decrypt failed after retries");
         free(plain);
         free(file);
         return 0;

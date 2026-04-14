@@ -38,7 +38,17 @@ export default function TracksScreen({ navigation }: Props) {
     setLoading(true);
     try {
       const list = await fetchTracks();
-      setTracks(list.map((t, i) => ({ ...t, index: i })));
+      // Prefer the explicit device-side index when present (firmware >= v1.0.4).
+      // Also dedupe by name as a safety net — if the firmware didn't shadow a
+      // bundle entry that was edited as a user track, hide the bundle copy.
+      const seenUserNames = new Set(
+        list.filter(t => t.user_created).map(t => t.name.toLowerCase()));
+      const deduped = list.filter(t =>
+        t.user_created || !seenUserNames.has(t.name.toLowerCase()));
+      setTracks(deduped.map((t, i) => ({
+        ...t,
+        index: typeof t.index === 'number' ? t.index : i,
+      })));
     } catch (e: any) {
       Alert.alert('Konnte Streckenliste nicht laden',
         e?.message ?? String(e));

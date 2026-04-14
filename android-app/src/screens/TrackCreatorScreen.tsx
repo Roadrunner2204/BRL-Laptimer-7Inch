@@ -572,11 +572,13 @@ const MAP_HTML = `<!DOCTYPE html>
   .leaflet-control-zoom a:hover{background:#0096FF;color:#000;}
   .pt-label{background:rgba(0,0,0,0.8);color:#fff;border:1px solid #0096FF;
     border-radius:4px;padding:1px 5px;font:bold 10px sans-serif;white-space:nowrap;}
-  #layerToggle{position:absolute;top:8px;right:8px;z-index:1000;
+  #layerToggle{position:absolute;bottom:10px;left:10px;z-index:1000;
     display:flex;background:rgba(13,17,23,0.92);border:1px solid #1C3A5C;
-    border-radius:8px;overflow:hidden;font-family:sans-serif;font-size:12px;}
+    border-radius:22px;overflow:hidden;font-family:sans-serif;font-size:12px;
+    box-shadow:0 2px 6px rgba(0,0,0,0.5);}
   #layerToggle button{background:transparent;color:#7A8FA6;border:none;
-    padding:7px 12px;font-size:12px;font-weight:700;cursor:pointer;}
+    padding:10px 16px;font-size:12px;font-weight:700;cursor:pointer;
+    min-height:44px;}
   #layerToggle button.active{background:#0096FF;color:#000;}
 </style>
 </head><body>

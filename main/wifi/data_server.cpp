@@ -122,7 +122,7 @@ static esp_err_t handle_sessions(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
 
     if (!g_state.sd_available) {
-        const char *err = "{\"error\":\"SD not available\"}";
+        const char *err = "{\"error\":\"HDD not available\"}";
         httpd_resp_set_status(req, "503 Service Unavailable");
         return httpd_resp_send(req, err, strlen(err));
     }
@@ -454,21 +454,26 @@ static esp_err_t handle_tracks_get(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
 
     httpd_resp_send_chunk(req, "[", 1);
-    char entry[192];
+    char entry[224];
     int total = track_total_count();
+    bool first = true;
     for (int i = 0; i < total; i++) {
         const TrackDef *td = track_get(i);
         if (!td) continue;
+        if (track_is_shadowed(i)) continue;   // hide dup-name bundle entries
         int elen = snprintf(entry, sizeof(entry),
-            "%s{\"name\":\"%s\",\"country\":\"%s\","
+            "%s{\"index\":%d,\"name\":\"%s\",\"country\":\"%s\","
             "\"is_circuit\":%s,\"user_created\":%s,"
             "\"sector_count\":%u,\"length_km\":%.3f}",
-            (i == 0) ? "" : ",",
+            first ? "" : ",", i,
             td->name, td->country,
             td->is_circuit ? "true" : "false",
             td->user_created ? "true" : "false",
             (unsigned)td->sector_count, td->length_km);
-        if (elen > 0) httpd_resp_send_chunk(req, entry, elen);
+        if (elen > 0) {
+            httpd_resp_send_chunk(req, entry, elen);
+            first = false;
+        }
     }
     httpd_resp_send_chunk(req, "]", 1);
     httpd_resp_send_chunk(req, nullptr, 0);
@@ -491,7 +496,7 @@ static esp_err_t handle_track_post(httpd_req_t *req)
     ESP_LOGI(TAG, "POST /track (len=%d)", (int)req->content_len);
 
     if (!g_state.sd_available) {
-        return send_err(req, "503 Service Unavailable", "SD not available");
+        return send_err(req, "503 Service Unavailable", "HDD not available");
     }
     if (req->content_len <= 0 || req->content_len > 8192) {
         return send_err(req, "413 Payload Too Large", "body 1..8192 bytes required");

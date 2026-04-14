@@ -354,7 +354,22 @@ void session_store_load_user_tracks()
 
         cJSON *doc = cJSON_Parse(buf);
         if (!doc) {
-            log_e("JSON parse error: %s", fpath);
+            // Rename the corrupt file once so it's not retried every boot
+            // and the error log stops repeating. Content stays on the HDD
+            // for manual inspection / recovery.
+            char broken[96];
+            snprintf(broken, sizeof(broken), "%s.bad", fpath);
+            if (!sd_file_exists(broken)) {
+                // sd_rename would be nice, but we don't have it — copy+delete
+                static char copybuf[2048];
+                if (sd_read_file(fpath, copybuf, sizeof(copybuf))) {
+                    (void)sd_write_file(broken, copybuf, strlen(copybuf));
+                }
+                sd_delete_file(fpath);
+                log_w("Moved unreadable track %s to %s", fpath, broken);
+            } else {
+                log_w("Skipping corrupt track JSON: %s", fpath);
+            }
             continue;
         }
 

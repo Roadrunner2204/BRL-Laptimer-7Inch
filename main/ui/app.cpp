@@ -131,8 +131,10 @@ static lv_obj_t *s_tc_sec_container = nullptr;
 static lv_obj_t *s_tc_add_sec_btn   = nullptr;
 static int       s_tc_edit_idx      = -1;   // -1 = new, >=0 = editing existing track
 
-// Track list filter
-static char      s_filter_country[32] = {};  // empty = show all
+// Track list filters
+static char        s_filter_country[32] = {};  // empty = show all countries
+static char        s_filter_name[48]    = {};  // empty = show all names
+static lv_obj_t   *s_tracks_search_kb   = nullptr;  // reset on each rebuild
 
 // ---------------------------------------------------------------------------
 // Forward declarations
@@ -474,6 +476,10 @@ static void cb_delete_track(lv_event_t *e) {
 }
 
 static void open_tracks_screen() {
+    // Old search keyboard was a child of the previous screen and will be
+    // deleted along with it — our stored pointer is about to dangle.
+    s_tracks_search_kb = nullptr;
+
     int n = track_total_count();
 
     // ── Collect distances (heap-allocated so we can handle 900+ bundle) ───
@@ -520,6 +526,19 @@ static void open_tracks_screen() {
             memcpy(countries[j], countries[j-1], 32);
             memcpy(countries[j-1], tmp, 32);
         }
+    // Pin the "Custom" / "Benutzerdefiniert" label to the top of the dropdown
+    // so user-created tracks are always one tap away, regardless of language
+    // or how many imported countries there are.
+    const char *custom = tr(TR_CUSTOM_COUNTRY);
+    for (int i = 0; i < n_countries; i++) {
+        if (strcmp(countries[i], custom) == 0 && i != 0) {
+            char tmp[32]; memcpy(tmp, countries[i], 32);
+            // Shift [0..i-1] down by one, then put custom at [0]
+            memmove(countries[1], countries[0], 32 * (size_t)i);
+            memcpy(countries[0], tmp, 32);
+            break;
+        }
+    }
 
     // ── Build screen ──────────────────────────────────────────────────────
     lv_obj_t *new_btn = nullptr;
@@ -577,7 +596,7 @@ static void open_tracks_screen() {
                         } else {
                             lv_msgbox_add_title(mb, tr(TR_TRACK_UPDATE_FAIL));
                             lv_msgbox_add_text(mb,
-                                "Download oder SD-Schreiben fehlgeschlagen.");
+                                "Download oder HDD-Schreiben fehlgeschlagen.");
                             lv_msgbox_add_close_button(mb);
                             open_tracks_screen();   // re-enables the button
                         }
@@ -606,7 +625,20 @@ static void open_tracks_screen() {
                 active_opt = c + 1;
         }
 
-        lv_obj_t *dd = lv_dropdown_create(content);
+        // Filter row: [Country dropdown] [Search textarea] [Clear]
+        lv_obj_t *filter_row = lv_obj_create(content);
+        lv_obj_set_width(filter_row, LV_PCT(100));
+        lv_obj_set_height(filter_row, 50);
+        lv_obj_set_style_bg_opa(filter_row, LV_OPA_TRANSP, LV_STATE_DEFAULT);
+        lv_obj_set_style_border_width(filter_row, 0, LV_STATE_DEFAULT);
+        lv_obj_set_style_pad_all(filter_row, 0, LV_STATE_DEFAULT);
+        lv_obj_set_style_pad_column(filter_row, 8, LV_STATE_DEFAULT);
+        lv_obj_set_flex_flow(filter_row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(filter_row, LV_FLEX_ALIGN_START,
+                              LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_remove_flag(filter_row, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *dd = lv_dropdown_create(filter_row);
         lv_dropdown_set_options(dd, dd_opts);
         lv_dropdown_set_selected(dd, (uint32_t)active_opt);
         lv_obj_set_width(dd, 280);
@@ -618,7 +650,6 @@ static void open_tracks_screen() {
         lv_obj_set_style_border_width(dd, 0, LV_STATE_DEFAULT);
         lv_obj_set_style_shadow_width(dd, 0, LV_STATE_DEFAULT);
         lv_obj_set_style_pad_hor(dd, 10, LV_STATE_DEFAULT);
-        // Style the dropdown list
         lv_obj_t *ddlist = lv_dropdown_get_list(dd);
         if (ddlist) {
             lv_obj_set_style_bg_color(ddlist, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
@@ -638,6 +669,61 @@ static void open_tracks_screen() {
             }
             open_tracks_screen();
         }, LV_EVENT_VALUE_CHANGED, nullptr);
+
+        // ── Search textarea (by track name) ────────────────────────────
+        lv_obj_t *search = lv_textarea_create(filter_row);
+        lv_textarea_set_one_line(search, true);
+        lv_textarea_set_placeholder_text(search, "Name suchen…");
+        lv_textarea_set_text(search, s_filter_name);
+        lv_obj_set_width(search, 360);
+        lv_obj_set_height(search, 40);
+        lv_obj_set_style_bg_color(search, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
+        lv_obj_set_style_text_color(search, BRL_CLR_TEXT, LV_STATE_DEFAULT);
+        lv_obj_set_style_text_font(search, &BRL_FONT_16, LV_STATE_DEFAULT);
+        lv_obj_set_style_border_width(search, 0, LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_width(search, 0, LV_STATE_DEFAULT);
+
+        // Clear button: one-tap reset of the name filter
+        lv_obj_t *clr = lv_button_create(filter_row);
+        lv_obj_set_size(clr, 44, 40);
+        brl_style_btn(clr, BRL_CLR_SURFACE2);
+        lv_obj_t *clr_lbl = lv_label_create(clr);
+        lv_label_set_text(clr_lbl, LV_SYMBOL_CLOSE);
+        brl_style_label(clr_lbl, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
+        lv_obj_center(clr_lbl);
+        lv_obj_add_event_cb(clr, [](lv_event_t * /*e*/) {
+            s_filter_name[0] = '\0';
+            open_tracks_screen();
+        }, LV_EVENT_CLICKED, nullptr);
+
+        // Pop up a keyboard when the search gains focus; hide on Enter.
+        // Keyboard is a child of the active screen so it gets cleaned up
+        // when we rebuild; the outer static pointer is cleared at the top
+        // of open_tracks_screen() to avoid dangling references.
+        lv_obj_add_event_cb(search, [](lv_event_t *e) {
+            lv_obj_t *ta = (lv_obj_t*)lv_event_get_target(e);
+            if (!s_tracks_search_kb) {
+                s_tracks_search_kb = lv_keyboard_create(lv_screen_active());
+                lv_obj_set_size(s_tracks_search_kb, BRL_SCREEN_W, 260);
+                lv_obj_align(s_tracks_search_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+            }
+            lv_keyboard_set_textarea(s_tracks_search_kb, ta);
+            lv_obj_remove_flag(s_tracks_search_kb, LV_OBJ_FLAG_HIDDEN);
+        }, LV_EVENT_FOCUSED, nullptr);
+
+        lv_obj_add_event_cb(search, [](lv_event_t *e) {
+            lv_obj_t *ta = (lv_obj_t*)lv_event_get_target(e);
+            const char *txt = lv_textarea_get_text(ta);
+            strncpy(s_filter_name, txt ? txt : "", sizeof(s_filter_name) - 1);
+            s_filter_name[sizeof(s_filter_name) - 1] = '\0';
+        }, LV_EVENT_VALUE_CHANGED, nullptr);
+
+        // Enter on the on-screen keyboard → apply filter + rebuild screen.
+        // open_tracks_screen() clears s_tracks_search_kb at its top, and
+        // the old keyboard gets deleted along with the old sub-screen.
+        lv_obj_add_event_cb(search, [](lv_event_t * /*e*/) {
+            open_tracks_screen();
+        }, LV_EVENT_READY, nullptr);
     }
 
     // ── GPS hint ──────────────────────────────────────────────────────────
@@ -653,15 +739,33 @@ static void open_tracks_screen() {
     // is active, show all of that country (usually <50); otherwise show
     // the 80 nearest so the user can pick from the neighbourhood.
     int rendered = 0;
-    const int RENDER_CAP = (s_filter_country[0] != '\0') ? 2048 : 80;
+    const int RENDER_CAP = (s_filter_country[0] != '\0' || s_filter_name[0] != '\0')
+                           ? 2048 : 80;
     for (int s = 0; s < n && rendered < RENDER_CAP; s++) {
         int idx = sorted[s];
         const TrackDef *td = track_get(idx);
         if (!td) continue;
 
+        // Skip bundle entries that are shadowed by a user-created edit
+        // with the same name — user version is shown instead, no dupes.
+        if (track_is_shadowed(idx)) continue;
+
         // Apply country filter
         if (s_filter_country[0] != '\0' && strcmp(td->country, s_filter_country) != 0)
             continue;
+
+        // Apply case-insensitive name substring filter
+        if (s_filter_name[0] != '\0') {
+            // Simple strcasestr (ESP-IDF's libc doesn't expose it on riscv)
+            const char *hay = td->name;
+            const char *needle = s_filter_name;
+            size_t nlen = strlen(needle);
+            bool hit = false;
+            for (; *hay; hay++) {
+                if (strncasecmp(hay, needle, nlen) == 0) { hit = true; break; }
+            }
+            if (!hit) continue;
+        }
         rendered++;
 
         bool is_user = (idx >= TRACK_DB_BUILTIN_COUNT);

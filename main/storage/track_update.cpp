@@ -15,6 +15,8 @@
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -72,22 +74,38 @@ extern "C" int track_update_run_blocking(void) {
         return -1;
     }
 
-    esp_http_client_config_t cfg = {};
-    cfg.url               = url;
-    cfg.event_handler     = http_event_cb;
-    cfg.timeout_ms        = 30000;
-    cfg.crt_bundle_attach = esp_crt_bundle_attach;
-    cfg.buffer_size       = 4096;
-    cfg.buffer_size_tx    = 1024;
+    // Retry loop — the first attempt after switching to STA frequently
+    // fails (fresh TLS handshake, DNS cold, esp-tls cert bundle lazy-init).
+    // 3 attempts with 1s backoff make that invisible to the user.
+    esp_err_t err    = ESP_FAIL;
+    int       status = 0;
+    const int MAX_ATTEMPTS = 3;
+    for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        s_buf_len = 0;  // reset buffer for each attempt
 
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    esp_err_t err = esp_http_client_perform(client);
-    int status    = esp_http_client_get_status_code(client);
-    esp_http_client_cleanup(client);
+        esp_http_client_config_t cfg = {};
+        cfg.url               = url;
+        cfg.event_handler     = http_event_cb;
+        cfg.timeout_ms        = 30000;
+        cfg.crt_bundle_attach = esp_crt_bundle_attach;
+        cfg.buffer_size       = 4096;
+        cfg.buffer_size_tx    = 1024;
+
+        esp_http_client_handle_t client = esp_http_client_init(&cfg);
+        err    = esp_http_client_perform(client);
+        status = esp_http_client_get_status_code(client);
+        esp_http_client_cleanup(client);
+
+        if (err == ESP_OK && status == 200 && s_buf_len >= 32) break;
+
+        ESP_LOGW(TAG, "attempt %d/%d failed: err=%s status=%d len=%zu",
+                 attempt, MAX_ATTEMPTS, esp_err_to_name(err), status, s_buf_len);
+        if (attempt < MAX_ATTEMPTS) vTaskDelay(pdMS_TO_TICKS(1000));
+    }
 
     if (err != ESP_OK || status != 200) {
-        ESP_LOGE(TAG, "download failed: err=%s status=%d",
-                 esp_err_to_name(err), status);
+        ESP_LOGE(TAG, "download failed after %d attempts: err=%s status=%d",
+                 MAX_ATTEMPTS, esp_err_to_name(err), status);
         free(s_buf); s_buf = nullptr;
         return -1;
     }

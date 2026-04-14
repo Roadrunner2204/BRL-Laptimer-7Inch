@@ -186,8 +186,14 @@ class BrlNetworkModule(private val ctx: ReactApplicationContext) :
 
                 val body = opts?.takeIfString("body")
                 if (body != null) {
+                    val bytes = body.toByteArray(Charsets.UTF_8)
                     conn.doOutput = true
-                    conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                    // Fixed-length streaming avoids chunked transfer encoding,
+                    // which esp_http_server on our firmware handles poorly for
+                    // POST bodies — the server stalls waiting for more chunks
+                    // and the request times out client-side.
+                    conn.setFixedLengthStreamingMode(bytes.size)
+                    conn.outputStream.use { it.write(bytes) }
                 }
 
                 val status = conn.responseCode

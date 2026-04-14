@@ -70,6 +70,10 @@ export interface SectorLineDef {
 
 // Summary returned by GET /tracks (no line coords — just list metadata)
 export interface DeviceTrackSummary {
+  /** Device-side real index into track_get(); server sends this so the
+   *  app doesn't have to guess based on array position (which breaks
+   *  when the firmware dedupes bundle tracks shadowed by user edits). */
+  index?: number;
   name: string;
   country: string;
   is_circuit: boolean;

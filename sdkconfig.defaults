@@ -46,6 +46,14 @@ CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=3072
 CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS=2
 # CONFIG_FREERTOS_TLSP_DELETION_CALLBACKS is not set
 
+# ESP-Hosted SDIO queues. Default 20 overflows on large TLS downloads
+# (e.g. 500 KB .tbrl bundle): the SDIO RX task can't drain fast enough
+# and sdio_rx_get_buffer hits a NULL assert on first attempt after a
+# cold STA association. 50 gives 2.5× headroom, internal RAM cost is
+# negligible (~30 descriptor slots × ~32 B).
+CONFIG_ESP_HOSTED_SDIO_RX_Q_SIZE=50
+CONFIG_ESP_HOSTED_SDIO_TX_Q_SIZE=50
+
 # LVGL configuration
 CONFIG_LV_USE_CLIB_MALLOC=y
 CONFIG_LV_USE_CLIB_STRING=y
