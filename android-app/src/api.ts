@@ -105,6 +105,15 @@ export async function fetchTracks(): Promise<DeviceTrackSummary[]> {
   return r.json();
 }
 
+/** Fetch full TrackDef (sf/fin/sectors with 2-point lines) by device index. */
+export async function fetchTrackDetails(idx: number): Promise<Track> {
+  const url = `${baseUrl}/track/${idx}`;
+  log('GET', url);
+  const r = await withTimeout(fetch(url), 15000, 'fetchTrackDetails');
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
 /**
  * Upload a track to the device. Device persists it to HDD and immediately
  * reloads the live catalog, so the track is selectable in the laptimer UI

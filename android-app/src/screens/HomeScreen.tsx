@@ -179,12 +179,15 @@ export default function HomeScreen({ navigation }: Props) {
         </TouchableOpacity>
         <TouchableOpacity
           style={s.quickCard}
-          onPress={() => navigation.navigate('TrackCreator')}
+          onPress={() => {
+            if (deviceInfo) navigation.navigate('Tracks');
+            else navigation.navigate('TrackCreator', undefined);
+          }}
         >
           <Text style={s.quickIcon}>🏁</Text>
-          <Text style={s.quickTitle}>Strecke</Text>
+          <Text style={s.quickTitle}>Strecken</Text>
           <Text style={s.quickSub}>
-            {deviceInfo ? 'neu erstellen' : 'offline erstellen'}
+            {deviceInfo ? 'ansehen & bearbeiten' : 'offline erstellen'}
           </Text>
         </TouchableOpacity>
       </View>

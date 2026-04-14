@@ -492,13 +492,23 @@ bool session_store_save_user_track(const TrackDef *td)
         cJSON_AddItemToObject(doc, "fin", fin);
     }
 
-    // Sectors
+    // Sectors — writes 2-point shape when lat2/lon2 are set, single-point
+    // shape otherwise (kept for back-compat with older app/firmware).
     cJSON *secs = cJSON_CreateArray();
     for (uint8_t i = 0; i < td->sector_count; i++) {
+        const SectorLine &sl = td->sectors[i];
         cJSON *sp = cJSON_CreateObject();
-        cJSON_AddNumberToObject(sp, "lat",  td->sectors[i].lat);
-        cJSON_AddNumberToObject(sp, "lon",  td->sectors[i].lon);
-        cJSON_AddStringToObject(sp, "name", td->sectors[i].name);
+        bool two_point = (sl.lat2 != 0.0 || sl.lon2 != 0.0);
+        if (two_point) {
+            cJSON_AddNumberToObject(sp, "lat1", sl.lat);
+            cJSON_AddNumberToObject(sp, "lon1", sl.lon);
+            cJSON_AddNumberToObject(sp, "lat2", sl.lat2);
+            cJSON_AddNumberToObject(sp, "lon2", sl.lon2);
+        } else {
+            cJSON_AddNumberToObject(sp, "lat", sl.lat);
+            cJSON_AddNumberToObject(sp, "lon", sl.lon);
+        }
+        cJSON_AddStringToObject(sp, "name", sl.name);
         cJSON_AddItemToArray(secs, sp);
     }
     cJSON_AddItemToObject(doc, "sectors", secs);

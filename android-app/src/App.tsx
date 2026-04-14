@@ -13,6 +13,7 @@ import VideoScreen     from './screens/VideoScreen';
 import CompareScreen   from './screens/CompareScreen';
 import OverlayConfigScreen from './screens/OverlayConfigScreen';
 import TrackCreatorScreen from './screens/TrackCreatorScreen';
+import TracksScreen from './screens/TracksScreen';
 import { C } from './theme';
 
 // Suppress RN's in-app yellow LogBox overlay. Logs still go to logcat for
@@ -29,7 +30,8 @@ export type RootStackParamList = {
   Video:    { videoId: string; mode: 'stream' | 'download' };
   Compare:  { sessionId: string };
   OverlayConfig: undefined;
-  TrackCreator: undefined;
+  TrackCreator: { initial?: import('./types').Track } | undefined;
+  Tracks: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -62,6 +64,7 @@ export default function App() {
         <Stack.Screen name="Compare"  component={CompareScreen}  options={{ title: 'Runden vergleichen' }} />
         <Stack.Screen name="OverlayConfig" component={OverlayConfigScreen} options={{ title: 'Overlay anpassen' }} />
         <Stack.Screen name="TrackCreator"  component={TrackCreatorScreen}  options={{ title: 'Strecke erstellen' }} />
+        <Stack.Screen name="Tracks"        component={TracksScreen}        options={{ title: 'Strecken' }} />
       </Stack.Navigator>
     </NavigationContainer>
   );

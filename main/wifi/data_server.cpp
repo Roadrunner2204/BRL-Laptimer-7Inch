@@ -376,6 +376,77 @@ static esp_err_t handle_video_delete(httpd_req_t *req)
 //     "sectors":[{"lat":..,"lon":..,"name":"S1"}, ...] }
 // ---------------------------------------------------------------------------
 
+// Forward decl — send_err is defined further down.
+static esp_err_t send_err(httpd_req_t *req, const char *status, const char *msg);
+
+// ---------------------------------------------------------------------------
+// GET /track/<idx> — full TrackDef (sf, fin, sectors incl. 2-point lines)
+// ---------------------------------------------------------------------------
+static esp_err_t handle_track_get_one(httpd_req_t *req)
+{
+    const char *uri = req->uri;
+    const char *slash = strrchr(uri, '/');
+    if (!slash || !slash[1]) return send_err(req, "400 Bad Request", "missing idx");
+    int idx = atoi(slash + 1);
+    if (idx < 0 || idx >= track_total_count())
+        return send_err(req, "404 Not Found", "idx out of range");
+
+    const TrackDef *td = track_get(idx);
+    if (!td) return send_err(req, "404 Not Found", "no such track");
+
+    cJSON *doc = cJSON_CreateObject();
+    cJSON_AddNumberToObject(doc, "index", idx);
+    cJSON_AddStringToObject(doc, "name", td->name);
+    cJSON_AddStringToObject(doc, "country", td->country);
+    cJSON_AddNumberToObject(doc, "length_km", td->length_km);
+    cJSON_AddBoolToObject(doc, "is_circuit", td->is_circuit);
+    cJSON_AddBoolToObject(doc, "user_created", td->user_created);
+
+    cJSON *sf = cJSON_CreateArray();
+    cJSON_AddItemToArray(sf, cJSON_CreateNumber(td->sf_lat1));
+    cJSON_AddItemToArray(sf, cJSON_CreateNumber(td->sf_lon1));
+    cJSON_AddItemToArray(sf, cJSON_CreateNumber(td->sf_lat2));
+    cJSON_AddItemToArray(sf, cJSON_CreateNumber(td->sf_lon2));
+    cJSON_AddItemToObject(doc, "sf", sf);
+
+    if (!td->is_circuit) {
+        cJSON *fin = cJSON_CreateArray();
+        cJSON_AddItemToArray(fin, cJSON_CreateNumber(td->fin_lat1));
+        cJSON_AddItemToArray(fin, cJSON_CreateNumber(td->fin_lon1));
+        cJSON_AddItemToArray(fin, cJSON_CreateNumber(td->fin_lat2));
+        cJSON_AddItemToArray(fin, cJSON_CreateNumber(td->fin_lon2));
+        cJSON_AddItemToObject(doc, "fin", fin);
+    }
+
+    cJSON *secs = cJSON_CreateArray();
+    for (uint8_t i = 0; i < td->sector_count; i++) {
+        const SectorLine &sl = td->sectors[i];
+        cJSON *sp = cJSON_CreateObject();
+        bool two_point = (sl.lat2 != 0.0 || sl.lon2 != 0.0);
+        if (two_point) {
+            cJSON_AddNumberToObject(sp, "lat1", sl.lat);
+            cJSON_AddNumberToObject(sp, "lon1", sl.lon);
+            cJSON_AddNumberToObject(sp, "lat2", sl.lat2);
+            cJSON_AddNumberToObject(sp, "lon2", sl.lon2);
+        } else {
+            cJSON_AddNumberToObject(sp, "lat", sl.lat);
+            cJSON_AddNumberToObject(sp, "lon", sl.lon);
+        }
+        cJSON_AddStringToObject(sp, "name", sl.name);
+        cJSON_AddItemToArray(secs, sp);
+    }
+    cJSON_AddItemToObject(doc, "sectors", secs);
+
+    char *str = cJSON_PrintUnformatted(doc);
+    cJSON_Delete(doc);
+    if (!str) return send_err(req, "500", "oom");
+    set_cors_headers(req);
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t r = httpd_resp_sendstr(req, str);
+    free(str);
+    return r;
+}
+
 static esp_err_t handle_tracks_get(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "GET /tracks");
@@ -690,6 +761,8 @@ static const httpd_uri_t s_uri_handlers[] = {
     { .uri = "/tracks",        .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
     { .uri = "/track",         .method = HTTP_POST,   .handler = handle_track_post,      .user_ctx = nullptr },
     { .uri = "/track",         .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
+    { .uri = "/track/*",       .method = HTTP_GET,    .handler = handle_track_get_one,   .user_ctx = nullptr },
+    { .uri = "/track/*",       .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
     { .uri = "/generate_204",  .method = HTTP_GET,    .handler = handle_generate_204,    .user_ctx = nullptr },
     { .uri = "/hotspot-detect.html", .method = HTTP_GET, .handler = handle_generate_204, .user_ctx = nullptr },
     { .uri = "/ncsi.txt",      .method = HTTP_GET,    .handler = handle_generate_204,    .user_ctx = nullptr },

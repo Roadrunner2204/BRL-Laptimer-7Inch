@@ -20,14 +20,16 @@ import {
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
 import * as Location from 'expo-location';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { RouteProp } from '@react-navigation/native';
 import { RootStackParamList } from '../App';
 import { C } from '../theme';
-import { Track, SectorDef } from '../types';
+import { Track, SectorDef, SectorLineDef } from '../types';
 import { postTrack } from '../api';
 import { saveLocalTrack } from '../storage';
 
 type Props = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'TrackCreator'>;
+  route: RouteProp<RootStackParamList, 'TrackCreator'>;
 };
 
 const MAX_SECTORS = 8;
@@ -40,19 +42,31 @@ function fmtCoord(v: number | undefined): string {
   return v.toFixed(5);
 }
 
-export default function TrackCreatorScreen({ navigation }: Props) {
-  const [name, setName]         = useState('');
-  const [country, setCountry]   = useState('DE');
-  const [lengthKm, setLengthKm] = useState('');
-  const [isCircuit, setIsCircuit] = useState(true);
+export default function TrackCreatorScreen({ navigation, route }: Props) {
+  const initial = route.params?.initial;
+  const editing = !!initial;
 
-  const [sf1, setSf1] = useState<LatLon | null>(null);
-  const [sf2, setSf2] = useState<LatLon | null>(null);
-  const [fin1, setFin1] = useState<LatLon | null>(null);
-  const [fin2, setFin2] = useState<LatLon | null>(null);
-  const [sectors, setSectors] = useState<LatLon[]>([]);
+  const [name, setName]         = useState(initial?.name ?? '');
+  const [country, setCountry]   = useState(initial?.country ?? 'DE');
+  const [lengthKm, setLengthKm] = useState(
+    initial && initial.length_km ? String(initial.length_km) : '');
+  const [isCircuit, setIsCircuit] = useState(initial?.is_circuit ?? true);
 
-  const [mode, setMode] = useState<PlaceMode>('sf1');
+  const [sf1, setSf1] = useState<LatLon | null>(
+    initial ? { lat: initial.sf[0], lon: initial.sf[1] } : null);
+  const [sf2, setSf2] = useState<LatLon | null>(
+    initial ? { lat: initial.sf[2], lon: initial.sf[3] } : null);
+  const [fin1, setFin1] = useState<LatLon | null>(
+    initial?.fin ? { lat: initial.fin[0], lon: initial.fin[1] } : null);
+  const [fin2, setFin2] = useState<LatLon | null>(
+    initial?.fin ? { lat: initial.fin[2], lon: initial.fin[3] } : null);
+  const [sectors, setSectors] = useState<LatLon[]>(
+    (initial?.sectors ?? []).map((s: any) => ({
+      lat: typeof s.lat1 === 'number' ? s.lat1 : s.lat,
+      lon: typeof s.lon1 === 'number' ? s.lon1 : s.lon,
+    })));
+
+  const [mode, setMode] = useState<PlaceMode>(editing ? null : 'sf1');
   const [busy, setBusy] = useState(false);
 
   // Address search (Nominatim — free OSM geocoder; requires internet)
@@ -65,8 +79,16 @@ export default function TrackCreatorScreen({ navigation }: Props) {
   const webviewRef = useRef<WebView>(null);
   const readyRef = useRef(false);
 
-  // On mount: ask for location permission, center map on user
+  // On mount: in edit-mode center on the track itself, otherwise on the
+  // phone's current GPS position.
   useEffect(() => {
+    if (editing && sf1) {
+      // Delay slightly so the WebView onLoadEnd has fired
+      const t = setTimeout(() => {
+        postToMap({ type: 'center', lat: sf1.lat, lon: sf1.lon, zoom: 16 });
+      }, 400);
+      return () => clearTimeout(t);
+    }
     (async () => {
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
@@ -82,6 +104,7 @@ export default function TrackCreatorScreen({ navigation }: Props) {
         });
       } catch { /* ignore — map will use default center */ }
     })();
+    return undefined;
   }, []);
 
   // Push marker state whenever any point changes

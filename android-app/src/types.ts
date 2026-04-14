@@ -53,7 +53,19 @@ export interface Track {
   sf: [number, number, number, number];
   /** [lat1, lon1, lat2, lon2] — finish line, A-B tracks only */
   fin?: [number, number, number, number];
-  sectors: SectorDef[];
+  sectors: (SectorDef | SectorLineDef)[];
+  /** Populated only by fetchTrackDetails from GET /track/<idx> */
+  index?: number;
+  user_created?: boolean;
+}
+
+/** VBOX-style 2-point sector line (accepted by firmware since v1.0.2) */
+export interface SectorLineDef {
+  name: string;
+  lat1: number;
+  lon1: number;
+  lat2: number;
+  lon2: number;
 }
 
 // Summary returned by GET /tracks (no line coords — just list metadata)
