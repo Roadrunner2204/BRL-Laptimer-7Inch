@@ -393,9 +393,9 @@ static void build_menu_screen(bool is_rebuild = false) {
         }, 100, nullptr);
 
         // Fast (33 ms ≈ 30 Hz) timer — updates ONLY the laptime label(s)
-        // on the timing screen so the hundredths digit ticks visibly
-        // instead of appearing frozen at the 10 Hz cadence of the main
-        // timer. Cheap: one snprintf + one label_set_text per tick.
+        // on the timing screen so the hundredths digit ticks visibly.
+        // Guarded with strcmp so we don't re-flag the label dirty when
+        // the formatted text is identical (96-pt font redraw is expensive).
         lv_timer_create([](lv_timer_t * /*t*/) {
             lv_obj_t *active_scr = lv_screen_active();
             if (!tw.z1_val[0]) return;
@@ -412,6 +412,8 @@ static void build_menu_screen(bool is_rebuild = false) {
                      (unsigned)(ms / 60000), fmod(ms / 1000.0f, 60.0f));
             for (int i = 0; i < Z1_SLOTS; i++) {
                 if (g_dash_cfg.z1[i] == FIELD_LAPTIME && tw.z1_val[i]) {
+                    const char *cur = lv_label_get_text(tw.z1_val[i]);
+                    if (cur && strcmp(cur, buf) == 0) continue;
                     lv_label_set_text(tw.z1_val[i], buf);
                 }
             }
@@ -473,10 +475,15 @@ static void cb_delete_track(lv_event_t *e) {
 
 static void open_tracks_screen() {
     int n = track_total_count();
-    if (n > 60) n = 60;
 
-    // ── Collect distances ──────────────────────────────────────────────────
-    int sorted[60]; double dist[60];
+    // ── Collect distances (heap-allocated so we can handle 900+ bundle) ───
+    int    *sorted = (int *)   heap_caps_malloc(sizeof(int)    * n, MALLOC_CAP_SPIRAM);
+    double *dist   = (double *)heap_caps_malloc(sizeof(double) * n, MALLOC_CAP_SPIRAM);
+    if (!sorted || !dist) {
+        if (sorted) free(sorted);
+        if (dist)   free(dist);
+        return;
+    }
     for (int i = 0; i < n; i++) {
         sorted[i] = i;
         const TrackDef *td = track_get(i);
@@ -486,23 +493,33 @@ static void open_tracks_screen() {
             dist[i] = haversine_km(g_state.gps.lat, g_state.gps.lon, mlat, mlon);
         } else dist[i] = 1e9;
     }
-    // Sort by distance
+    // Sort by distance (insertion sort OK — O(n²) acceptable for n ≤ ~2000)
     for (int i = 1; i < n; i++)
         for (int j = i; j > 0 && dist[sorted[j]] < dist[sorted[j-1]]; j--)
             { int t=sorted[j]; sorted[j]=sorted[j-1]; sorted[j-1]=t; }
 
-    // ── Collect unique countries ───────────────────────────────────────────
-    char countries[16][32] = {};
+    // ── Collect unique countries from ALL tracks (not just first 60) ──────
+    #define MAX_UNIQUE_COUNTRIES 96
+    static char countries[MAX_UNIQUE_COUNTRIES][32] = {};
     int  n_countries = 0;
-    for (int s = 0; s < n; s++) {
-        const TrackDef *td = track_get(sorted[s]);
-        if (!td) continue;
+    for (int i = 0; i < n; i++) {
+        const TrackDef *td = track_get(i);
+        if (!td || !td->country[0]) continue;
         bool found = false;
         for (int c = 0; c < n_countries; c++)
             if (strcmp(countries[c], td->country) == 0) { found = true; break; }
-        if (!found && n_countries < 16)
-            { snprintf(countries[n_countries], 32, "%s", td->country); n_countries++; }
+        if (!found && n_countries < MAX_UNIQUE_COUNTRIES) {
+            snprintf(countries[n_countries], 32, "%s", td->country);
+            n_countries++;
+        }
     }
+    // Sort country list alphabetically (UX: easier to find a country)
+    for (int i = 1; i < n_countries; i++)
+        for (int j = i; j > 0 && strcasecmp(countries[j], countries[j-1]) < 0; j--) {
+            char tmp[32]; memcpy(tmp, countries[j], 32);
+            memcpy(countries[j], countries[j-1], 32);
+            memcpy(countries[j-1], tmp, 32);
+        }
 
     // ── Build screen ──────────────────────────────────────────────────────
     lv_obj_t *new_btn = nullptr;
@@ -631,7 +648,13 @@ static void open_tracks_screen() {
     }
 
     // ── Track rows ────────────────────────────────────────────────────────
-    for (int s = 0; s < n; s++) {
+    // With 900+ tracks in the bundle, rendering them all would blow up LVGL
+    // (thousands of child widgets). Cap visible rows: if a country filter
+    // is active, show all of that country (usually <50); otherwise show
+    // the 80 nearest so the user can pick from the neighbourhood.
+    int rendered = 0;
+    const int RENDER_CAP = (s_filter_country[0] != '\0') ? 2048 : 80;
+    for (int s = 0; s < n && rendered < RENDER_CAP; s++) {
         int idx = sorted[s];
         const TrackDef *td = track_get(idx);
         if (!td) continue;
@@ -639,6 +662,7 @@ static void open_tracks_screen() {
         // Apply country filter
         if (s_filter_country[0] != '\0' && strcmp(td->country, s_filter_country) != 0)
             continue;
+        rendered++;
 
         bool is_user = (idx >= TRACK_DB_BUILTIN_COUNT);
 
@@ -721,6 +745,9 @@ static void open_tracks_screen() {
     }
 
     if (new_btn) lv_obj_add_event_cb(new_btn, cb_open_creator, LV_EVENT_CLICKED, (void*)content);
+
+    free(sorted);
+    free(dist);
     sub_screen_load(scr);
 }
 
@@ -2780,6 +2807,17 @@ void timer_live_update(lv_timer_t * /*t*/) {
 
     // ---- Timing screen slot updates ----
 
+    // Helper: only flag the label dirty when the text actually changed.
+    // Large Zone-1 fonts (96/160 pt) are expensive to re-rasterise and
+    // unconditional set-text at 10 Hz dragged the timing screen down after
+    // the .tbrl bundle added PSRAM pressure.
+    auto lbl_set = [](lv_obj_t *lbl, const char *txt) {
+        if (!lbl || !txt) return;
+        const char *cur = lv_label_get_text(lbl);
+        if (cur && strcmp(cur, txt) == 0) return;
+        lv_label_set_text(lbl, txt);
+    };
+
     // Helper: format a single FieldId → text, write into lv label (null-safe)
     auto update_slot = [&](lv_obj_t *lbl, uint8_t fid) {
         if (!lbl) return;
@@ -2823,7 +2861,7 @@ void timer_live_update(lv_timer_t * /*t*/) {
                 int32_t d = lt.live_delta_ms;
                 snprintf(buf, sizeof(buf), "%+.2f s", d / 1000.0f);
                 lv_obj_set_style_text_color(lbl, lv_color_hex(0x000000), 0);
-                lv_label_set_text(lbl, buf);
+                lbl_set(lbl, buf);
                 return;
             }
             case FIELD_LAP_NR:
@@ -2892,7 +2930,7 @@ void timer_live_update(lv_timer_t * /*t*/) {
                     } else strncpy(buf, "---", sizeof(buf));
                 } else strncpy(buf, "---", sizeof(buf));
                 lv_obj_set_style_text_color(lbl, clr, 0);
-                lv_label_set_text(lbl, buf);
+                lbl_set(lbl, buf);
                 return;
             }
             case FIELD_RPM:
@@ -2924,7 +2962,7 @@ void timer_live_update(lv_timer_t * /*t*/) {
             default:
                 return;
         }
-        lv_label_set_text(lbl, buf);
+        lbl_set(lbl, buf);
     };
 
     if (timing_active) {
@@ -2966,14 +3004,14 @@ void timer_live_update(lv_timer_t * /*t*/) {
         } else {
             snprintf(dbuf, sizeof(dbuf), "%+.2f s", d / 1000.0f);
         }
-        lv_label_set_text(tw.delta_bar_lbl, dbuf);
+        lbl_set(tw.delta_bar_lbl, dbuf);
     }
 
     // Track name
     if (timing_active && tw.track_name_lbl) {
         if (g_state.active_track_idx >= 0 && g_state.active_track_idx < track_total_count()) {
-            lv_label_set_text(tw.track_name_lbl,
-                              track_get(g_state.active_track_idx)->name);
+            lbl_set(tw.track_name_lbl,
+                    track_get(g_state.active_track_idx)->name);
         }
     }
 
