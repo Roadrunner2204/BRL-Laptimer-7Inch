@@ -1,18 +1,35 @@
 import React from 'react';
+import { LogBox } from 'react-native';
 import { NavigationContainer, DefaultTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
+import HomeScreen      from './screens/HomeScreen';
 import ConnectScreen   from './screens/ConnectScreen';
 import SessionsScreen  from './screens/SessionsScreen';
 import DetailScreen    from './screens/DetailScreen';
 import MapScreen       from './screens/MapScreen';
+import ChartsScreen    from './screens/ChartsScreen';
+import VideoScreen     from './screens/VideoScreen';
+import CompareScreen   from './screens/CompareScreen';
+import OverlayConfigScreen from './screens/OverlayConfigScreen';
+import TrackCreatorScreen from './screens/TrackCreatorScreen';
 import { C } from './theme';
 
+// Suppress RN's in-app yellow LogBox overlay. Logs still go to logcat for
+// debugging via `adb logcat *:W`. Keeps the app UI clean for end-users.
+LogBox.ignoreAllLogs(true);
+
 export type RootStackParamList = {
+  Home:     undefined;
   Connect:  undefined;
   Sessions: { mode: 'device' | 'local' };
   Detail:   { sessionId: string };
   Map:      { sessionId: string };
+  Charts:   { sessionId: string };
+  Video:    { videoId: string; mode: 'stream' | 'download' };
+  Compare:  { sessionId: string };
+  OverlayConfig: undefined;
+  TrackCreator: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -27,6 +44,7 @@ export default function App() {
     <NavigationContainer theme={DarkTheme}>
       <StatusBar style="light" />
       <Stack.Navigator
+        initialRouteName="Home"
         screenOptions={{
           headerStyle: { backgroundColor: C.surface },
           headerTintColor: C.text,
@@ -34,10 +52,16 @@ export default function App() {
           contentStyle: { backgroundColor: C.bg },
         }}
       >
-        <Stack.Screen name="Connect"  component={ConnectScreen}  options={{ title: 'BRL Telemetry', headerShown: false }} />
+        <Stack.Screen name="Home"     component={HomeScreen}     options={{ headerShown: false }} />
+        <Stack.Screen name="Connect"  component={ConnectScreen}  options={{ title: 'Verbinden' }} />
         <Stack.Screen name="Sessions" component={SessionsScreen} options={{ title: 'Sessions' }} />
-        <Stack.Screen name="Detail"   component={DetailScreen}   options={{ title: 'Session Detail' }} />
+        <Stack.Screen name="Detail"   component={DetailScreen}   options={{ title: 'Übersicht' }} />
         <Stack.Screen name="Map"      component={MapScreen}      options={{ title: 'Karte', headerTransparent: true, headerTintColor: C.text }} />
+        <Stack.Screen name="Charts"   component={ChartsScreen}   options={{ title: 'Analyse' }} />
+        <Stack.Screen name="Video"    component={VideoScreen}    options={{ title: 'Video' }} />
+        <Stack.Screen name="Compare"  component={CompareScreen}  options={{ title: 'Runden vergleichen' }} />
+        <Stack.Screen name="OverlayConfig" component={OverlayConfigScreen} options={{ title: 'Overlay anpassen' }} />
+        <Stack.Screen name="TrackCreator"  component={TrackCreatorScreen}  options={{ title: 'Strecke erstellen' }} />
       </Stack.Navigator>
     </NavigationContainer>
   );

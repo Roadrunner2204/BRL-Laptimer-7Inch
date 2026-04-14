@@ -147,6 +147,21 @@ void splash_show(uint32_t duration_ms, void (*on_done)()) {
     lv_obj_set_style_text_color(copy, BRL_CLR_TEXT_DARK, LV_STATE_DEFAULT);
     lv_obj_align(copy, LV_ALIGN_BOTTOM_LEFT, 16, -16);
 
+    // --- Warm PSRAM cache: touch all large fonts so later screens render fast ---
+    {
+        static const lv_font_t *warmup_fonts[] = {
+            &BRL_FONT_32, &BRL_FONT_40, &BRL_FONT_48,
+            &BRL_FONT_64, &BRL_FONT_96, &BRL_FONT_128, &BRL_FONT_160
+        };
+        for (auto *f : warmup_fonts) {
+            lv_obj_t *tmp = lv_label_create(s_screen);
+            lv_label_set_text(tmp, "0:00.00");
+            lv_obj_set_style_text_font(tmp, f, 0);
+            lv_obj_set_style_opa(tmp, LV_OPA_TRANSP, 0);  // invisible
+            lv_obj_set_pos(tmp, -500, -500);  // off-screen
+        }
+    }
+
     // --- Fortschritts-Timer (50ms Interval) ---
     s_timer = lv_timer_create(cb_progress, 50, nullptr);
 }

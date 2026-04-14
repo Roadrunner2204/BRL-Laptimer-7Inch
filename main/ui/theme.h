@@ -27,6 +27,9 @@
 // ---------------------------------------------------------------------------
 
 #define BRL_CLR_FASTER      lv_color_hex(0x00C8FF)   // cyan-blue = faster than best
+#define BRL_CLR_OK          lv_color_hex(0x00CC66)   // green -- faster than reference
+#define BRL_CLR_PURPLE      lv_color_hex(0xB040FF)   // purple -- chasing all-time best
+#define BRL_CLR_PURPLE_DIM  lv_color_hex(0x6A2AA0)   // dim purple -- slower vs all-time best
 #define BRL_CLR_WARN        lv_color_hex(0xFF9500)   // orange -- slower
 #define BRL_CLR_DANGER      lv_color_hex(0xFF3B30)   // red -- much slower / error
 #define BRL_CLR_TEXT        lv_color_hex(0xFFFFFF)   // primary text

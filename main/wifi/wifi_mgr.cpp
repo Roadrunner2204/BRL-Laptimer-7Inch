@@ -20,6 +20,8 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "lwip/ip_addr.h"
+#include "lwip/ip4_addr.h"
 
 #include <string.h>
 
@@ -81,11 +83,39 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
 {
     if (base == WIFI_EVENT) {
         switch (id) {
-            case WIFI_EVENT_AP_START:
+            case WIFI_EVENT_AP_START: {
                 ESP_LOGI(TAG, "AP started: SSID=%s", s_ap_ssid);
                 snprintf(s_ip_str, sizeof(s_ip_str), "192.168.4.1");
+
+                // Reconfigure DHCP here — now that AP is up and DHCPS running.
+                // Must stop → set DNS → enable DHCP option 6 → start.
+                // Without this, clients default to 8.8.8.8 which fails over
+                // mobile data, so Android treats this network as "no internet".
+                if (s_netif_ap) {
+                    esp_err_t e;
+                    e = esp_netif_dhcps_stop(s_netif_ap);
+                    ESP_LOGI(TAG, "dhcps_stop: %s", esp_err_to_name(e));
+
+                    esp_netif_dns_info_t dns_info;
+                    memset(&dns_info, 0, sizeof(dns_info));
+                    IP_ADDR4(&dns_info.ip, 192, 168, 4, 1);
+                    e = esp_netif_set_dns_info(s_netif_ap, ESP_NETIF_DNS_MAIN, &dns_info);
+                    ESP_LOGI(TAG, "set_dns_info: %s", esp_err_to_name(e));
+
+                    uint8_t offer = 1;  // DHCP option 6 = DNS
+                    e = esp_netif_dhcps_option(s_netif_ap,
+                                               ESP_NETIF_OP_SET,
+                                               ESP_NETIF_DOMAIN_NAME_SERVER,
+                                               &offer, sizeof(offer));
+                    ESP_LOGI(TAG, "dhcps_option(DNS): %s", esp_err_to_name(e));
+
+                    e = esp_netif_dhcps_start(s_netif_ap);
+                    ESP_LOGI(TAG, "dhcps_start: %s", esp_err_to_name(e));
+                }
+
                 data_server_start();
                 break;
+            }
 
             case WIFI_EVENT_AP_STOP:
                 ESP_LOGI(TAG, "AP stopped");
@@ -94,7 +124,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
 
             case WIFI_EVENT_AP_STACONNECTED: {
                 auto *e = (wifi_event_ap_staconnected_t*)data;
-                ESP_LOGI(TAG, "Client connected (AID=%d)", e->aid);
+                ESP_LOGI(TAG, "✓ Client CONNECTED to AP (AID=%d)", e->aid);
                 break;
             }
             case WIFI_EVENT_AP_STADISCONNECTED: {
@@ -126,12 +156,17 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
 
             default: break;
         }
-    } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
-        auto *e = (ip_event_got_ip_t*)data;
-        snprintf(s_ip_str, sizeof(s_ip_str), IPSTR, IP2STR(&e->ip_info.ip));
-        ESP_LOGI(TAG, "STA got IP: %s", s_ip_str);
-        s_sta_connected = true;
-        data_server_start();
+    } else if (base == IP_EVENT) {
+        if (id == IP_EVENT_STA_GOT_IP) {
+            auto *e = (ip_event_got_ip_t*)data;
+            snprintf(s_ip_str, sizeof(s_ip_str), IPSTR, IP2STR(&e->ip_info.ip));
+            ESP_LOGI(TAG, "STA got IP: %s", s_ip_str);
+            s_sta_connected = true;
+            data_server_start();
+        } else if (id == IP_EVENT_AP_STAIPASSIGNED) {
+            auto *e = (ip_event_ap_staipassigned_t*)data;
+            ESP_LOGI(TAG, "✓ Client got IP: " IPSTR, IP2STR(&e->ip));
+        }
     }
 }
 
@@ -172,12 +207,21 @@ static void wifi_start_ap(void)
     }
 
     esp_wifi_set_config(WIFI_IF_AP, &cfg);
-    esp_wifi_start();
+    esp_err_t start_err = esp_wifi_start();
+    if (start_err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_start failed: %s", esp_err_to_name(start_err));
+        g_state.wifi_mode = BRL_WIFI_OFF;
+        return;
+    }
     s_wifi_started = true;
+
+    // DHCP/DNS reconfig now happens in the WIFI_EVENT_AP_START handler,
+    // where dhcps is guaranteed to be running. data_server_start() also
+    // runs there so the HTTP + UDP DNS relay come up together.
 
     g_state.wifi_mode = BRL_WIFI_AP;
     strncpy(g_state.wifi_ssid, s_ap_ssid, sizeof(g_state.wifi_ssid) - 1);
-    ESP_LOGI(TAG, "AP mode started: %s", s_ap_ssid);
+    ESP_LOGI(TAG, "wifi_start_ap: requested — waiting for AP_START event");
 }
 
 // ---------------------------------------------------------------------------
@@ -240,7 +284,7 @@ void wifi_mgr_init(void)
 
     // Register event handlers
     esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event_handler, nullptr);
-    esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event_handler, nullptr);
+    esp_event_handler_register(IP_EVENT, ESP_EVENT_ANY_ID, wifi_event_handler, nullptr);
 
     g_state.wifi_mode = BRL_WIFI_OFF;
     strncpy(g_state.wifi_ssid, s_ap_ssid, sizeof(g_state.wifi_ssid) - 1);

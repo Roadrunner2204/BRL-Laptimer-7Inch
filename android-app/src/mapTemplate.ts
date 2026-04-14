@@ -24,8 +24,8 @@ export const MAP_HTML = `<!DOCTYPE html>
 <div class="legend" id="legend" style="display:none"></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-const LAP_COLORS = ['#00CC66','#4488FF','#FF8800','#FF44AA','#44CCFF','#FFFF44','#FF4444','#AA44FF'];
-const BEST_COLOR = '#00CC66';
+const LAP_COLORS = ['#00C8FF','#BB88FF','#FF8800','#FF44AA','#66E0FF','#FFEE55','#FF5555','#44FFAA'];
+const BEST_COLOR = '#0096FF';
 
 const map = L.map('map',{zoomControl:true,attributionControl:false});
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:20,attribution:'© OpenStreetMap'}).addTo(map);
@@ -165,6 +165,48 @@ function setSpeedColor(enabled){
   if(session) loadSession(session);
 }
 
+// Scrub-cursor car marker (moves along best lap at given distance)
+let cursorMarker = null;
+let cursorDistArr = null;  // cumulative distances for best lap
+let cursorPoints  = null;  // track points of best lap
+
+function ensureCursorData(){
+  if(!session) return;
+  const best = session.laps[session.best_lap_idx];
+  if(!best || !best.track_points) return;
+  cursorPoints = best.track_points;
+  cursorDistArr = [0];
+  for(let i=1;i<cursorPoints.length;i++){
+    cursorDistArr.push(
+      cursorDistArr[i-1] +
+      haversineM(cursorPoints[i-1][0],cursorPoints[i-1][1],
+                 cursorPoints[i][0],  cursorPoints[i][1])
+    );
+  }
+}
+
+function setCursorDist(d){
+  if(!session) return;
+  if(!cursorDistArr) ensureCursorData();
+  if(!cursorDistArr || cursorDistArr.length===0) return;
+  if(d==null){
+    if(cursorMarker){map.removeLayer(cursorMarker);cursorMarker=null;}
+    return;
+  }
+  // Find index where cumulative distance crosses d
+  let j=0;
+  while(j<cursorDistArr.length-1 && cursorDistArr[j+1]<d) j++;
+  const p = cursorPoints[j];
+  if(!p) return;
+  if(!cursorMarker){
+    cursorMarker = L.circleMarker([p[0],p[1]],
+      {radius:9,color:'#fff',fillColor:BEST_COLOR,fillOpacity:1,weight:3,
+       className:'cursor-marker'}).addTo(map);
+  } else {
+    cursorMarker.setLatLng([p[0],p[1]]);
+  }
+}
+
 // Message bridge from React Native
 function handleMsg(raw){
   try{
@@ -172,6 +214,7 @@ function handleMsg(raw){
     if(msg.type==='session')   loadSession(msg.data);
     if(msg.type==='toggleLap') toggleLap(msg.lapIdx, msg.visible);
     if(msg.type==='speedColor') setSpeedColor(msg.enabled);
+    if(msg.type==='cursor')    setCursorDist(msg.dist);
   }catch(e){console.error('msg error',e);}
 }
 document.addEventListener('message',e=>handleMsg(e.data));

@@ -40,6 +40,11 @@ static const char *TAG = "app";
 // ---------------------------------------------------------------------------
 AppState g_state = {};
 
+// True while the current session has NOT yet produced a lap faster than the
+// stored all-time best for the active track. Drives purple coloring on the
+// sector slots and delta bar. Updated by lap_timer (track-select + finish).
+bool g_chasing_record = false;
+
 // ---------------------------------------------------------------------------
 // Status bar handles (one set per long-lived screen)
 // ---------------------------------------------------------------------------
@@ -135,6 +140,8 @@ static void open_tracks_screen();
 static void open_track_creator(lv_obj_t *parent_scroll, int edit_idx = -1);
 static void open_history_screen();
 static void open_settings_screen();
+static void open_preview_screen();
+static void open_video_settings_screen();
 
 // ============================================================================
 // SECTION 1 — SHARED HELPERS
@@ -383,6 +390,32 @@ static void build_menu_screen(bool is_rebuild = false) {
             extern void timer_live_update(lv_timer_t*);
             timer_live_update(t);
         }, 100, nullptr);
+
+        // Fast (33 ms ≈ 30 Hz) timer — updates ONLY the laptime label(s)
+        // on the timing screen so the hundredths digit ticks visibly
+        // instead of appearing frozen at the 10 Hz cadence of the main
+        // timer. Cheap: one snprintf + one label_set_text per tick.
+        lv_timer_create([](lv_timer_t * /*t*/) {
+            lv_obj_t *active_scr = lv_screen_active();
+            if (!tw.z1_val[0]) return;
+            if (!active_scr || lv_obj_get_screen(tw.z1_val[0]) != active_scr) return;
+            const LiveTiming &lt   = g_state.timing;
+            const LapSession &sess = g_state.session;
+            uint32_t ms = 0;
+            if (lt.in_lap) ms = millis() - lt.lap_start_ms;
+            else if (sess.lap_count > 0)
+                ms = sess.laps[sess.lap_count - 1].total_ms;
+            else return;
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%u:%05.2f",
+                     (unsigned)(ms / 60000), fmod(ms / 1000.0f, 60.0f));
+            for (int i = 0; i < Z1_SLOTS; i++) {
+                if (g_dash_cfg.z1[i] == FIELD_LAPTIME && tw.z1_val[i]) {
+                    lv_label_set_text(tw.z1_val[i], buf);
+                }
+            }
+        }, 33, nullptr);
+
         s_timer_created = true;
     }
 }
@@ -1017,6 +1050,11 @@ static void open_history_screen() {
             lv_obj_t *row = lv_obj_create(content);
             lv_obj_set_width(row, LV_PCT(100)); lv_obj_set_height(row, 52);
             brl_style_card(row);
+            // PERF: flat corners on list rows — rounded corners with SW
+            // renderer + many visible rows = expensive mask draw every
+            // scroll frame (LVGL 9 + DRAW_UNIT_CNT=1). Visual diff minimal
+            // inside a vertical list.
+            lv_obj_set_style_radius(row, 0, LV_STATE_DEFAULT);
             lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
             char lt_buf[16]; fmt_laptime(lt_buf, sizeof(lt_buf), rl.total_ms);
@@ -1136,6 +1174,7 @@ static void open_history_screen() {
             lv_obj_t *row = lv_obj_create(content);
             lv_obj_set_width(row, LV_PCT(100)); lv_obj_set_height(row, 60);
             brl_style_card(row);
+            lv_obj_set_style_radius(row, 0, LV_STATE_DEFAULT); // PERF: flat for scroll
             lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
             // Session name (top) + track as subtitle
@@ -2052,6 +2091,194 @@ static void open_car_profiles_screen() {
     sub_screen_load(scr);
 }
 
+// ---------------------------------------------------------------------------
+// Camera Preview Screen
+// ---------------------------------------------------------------------------
+static lv_obj_t *s_preview_img = nullptr;
+static lv_image_dsc_t s_preview_dsc = {};
+static lv_timer_t *s_preview_tmr = nullptr;
+
+static void preview_stop_and_back(lv_event_t * /*e*/) {
+    if (s_preview_tmr) { lv_timer_delete(s_preview_tmr); s_preview_tmr = nullptr; }
+    video_stop_preview();
+    s_preview_img = nullptr;
+    open_settings_screen();
+}
+
+static void open_preview_screen() {
+    video_start_preview();
+
+    lv_obj_t *scr = make_sub_screen("Kamera", preview_stop_and_back);
+    lv_obj_t *content = build_content_area(scr, false);
+
+    // Full-size image widget for camera preview
+    s_preview_img = lv_image_create(content);
+    lv_obj_set_size(s_preview_img, LV_PCT(100), LV_PCT(100));
+    lv_obj_center(s_preview_img);
+    lv_image_set_scale(s_preview_img, 256);  // 1:1
+
+    // Info label (shown until first frame arrives)
+    lv_obj_t *info = lv_label_create(content);
+    lv_label_set_text(info, "Warte auf Kamerabild...");
+    brl_style_label(info, &BRL_FONT_24, BRL_CLR_TEXT_DIM);
+    lv_obj_center(info);
+
+    // Timer to poll decoded RGB565 frames from HW JPEG pipeline
+    s_preview_tmr = lv_timer_create([](lv_timer_t *t) {
+        if (!s_preview_img) return;
+
+        uint16_t pw = 0, ph = 0;
+        const uint8_t *rgb = video_get_preview_frame(&pw, &ph);
+        if (!rgb || pw == 0 || ph == 0) return;
+
+        // Display decoded RGB565 buffer directly (no TJPGD needed)
+        s_preview_dsc.header.magic  = LV_IMAGE_HEADER_MAGIC;
+        s_preview_dsc.header.cf     = LV_COLOR_FORMAT_RGB565;
+        s_preview_dsc.header.flags  = 0;
+        s_preview_dsc.header.w      = pw;
+        s_preview_dsc.header.h      = ph;
+        s_preview_dsc.header.stride = pw * 2;  // RGB565 = 2 bytes/pixel
+        s_preview_dsc.data_size     = (uint32_t)pw * ph * 2;
+        s_preview_dsc.data          = rgb;
+
+        // Force LVGL to re-read the buffer (bypass image cache)
+        lv_image_set_src(s_preview_img, NULL);
+        lv_image_set_src(s_preview_img, &s_preview_dsc);
+
+        // Remove "waiting" label after first frame
+        lv_obj_t *parent = lv_obj_get_parent(s_preview_img);
+        if (parent && lv_obj_get_child_count(parent) > 1) {
+            lv_obj_t *lbl = lv_obj_get_child(parent, 1);
+            if (lbl) lv_obj_delete(lbl);
+        }
+    }, 100, nullptr);  // ~10 fps refresh
+
+    sub_screen_load(scr);
+}
+
+// ---------------------------------------------------------------------------
+// Video Settings Screen — choose resolution + quality
+// ---------------------------------------------------------------------------
+static lv_obj_t *s_vset_quality_lbl = nullptr;
+
+static void open_video_settings_screen() {
+    lv_obj_t *scr = make_sub_screen("Video Einstellungen",
+        [](lv_event_t* /*e*/){ open_settings_screen(); });
+    lv_obj_t *content = build_content_area(scr, true);
+    lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(content, 8, LV_STATE_DEFAULT);
+
+    const int RH = 70;
+
+    // ── Resolution row ────────────────────────────────────────
+    {
+        lv_obj_t *r = make_setting_row(content, 0, RH, LV_SYMBOL_IMAGE,
+                                        "Auflösung", "MJPEG");
+
+        constexpr int MAX_RES = 8;
+        VideoResolution resolutions[MAX_RES];
+        int n = video_get_resolutions(resolutions, MAX_RES);
+        int cur = video_get_resolution_index();
+        if (cur < 0 || cur >= n) cur = (n > 0) ? n - 1 : 0;
+
+        if (n == 0) {
+            lv_obj_t *lbl = lv_label_create(r);
+            lv_label_set_text(lbl, "Keine Kamera");
+            brl_style_label(lbl, &BRL_FONT_16, BRL_CLR_DANGER);
+            lv_obj_align(lbl, LV_ALIGN_RIGHT_MID, 0, 0);
+        } else {
+            // Build dropdown options
+            static char dd_opts[512];
+            dd_opts[0] = '\0';
+            for (int i = 0; i < n; i++) {
+                char line[32];
+                snprintf(line, sizeof(line), "%dx%d @ %d",
+                         resolutions[i].width, resolutions[i].height,
+                         resolutions[i].fps);
+                if (i > 0) strncat(dd_opts, "\n", sizeof(dd_opts) - strlen(dd_opts) - 1);
+                strncat(dd_opts, line, sizeof(dd_opts) - strlen(dd_opts) - 1);
+            }
+
+            lv_obj_t *dd = lv_dropdown_create(r);
+            lv_dropdown_set_options(dd, dd_opts);
+            lv_dropdown_set_selected(dd, (uint32_t)cur);
+            lv_obj_set_width(dd, 220);
+            lv_obj_set_height(dd, 40);
+            lv_obj_align(dd, LV_ALIGN_RIGHT_MID, 0, 0);
+            lv_obj_set_style_bg_color(dd, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_opa(dd, LV_OPA_COVER, LV_STATE_DEFAULT);
+            lv_obj_set_style_text_color(dd, BRL_CLR_TEXT, LV_STATE_DEFAULT);
+            lv_obj_set_style_text_font(dd, &BRL_FONT_16, LV_STATE_DEFAULT);
+            lv_obj_set_style_border_width(dd, 0, LV_STATE_DEFAULT);
+            lv_obj_set_style_shadow_width(dd, 0, LV_STATE_DEFAULT);
+            lv_obj_set_style_pad_hor(dd, 10, LV_STATE_DEFAULT);
+
+            lv_obj_t *ddlist = lv_dropdown_get_list(dd);
+            if (ddlist) {
+                lv_obj_set_style_bg_color(ddlist, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
+                lv_obj_set_style_text_color(ddlist, BRL_CLR_TEXT, LV_STATE_DEFAULT);
+                lv_obj_set_style_text_font(ddlist, &BRL_FONT_16, LV_STATE_DEFAULT);
+                lv_obj_set_style_border_width(ddlist, 0, LV_STATE_DEFAULT);
+                lv_obj_set_style_shadow_width(ddlist, 0, LV_STATE_DEFAULT);
+            }
+
+            lv_obj_add_event_cb(dd, [](lv_event_t *e) {
+                lv_obj_t *obj = (lv_obj_t*)lv_event_get_target(e);
+                uint32_t sel = lv_dropdown_get_selected(obj);
+                video_set_resolution((int)sel);
+            }, LV_EVENT_VALUE_CHANGED, nullptr);
+        }
+    }
+
+    // ── Quality row ───────────────────────────────────────────
+    {
+        lv_obj_t *r = make_setting_row(content, 0, RH, LV_SYMBOL_SETTINGS,
+                                        "JPEG Qualität", "30 (klein) – 95 (beste)");
+
+        // Current value label
+        s_vset_quality_lbl = lv_label_create(r);
+        char qbuf[8];
+        snprintf(qbuf, sizeof(qbuf), "%d", 80);  // default quality
+        lv_label_set_text(s_vset_quality_lbl, qbuf);
+        brl_style_label(s_vset_quality_lbl, &BRL_FONT_20, BRL_CLR_ACCENT);
+        lv_obj_align(s_vset_quality_lbl, LV_ALIGN_RIGHT_MID, -10, 0);
+
+        // Slider
+        lv_obj_t *sl = lv_slider_create(r);
+        lv_obj_set_size(sl, 260, 12);
+        lv_obj_align(sl, LV_ALIGN_RIGHT_MID, -60, 0);
+        lv_slider_set_range(sl, 30, 95);
+        lv_slider_set_value(sl, 80, LV_ANIM_OFF);
+        lv_obj_set_style_bg_color(sl, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(sl, BRL_CLR_ACCENT, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_color(sl, BRL_CLR_ACCENT, LV_PART_KNOB);
+
+        lv_obj_add_event_cb(sl, [](lv_event_t *e) {
+            lv_obj_t *s = (lv_obj_t*)lv_event_get_target(e);
+            int v = (int)lv_slider_get_value(s);
+            video_set_quality((uint8_t)v);
+            if (s_vset_quality_lbl) {
+                char buf[8];
+                snprintf(buf, sizeof(buf), "%d", v);
+                lv_label_set_text(s_vset_quality_lbl, buf);
+            }
+        }, LV_EVENT_VALUE_CHANGED, nullptr);
+    }
+
+    // ── Info row ──────────────────────────────────────────────
+    {
+        lv_obj_t *r = make_setting_row(content, 0, RH, LV_SYMBOL_WARNING,
+                                        "Hinweis", "");
+        lv_obj_t *info = lv_label_create(r);
+        lv_label_set_text(info,
+            "Höhere Auflösungen\nbrauchen stärkere\nStromversorgung (5V)");
+        brl_style_label(info, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+        lv_obj_align(info, LV_ALIGN_RIGHT_MID, 0, 0);
+    }
+
+    sub_screen_load(scr);
+}
+
 static void open_settings_screen() {
     lv_obj_t *scr = make_sub_screen(tr(TR_SETTINGS_TITLE), cb_back_to_menu);
     lv_obj_t *content = build_content_area(scr, true);
@@ -2138,16 +2365,39 @@ static void open_settings_screen() {
         lv_obj_add_event_cb(bgps, [](lv_event_t* /*e*/){ open_gps_info_screen(); },
                             LV_EVENT_CLICKED, nullptr);
     }
-    // WiFi AP — always active, only SSID/password can be configured
+    // WiFi AP — live status, on/off toggle, configure dialog
     {
         lv_obj_t *r = make_setting_row(content, 0, RH2, LV_SYMBOL_WIFI,
                                         tr(TR_WIFI_AP_TITLE), tr(TR_WIFI_AP_SUB));
+
+        // Status: "AP aktiv\n<SSID> @ 192.168.4.1" if on, else "Aus"
         set_wifi_ap_status_lbl = lv_label_create(r);
-        lv_label_set_text(set_wifi_ap_status_lbl, tr(TR_WIFI_AP_ON));
-        brl_style_label(set_wifi_ap_status_lbl, &BRL_FONT_16, lv_color_hex(0x00CC66));
-        lv_obj_set_width(set_wifi_ap_status_lbl, 140);
+        bool ap_on = (g_state.wifi_mode == BRL_WIFI_AP);
+        char st_buf[96];
+        if (ap_on) {
+            snprintf(st_buf, sizeof(st_buf), "%s\n%s\n%s",
+                     tr(TR_WIFI_AP_ON), wifi_ap_ssid(), wifi_ap_ip());
+        } else {
+            snprintf(st_buf, sizeof(st_buf), "%s", tr(TR_WIFI_AP_OFF));
+        }
+        lv_label_set_text(set_wifi_ap_status_lbl, st_buf);
+        brl_style_label(set_wifi_ap_status_lbl, &BRL_FONT_14,
+                        ap_on ? BRL_CLR_ACCENT : BRL_CLR_TEXT_DIM);
+        lv_obj_set_width(set_wifi_ap_status_lbl, 220);
         lv_obj_align(set_wifi_ap_status_lbl, LV_ALIGN_LEFT_MID, 0, 0);
 
+        // On/Off toggle (primary action — otherwise user cannot enable AP)
+        const char *toggle_lbl = ap_on ? tr(TR_DISCONNECT_BTN) : tr(TR_WIFI_AP_ON);
+        lv_obj_t *btog = make_setting_btn(r, toggle_lbl,
+            ap_on ? BRL_CLR_SURFACE2 : BRL_CLR_ACCENT,
+            LV_ALIGN_RIGHT_MID, -150);
+        lv_obj_add_event_cb(btog, [](lv_event_t* /*e*/){
+            if (g_state.wifi_mode == BRL_WIFI_AP) wifi_set_mode(BRL_WIFI_OFF);
+            else                                   wifi_set_mode(BRL_WIFI_AP);
+            open_settings_screen();
+        }, LV_EVENT_CLICKED, nullptr);
+
+        // Configure dialog (SSID/password)
         char cfg_lbl[48];
         snprintf(cfg_lbl, sizeof(cfg_lbl), LV_SYMBOL_SETTINGS " %s", tr(TR_CONFIGURE_BTN));
         lv_obj_t *bcfg = make_setting_btn(r, cfg_lbl, BRL_CLR_SURFACE2, LV_ALIGN_RIGHT_MID);
@@ -2225,17 +2475,19 @@ static void open_settings_screen() {
                 open_settings_screen();
             }, LV_EVENT_CLICKED, nullptr);
         } else if (video_camera_connected()) {
-            // Record button
-            lv_obj_t *brec = make_setting_btn(r, tr(TR_VIDEO_REC_START), BRL_CLR_DANGER, LV_ALIGN_RIGHT_MID, -160);
+            lv_obj_t *brec = make_setting_btn(r, tr(TR_VIDEO_REC_START), BRL_CLR_DANGER, LV_ALIGN_RIGHT_MID, -310);
             lv_obj_add_event_cb(brec, [](lv_event_t* /*e*/){
                 video_start_recording();
                 open_settings_screen();
             }, LV_EVENT_CLICKED, nullptr);
-            // Preview button
-            lv_obj_t *bprev = make_setting_btn(r, tr(TR_VIDEO_PREVIEW), BRL_CLR_ACCENT, LV_ALIGN_RIGHT_MID);
+            lv_obj_t *bprev = make_setting_btn(r, tr(TR_VIDEO_PREVIEW), BRL_CLR_ACCENT, LV_ALIGN_RIGHT_MID, -155);
             lv_obj_add_event_cb(bprev, [](lv_event_t* /*e*/){
-                video_start_preview();
-                // TODO: open camera preview sub-screen
+                open_preview_screen();
+            }, LV_EVENT_CLICKED, nullptr);
+            lv_obj_t *bset = make_setting_btn(r, LV_SYMBOL_SETTINGS, BRL_CLR_SURFACE2, LV_ALIGN_RIGHT_MID);
+            lv_obj_set_width(bset, 140);
+            lv_obj_add_event_cb(bset, [](lv_event_t* /*e*/){
+                open_video_settings_screen();
             }, LV_EVENT_CLICKED, nullptr);
         }
     }
@@ -2385,10 +2637,55 @@ static void update_sb(SbH &sb) {
 }
 
 void timer_live_update(lv_timer_t * /*t*/) {
-    // Update status bars
-    update_sb(sb_menu);
-    update_sb(sb_sub);
-    update_sb(sb_timing);
+    // PERF: only touch widgets that live on the currently-visible screen.
+    // Updating invisible labels still costs CPU + causes LVGL to flag areas
+    // dirty on their (inactive) parent screen, which showed up as scroll
+    // stutter on the 1024×600 UI. Each status-bar/timing/settings block is
+    // gated by a cheap screen-equality check.
+    lv_obj_t *active_scr = lv_screen_active();
+    auto on_active = [&](lv_obj_t *any_obj) -> bool {
+        return any_obj && lv_obj_get_screen(any_obj) == active_scr;
+    };
+
+    // Update status bars — only the one on the active screen
+    if (on_active(sb_menu.gps))   update_sb(sb_menu);
+    if (on_active(sb_sub.gps))    update_sb(sb_sub);
+    if (on_active(sb_timing.gps)) update_sb(sb_timing);
+
+    // Timing-screen-only widgets: skip entirely when timing screen not shown
+    const bool timing_active = on_active(sb_timing.gps);
+
+    // PERF: keep LVGL render pipeline hot in L2 cache.
+    // On menu/sub screens the only per-tick work is a few status-bar label
+    // updates — if none of them actually change, LVGL skips the draw cycle
+    // entirely. During long user-idle periods WiFi/SD/USB tasks pollute the
+    // 256 KB L2 cache and LVGL's draw+scroll code gets evicted; first
+    // scroll gesture then stutters because all that code must page in from
+    // flash. Timing screen doesn't have this problem because its delta-bar
+    // + live labels redraw every tick.
+    //
+    // Solution: on non-timing screens, force a full-screen invalidate
+    // every ~400 ms. LVGL redraws identical pixels (no visible change),
+    // but the render/draw code stays resident in L2 — first user scroll
+    // is then as smooth as post-timing.
+    if (!timing_active) {
+        // Keep LVGL's render code path hot in the 256 KB L2 cache during
+        // long idle periods on menu/sub screens. Without this, WiFi/SD/USB
+        // tasks evict the draw+scroll code and the first scroll gesture
+        // stutters while everything pages in from flash.
+        //
+        // Earlier revision invalidated the full 1024×600 screen every 100 ms
+        // — that re-renders ~600k pixels 10×/s with DRAW_UNIT=1 (HARD RULE)
+        // which is expensive enough to compete with touch gestures on Core 1.
+        //
+        // Fix: invalidate a tiny 32×32 area in the top-left corner every
+        // tick. LVGL still walks its dirty-rect pipeline (cache stays warm)
+        // but actual blit work is negligible (~1k pixels/tick).
+        if (active_scr) {
+            lv_area_t a = { 0, 0, 31, 31 };
+            lv_obj_invalidate_area(active_scr, &a);
+        }
+    }
 
     // ---- Timing screen slot updates ----
 
@@ -2409,9 +2706,16 @@ void timer_live_update(lv_timer_t * /*t*/) {
                 break;
             }
             case FIELD_LAPTIME: {
+                // While a run is in progress (in_lap), show the live elapsed
+                // time. After a lap finishes (in_lap cleared, but timing_active
+                // stays true to keep the value on screen), freeze on the last
+                // lap's total_ms so the driver can read it after crossing the
+                // finish line.
                 uint32_t ms = 0;
-                if (lt.timing_active) ms = millis() - lt.lap_start_ms;
-                else if (sess.lap_count > 0) ms = sess.laps[sess.lap_count - 1].total_ms;
+                if (lt.in_lap)
+                    ms = millis() - lt.lap_start_ms;
+                else if (sess.lap_count > 0)
+                    ms = sess.laps[sess.lap_count - 1].total_ms;
                 snprintf(buf, sizeof(buf), "%u:%05.2f",
                          (unsigned)(ms / 60000), fmod(ms / 1000.0f, 60.0f));
                 break;
@@ -2427,9 +2731,7 @@ void timer_live_update(lv_timer_t * /*t*/) {
             case FIELD_DELTA_NUM: {
                 int32_t d = lt.live_delta_ms;
                 snprintf(buf, sizeof(buf), "%+.2f s", d / 1000.0f);
-                lv_obj_set_style_text_color(lbl,
-                    d < 0 ? lv_color_hex(0x00CC66)
-                          : (d > 0 ? lv_color_hex(0xFF4444) : lv_color_hex(0xFFFFFF)), 0);
+                lv_obj_set_style_text_color(lbl, lv_color_hex(0x000000), 0);
                 lv_label_set_text(lbl, buf);
                 return;
             }
@@ -2445,27 +2747,60 @@ void timer_live_update(lv_timer_t * /*t*/) {
                     snprintf(b, len, "S%u %u.%02u", (unsigned)n,
                              (unsigned)(ms / 1000), (unsigned)((ms % 1000) / 10));
                 };
+                // Pick reference sector time (if any) + purple-mode flag.
+                // Purple: current session has NOT yet beaten the stored
+                // all-time best — driver is still chasing the record.
+                extern bool g_chasing_record;
+                uint32_t ref_ms = 0;
+                if (sess.lap_count > 0 && sess.ref_lap_idx < sess.lap_count) {
+                    ref_ms = sess.laps[sess.ref_lap_idx].sector_ms[si];
+                }
+                lv_color_t clr = BRL_CLR_TEXT;
+
                 if (lt.in_lap) {
                     const uint32_t *s_ms = sess.laps[sess.lap_count].sector_ms;
                     uint8_t cs      = lt.current_sector;
                     uint32_t run_ms = now_ms - lt.sector_start_ms;
                     if ((int)cs > si) {
+                        // Completed sector — color vs reference
                         sec_fmt(buf, sizeof(buf), si+1, s_ms[si]);
-                        lv_obj_set_style_text_color(lbl, BRL_CLR_TEXT_DIM, 0);
+                        if (ref_ms > 0) {
+                            bool faster = s_ms[si] < ref_ms;
+                            if (g_chasing_record) {
+                                clr = faster ? BRL_CLR_PURPLE : BRL_CLR_PURPLE_DIM;
+                            } else {
+                                clr = faster ? BRL_CLR_OK : BRL_CLR_DANGER;
+                            }
+                        } else {
+                            clr = BRL_CLR_TEXT;
+                        }
                     } else if ((int)cs == si) {
-                        snprintf(buf, sizeof(buf), "> %u.%02u", (unsigned)(run_ms/1000), (unsigned)((run_ms%1000)/10));
-                        lv_obj_set_style_text_color(lbl, BRL_CLR_ACCENT, 0);
+                        // Currently running sector — show elapsed in accent
+                        snprintf(buf, sizeof(buf), "%u.%02u",
+                                 (unsigned)(run_ms/1000),
+                                 (unsigned)((run_ms%1000)/10));
+                        clr = BRL_CLR_ACCENT;
                     } else {
                         strncpy(buf, "---", sizeof(buf));
-                        lv_obj_set_style_text_color(lbl, BRL_CLR_TEXT_DIM, 0);
+                        clr = BRL_CLR_TEXT_DIM;
                     }
                 } else if (sess.lap_count > 0) {
+                    // Between laps — show last lap's sector, colored vs ref
                     const RecordedLap &last = sess.laps[sess.lap_count - 1];
-                    if (last.sector_ms[si] > 0) {
-                        sec_fmt(buf, sizeof(buf), si+1, last.sector_ms[si]);
-                        lv_obj_set_style_text_color(lbl, BRL_CLR_TEXT, 0);
+                    uint32_t s = last.sector_ms[si];
+                    if (s > 0) {
+                        sec_fmt(buf, sizeof(buf), si+1, s);
+                        if (ref_ms > 0 && sess.ref_lap_idx != sess.lap_count - 1) {
+                            bool faster = s < ref_ms;
+                            if (g_chasing_record) {
+                                clr = faster ? BRL_CLR_PURPLE : BRL_CLR_PURPLE_DIM;
+                            } else {
+                                clr = faster ? BRL_CLR_OK : BRL_CLR_DANGER;
+                            }
+                        }
                     } else strncpy(buf, "---", sizeof(buf));
                 } else strncpy(buf, "---", sizeof(buf));
+                lv_obj_set_style_text_color(lbl, clr, 0);
                 lv_label_set_text(lbl, buf);
                 return;
             }
@@ -2501,25 +2836,36 @@ void timer_live_update(lv_timer_t * /*t*/) {
         lv_label_set_text(lbl, buf);
     };
 
-    for (int i = 0; i < Z1_SLOTS; i++) update_slot(tw.z1_val[i], g_dash_cfg.z1[i]);
-    for (int i = 0; i < Z2_SLOTS; i++) update_slot(tw.z2_val[i], g_dash_cfg.z2[i]);
-    for (int i = 0; i < Z3_SLOTS; i++) update_slot(tw.z3_val[i], g_dash_cfg.z3[i]);
+    if (timing_active) {
+        for (int i = 0; i < Z1_SLOTS; i++) update_slot(tw.z1_val[i], g_dash_cfg.z1[i]);
+        for (int i = 0; i < Z2_SLOTS; i++) update_slot(tw.z2_val[i], g_dash_cfg.z2[i]);
+        for (int i = 0; i < Z3_SLOTS; i++) update_slot(tw.z3_val[i], g_dash_cfg.z3[i]);
+    }
 
-    if (tw.delta_bar_fill && tw.delta_bar_lbl) {
+    if (timing_active && tw.delta_bar_fill && tw.delta_bar_lbl) {
         int32_t d     = g_state.timing.live_delta_ms;
         int32_t scale = timing_get_delta_scale();
         int16_t bh    = tw.delta_bar_h > 0 ? tw.delta_bar_h : 80;
         const int HALF = BRL_SCREEN_W / 2 - 4;
         int fill_w = (int)(fabsf((float)d) / (float)scale * HALF);
         if (fill_w > HALF) fill_w = HALF;
+        // Purple bar replaces green when the driver is chasing the all-time
+        // record (session hasn't beaten the stored best yet).
+        extern bool g_chasing_record;
+        lv_color_t faster_clr = g_chasing_record
+            ? BRL_CLR_PURPLE
+            : BRL_CLR_OK;
+        lv_color_t slower_clr = g_chasing_record
+            ? BRL_CLR_PURPLE_DIM
+            : BRL_CLR_DANGER;
         if (d == 0 || !g_state.timing.timing_active) {
             lv_obj_set_size(tw.delta_bar_fill, 0, bh);
         } else if (d > 0) {
-            lv_obj_set_style_bg_color(tw.delta_bar_fill, lv_color_hex(0xFF4444), 0);
+            lv_obj_set_style_bg_color(tw.delta_bar_fill, slower_clr, 0);
             lv_obj_set_size(tw.delta_bar_fill, fill_w, bh);
             lv_obj_set_pos(tw.delta_bar_fill, BRL_SCREEN_W / 2 - fill_w, 0);
         } else {
-            lv_obj_set_style_bg_color(tw.delta_bar_fill, lv_color_hex(0x00CC66), 0);
+            lv_obj_set_style_bg_color(tw.delta_bar_fill, faster_clr, 0);
             lv_obj_set_size(tw.delta_bar_fill, fill_w, bh);
             lv_obj_set_pos(tw.delta_bar_fill, BRL_SCREEN_W / 2, 0);
         }
@@ -2530,13 +2876,10 @@ void timer_live_update(lv_timer_t * /*t*/) {
             snprintf(dbuf, sizeof(dbuf), "%+.2f s", d / 1000.0f);
         }
         lv_label_set_text(tw.delta_bar_lbl, dbuf);
-        lv_obj_set_style_text_color(tw.delta_bar_lbl,
-            d < 0 ? lv_color_hex(0x00CC66)
-                  : (d > 0 ? lv_color_hex(0xFF4444) : lv_color_hex(0xFFFFFF)), 0);
     }
 
     // Track name
-    if (tw.track_name_lbl) {
+    if (timing_active && tw.track_name_lbl) {
         if (g_state.active_track_idx >= 0 && g_state.active_track_idx < track_total_count()) {
             lv_label_set_text(tw.track_name_lbl,
                               track_get(g_state.active_track_idx)->name);
@@ -2544,7 +2887,7 @@ void timer_live_update(lv_timer_t * /*t*/) {
     }
 
     // ---- GPS map widget update (once per second max) ----
-    if (tw.map_obj) {
+    if (timing_active && tw.map_obj) {
         static uint32_t s_map_last_ms = 0;
         uint32_t now_ms = millis();
         if (now_ms - s_map_last_ms >= 1000) {
@@ -2643,7 +2986,13 @@ void timer_live_update(lv_timer_t * /*t*/) {
     }
 
     // ---- Settings screen labels (null-checked) ----
-    if (set_obd_status_lbl) {
+    // Gate entire block behind active-screen check: settings labels only
+    // exist while s_scr_sub is the settings screen, and only need refresh
+    // when the user is actually looking at them.
+    const bool settings_active = on_active(set_obd_status_lbl)
+                              || on_active(set_wifi_sta_status_lbl)
+                              || on_active(set_obd_btn);
+    if (settings_active && set_obd_status_lbl) {
         bool conn = obd_is_connected();
         lv_label_set_text(set_obd_status_lbl,
                           conn ? tr(TR_CONNECTED)
@@ -2651,7 +3000,7 @@ void timer_live_update(lv_timer_t * /*t*/) {
         lv_obj_set_style_text_color(set_obd_status_lbl,
             conn ? lv_color_hex(0x00CC66) : lv_color_hex(0xAAAAAA), 0);
     }
-    if (set_obd_btn) {
+    if (settings_active && set_obd_btn) {
         bool conn = obd_is_connected();
         char obd_btn_buf[48];
         snprintf(obd_btn_buf, sizeof(obd_btn_buf),
@@ -2660,7 +3009,7 @@ void timer_live_update(lv_timer_t * /*t*/) {
         lv_label_set_text(lv_obj_get_child(set_obd_btn, 0), obd_btn_buf);
     }
     // AP is always active — status label is a static green "Aktiv", no dynamic update needed.
-    if (set_wifi_sta_status_lbl) {
+    if (settings_active && set_wifi_sta_status_lbl) {
         bool sta_on = (g_state.wifi_mode == BRL_WIFI_STA);
         lv_label_set_text(set_wifi_sta_status_lbl,
                           sta_on ? tr(TR_CONNECTED) : tr(TR_NOT_CONNECTED));
@@ -2694,7 +3043,10 @@ void app_init() {
     // reference menu_screen_show even before the menu is visible).
     build_menu_screen();
 
-    // Show splash, then load menu screen when done
+    // Show splash, then load menu screen when done.
+    // (L2-cache warm-up happens continuously via timer_live_update, which
+    // force-invalidates non-timing screens every ~400 ms — that's what
+    // keeps the first scroll gesture smooth.)
     splash_show(3000, []() {
         lv_screen_load(s_scr_menu);
     });

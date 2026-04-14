@@ -41,6 +41,7 @@
 #include "data/car_profile.h"
 #include "can/can_bus.h"
 #include "video/video_mgr.h"
+#include "video/video_pipeline.h"
 
 static const char *TAG = "brl-laptimer";
 
@@ -94,16 +95,24 @@ void app_main(void)
 
     g_state_mutex = xSemaphoreCreateMutex();
 
+    /* ── JPEG HW codec: MUST init before display BSP (DMA fragmentation) ── */
+    ESP_LOGI(TAG, "video_pipeline_early_init");
+    video_pipeline_early_init();
+
     /* ── Display via BSP (MIPI DSI + EK79007 + GT911 touch) ────── */
     bsp_display_cfg_t cfg = {
         .lvgl_port_cfg = ESP_LVGL_PORT_INIT_CONFIG(),
         .buffer_size = BSP_LCD_DRAW_BUFF_SIZE,
         .double_buffer = BSP_LCD_DRAW_BUFF_DOUBLE,
         .flags = {
-            .buff_dma = true,
+            .buff_dma = false,
             .sw_rotate = false,
         }
     };
+    /* Pin LVGL to Core 1 so it never competes with USB/SD/GPS on Core 0.
+     * Priority 4 stays above our video pipeline tasks (pri 3) so the UI
+     * always wins scheduler time while recording. */
+    cfg.lvgl_port_cfg.task_affinity = 1;
     bsp_display_start_with_config(&cfg);
     bsp_display_backlight_on();
 
@@ -153,6 +162,11 @@ void app_main(void)
     /* ── WiFi (ESP32-C6 co-processor via SDIO / esp_hosted) ─── */
     ESP_LOGI(TAG, "wifi_mgr_init");
     wifi_mgr_init();
+
+    /* Auto-start AP so the Android telemetry app can connect right away.
+     * User can still switch to STA/OFF via the settings screen. */
+    ESP_LOGI(TAG, "wifi_set_mode(BRL_WIFI_AP)");
+    wifi_set_mode(BRL_WIFI_AP);
 
     /* ── Video recording (USB camera, JPEG pipeline, AVI) ───── */
     ESP_LOGI(TAG, "video_init");

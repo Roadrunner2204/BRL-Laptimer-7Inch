@@ -1,9 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Session, SessionSummary } from './types';
+import { Session, SessionSummary, Track } from './types';
 
 const KEY_IP       = 'laptimer_ip';
 const KEY_IDS      = 'session_ids';
 const KEY_SESSION  = (id: string) => `session_${id}`;
+const KEY_TRACK_IDS = 'local_track_ids';
+const KEY_TRACK     = (id: string) => `local_track_${id}`;
 
 // ── IP ────────────────────────────────────────────────────────────────────────
 
@@ -40,6 +42,60 @@ export async function listSessionIds(): Promise<string[]> {
   const raw = await AsyncStorage.getItem(KEY_IDS);
   return raw ? JSON.parse(raw) : [];
 }
+
+// ── Local tracks (offline-created, queued for upload) ───────────────────────
+
+export interface LocalTrack {
+  id: string;          // uuid-ish, local-only
+  track: Track;        // the full Track payload for POST /track
+  created_at: number;  // Date.now()
+  pending: boolean;    // true = not yet uploaded to device
+}
+
+function genId(): string {
+  return `trk_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export async function saveLocalTrack(track: Track, pending: boolean): Promise<LocalTrack> {
+  const rec: LocalTrack = { id: genId(), track, created_at: Date.now(), pending };
+  await AsyncStorage.setItem(KEY_TRACK(rec.id), JSON.stringify(rec));
+  const ids = await listLocalTrackIds();
+  if (!ids.includes(rec.id)) {
+    await AsyncStorage.setItem(KEY_TRACK_IDS, JSON.stringify([rec.id, ...ids]));
+  }
+  return rec;
+}
+
+export async function listLocalTrackIds(): Promise<string[]> {
+  const raw = await AsyncStorage.getItem(KEY_TRACK_IDS);
+  return raw ? JSON.parse(raw) : [];
+}
+
+export async function listLocalTracks(): Promise<LocalTrack[]> {
+  const ids = await listLocalTrackIds();
+  const out: LocalTrack[] = [];
+  for (const id of ids) {
+    const raw = await AsyncStorage.getItem(KEY_TRACK(id));
+    if (raw) out.push(JSON.parse(raw));
+  }
+  return out;
+}
+
+export async function deleteLocalTrack(id: string): Promise<void> {
+  await AsyncStorage.removeItem(KEY_TRACK(id));
+  const ids = await listLocalTrackIds();
+  await AsyncStorage.setItem(KEY_TRACK_IDS, JSON.stringify(ids.filter(i => i !== id)));
+}
+
+export async function markTrackUploaded(id: string): Promise<void> {
+  const raw = await AsyncStorage.getItem(KEY_TRACK(id));
+  if (!raw) return;
+  const rec: LocalTrack = JSON.parse(raw);
+  rec.pending = false;
+  await AsyncStorage.setItem(KEY_TRACK(id), JSON.stringify(rec));
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 
 export async function listSessionSummaries(): Promise<SessionSummary[]> {
   const ids = await listSessionIds();

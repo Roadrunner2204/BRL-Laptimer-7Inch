@@ -1,8 +1,10 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, Switch,
+  PanResponder, useWindowDimensions,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
+import { deriveChannels } from '../analysis';
 import { RouteProp } from '@react-navigation/native';
 import { RootStackParamList } from '../App';
 import { loadSession } from '../storage';
@@ -14,12 +16,50 @@ import { C } from '../theme';
 type Props = { route: RouteProp<RootStackParamList, 'Map'> };
 
 export default function MapScreen({ route }: Props) {
+  const { width: winW } = useWindowDimensions();
   const webviewRef = useRef<WebView>(null);
   const [session, setSession]       = useState<Session | null>(null);
   const [ready, setReady]           = useState(false);
   const [lapVis, setLapVis]         = useState<boolean[]>([]);
   const [speedColor, setSpeedColor] = useState(true);
   const [sheetOpen, setSheetOpen]   = useState(true);
+  const [cursorDist, setCursorDist] = useState<number | null>(null);
+
+  // Best-lap total distance — used as slider max
+  const bestLapDist = useMemo(() => {
+    if (!session) return 0;
+    const best = session.laps[session.best_lap_idx];
+    if (!best) return 0;
+    const ch = deriveChannels(best);
+    return ch.dist_m[ch.dist_m.length - 1] ?? 0;
+  }, [session]);
+
+  // Pan responder for scrub bar
+  const scrubBarWidthRef = useRef(winW - 32);
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: (e) => {
+        updateCursorFromTouch(e.nativeEvent.locationX);
+      },
+      onPanResponderMove: (e) => {
+        updateCursorFromTouch(e.nativeEvent.locationX);
+      },
+    })
+  ).current;
+
+  function updateCursorFromTouch(x: number) {
+    const w = scrubBarWidthRef.current;
+    const frac = Math.max(0, Math.min(1, x / w));
+    setCursorDist(frac * bestLapDist);
+  }
+
+  // Push cursor updates to WebView
+  useEffect(() => {
+    if (!ready) return;
+    postMsg({ type: 'cursor', dist: cursorDist });
+  }, [cursorDist, ready]);
 
   useEffect(() => {
     loadSession(route.params.sessionId).then(s => {
@@ -59,7 +99,9 @@ export default function MapScreen({ route }: Props) {
     postMsg({ type: 'speedColor', enabled: v });
   }
 
-  const LAP_COLORS = ['#00CC66','#4488FF','#FF8800','#FF44AA','#44CCFF','#FFFF44','#FF4444','#AA44FF'];
+  // Visually distinct but within the BRL blue-centric palette where possible.
+  // Best lap gets C.accent elsewhere; non-best laps use these.
+  const LAP_COLORS = ['#00C8FF','#AA88FF','#FF8800','#FF44AA','#66E0FF','#FFEE55','#FF5555','#44FFAA'];
 
   return (
     <View style={s.root}>
@@ -78,6 +120,28 @@ export default function MapScreen({ route }: Props) {
       <TouchableOpacity style={s.sheetToggle} onPress={() => setSheetOpen(v => !v)}>
         <Text style={s.sheetToggleTxt}>{sheetOpen ? '▼ Runden' : '▲ Runden'}</Text>
       </TouchableOpacity>
+
+      {/* Scrub bar — drag to move the car marker along the best lap */}
+      {bestLapDist > 0 && (
+        <View style={s.scrubWrap}>
+          <View
+            style={s.scrubTrack}
+            onLayout={e => { scrubBarWidthRef.current = e.nativeEvent.layout.width; }}
+            {...panResponder.panHandlers}
+          >
+            <View style={s.scrubBar} />
+            {cursorDist != null && (
+              <View style={[
+                s.scrubKnob,
+                { left: (cursorDist / bestLapDist) * 100 + '%' },
+              ]}/>
+            )}
+          </View>
+          <Text style={s.scrubLbl}>
+            {cursorDist == null ? 'Ziehe zum Scrubben' : `${cursorDist.toFixed(0)} m`}
+          </Text>
+        </View>
+      )}
 
       {sheetOpen && session && (
         <View style={s.sheet}>
@@ -137,4 +201,15 @@ const s = StyleSheet.create({
   chipDot:       { width:10, height:4, borderRadius:2, marginBottom:4 },
   chipTxt:       { color: C.text, fontWeight:'700', fontSize:13 },
   chipTime:      { color: C.dim, fontSize:11, marginTop:2 },
+
+  scrubWrap:     { position:'absolute', bottom:160, left:16, right:16,
+                   backgroundColor:'rgba(13,13,13,0.9)', borderRadius:10,
+                   padding:10 },
+  scrubTrack:    { height:32, justifyContent:'center' },
+  scrubBar:      { height:4, backgroundColor: C.surface2, borderRadius:2 },
+  scrubKnob:     { position:'absolute', top:8, width:16, height:16,
+                   marginLeft:-8, borderRadius:8, backgroundColor: C.accent,
+                   borderWidth:2, borderColor:'#fff' },
+  scrubLbl:      { color: C.accent, fontSize:11, fontWeight:'600',
+                   textAlign:'center', marginTop:4 },
 });

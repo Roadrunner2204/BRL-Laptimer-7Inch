@@ -29,26 +29,26 @@ typedef struct {
 typedef void (*uvc_frame_cb_t)(const uint8_t *data, uint32_t size);
 
 /// Initialize USB Host and UVC driver. Call once.
-void uvc_stream_init(void);
+void brl_uvc_init(void);
 
 /// Returns true if a UVC camera is currently connected.
-bool uvc_stream_connected(void);
+bool brl_uvc_connected(void);
 
 /// Get available resolutions from the connected camera.
 /// Returns count (0 if no camera).
-int uvc_stream_get_resolutions(UvcResolution *out, int max_count);
+int brl_uvc_get_resolutions(UvcResolution *out, int max_count);
 
 /// Select a resolution by index (from get_resolutions). Default: highest.
-void uvc_stream_set_resolution(int index);
+void brl_uvc_set_resolution(int index);
 
 /// Start streaming. Frames are delivered via the callback.
-bool uvc_stream_start(uvc_frame_cb_t cb);
+bool brl_uvc_start(uvc_frame_cb_t cb);
 
 /// Stop streaming.
-void uvc_stream_stop(void);
+void brl_uvc_stop(void);
 
 /// Get the active resolution.
-void uvc_stream_get_active_resolution(uint16_t *w, uint16_t *h, uint8_t *fps);
+void brl_uvc_get_active_resolution(uint16_t *w, uint16_t *h, uint8_t *fps);
 
 #ifdef __cplusplus
 }

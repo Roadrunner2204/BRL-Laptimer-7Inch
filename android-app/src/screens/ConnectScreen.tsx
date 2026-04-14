@@ -38,13 +38,17 @@ export default function ConnectScreen({ navigation }: Props) {
       }
     }
     setLoading(false);
+    const errMsg = (lastErr as any)?.message ?? String(lastErr);
     Alert.alert(
       'Verbindungsfehler',
       `Kein BRL Laptimer unter ${ip} erreichbar.\n\n` +
-      `Tipps:\n` +
-      `• Stelle sicher, dass du mit dem Laptimer-WLAN verbunden bist\n` +
-      `• Falls Android fragt "Ohne Internet verbunden bleiben?" → JA tippen\n` +
-      `• Netzwerk einmal vergessen und neu verbinden`,
+      `Fehlerdetails: ${errMsg}\n\n` +
+      `Checkliste:\n` +
+      `1. Laptimer eingeschaltet und hochgefahren?\n` +
+      `2. Android-WLAN verbunden mit SSID "BRL-Laptimer"?\n` +
+      `3. Bei der Nachfrage "Ohne Internet verbunden bleiben?" → JA\n` +
+      `4. Mobile Daten während des Verbindens AUS (sonst routet Android dorthin)\n` +
+      `5. Netzwerk vergessen und neu verbinden falls immer noch Probleme`,
     );
   }
 

@@ -70,11 +70,28 @@ void video_set_quality(uint8_t quality);
 /// width/height are output parameters.
 const uint8_t *video_get_preview_frame(uint16_t *width, uint16_t *height);
 
+/// Get pointer to latest raw MJPEG preview frame.
+/// Returns NULL if no preview available. size_out receives frame size.
+const uint8_t *video_get_preview_mjpeg(uint32_t *size_out);
+
 /// Get recording duration in seconds.
 uint32_t video_get_rec_duration_s(void);
 
 /// Get recording file size in bytes.
 uint32_t video_get_rec_size_bytes(void);
+
+/// Enable/disable raw-MJPEG passthrough recording mode.
+///
+/// When enabled (default: true), recording writes each incoming MJPEG frame
+/// DIRECTLY to the AVI file without HW decode/overlay/encode. This removes
+/// the entire video-pipeline CPU/DMA cost and lets the ESP sustain the full
+/// camera frame rate (~30 fps at 720p/1080p). The data overlay is rendered
+/// in the Android app at playback time.
+///
+/// When disabled, the legacy pipeline runs: MJPEG → HW decode → software
+/// overlay → HW encode → AVI. Only use this for on-device overlay debugging.
+void video_set_passthrough(bool enabled);
+bool video_get_passthrough(void);
 
 #ifdef __cplusplus
 }

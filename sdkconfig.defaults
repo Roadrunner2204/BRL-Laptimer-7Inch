@@ -26,6 +26,12 @@ CONFIG_CACHE_L2_CACHE_LINE_128B=y
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=10240
 CONFIG_FREERTOS_HZ=1000
 
+# Idle-task cleanup runs FreeRTOS vTaskDelete post-processing + ESP-Hosted
+# thread teardown when switching WiFi modes (AP ↔ STA). Default 1536 B
+# overflows on STA connect and triggers a stack-protection fault in
+# prvTaskDeleteWithCaps. Bumped to 4 KB.
+CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=3072
+
 # LVGL configuration
 CONFIG_LV_USE_CLIB_MALLOC=y
 CONFIG_LV_USE_CLIB_STRING=y
@@ -33,6 +39,15 @@ CONFIG_LV_USE_CLIB_SPRINTF=y
 CONFIG_LV_DEF_REFR_PERIOD=20
 CONFIG_LV_OS_FREERTOS=y
 CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=1
+# HARD RULE: keep this at 1. Multi-thread SW draw corrupts text on the
+# PSRAM LVGL buffers (characters render as garbage until the element is
+# touched/redrawn — cache-coherence race between draw threads).
+# Both PPA and DRAW_UNIT_CNT=2 trigger this, so both stay off.
+# Smoothness on the 1024×600 UI is achieved differently:
+#   - LVGL pinned to Core 1 (main.c: task_affinity = 1)
+#   - Video pipeline tasks at priority 3, below LVGL's 4 (video_mgr.cpp)
+#   - Raw MJPEG passthrough (no decode/encode during recording)
+# CONFIG_LVGL_PORT_ENABLE_PPA is not set
 CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=y
 
 # LVGL fonts
@@ -86,9 +101,17 @@ CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# Internal RAM reserved for DMA allocations (USB ISO, I2S, SDMMC).
+# 64 KB is the sustainable value — 128 KB was tried but aborts at boot
+# because only ~123 KB contiguous free internal RAM is available after
+# all the task stacks and driver buffers are placed.
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
 
 # ── USB Host (UVC camera for video recording) ──
-CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=1024
+CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=4096
+
+# LVGL TJPGD — built-in JPEG decoder for camera preview & logo
+CONFIG_LV_USE_TJPGD=y
 
 # Enable experimental features (required for ESP32-P4 MIPI DSI)
 CONFIG_IDF_EXPERIMENTAL_FEATURES=y

@@ -449,6 +449,9 @@ static lv_obj_t *mk_slot_card(lv_obj_t *row, int zone, int slot_idx,
     lv_obj_t *v = lv_label_create(c);
     lv_label_set_text(v, "---");
     brl_style_label(v, field_font(fid, zone, wide), field_color(fid));
+    // Fixed width + centered text prevents jitter with proportional font digits
+    lv_obj_set_width(v, w - 8);
+    lv_obj_set_style_text_align(v, LV_TEXT_ALIGN_CENTER, 0);
     if (zone == 1)
         lv_obj_align(v, LV_ALIGN_CENTER, 0, 8);
     else if (zone == 2)
@@ -709,9 +712,10 @@ lv_obj_t *timing_screen_build() {
     lv_obj_set_style_radius(tw.delta_bar_fill, 0, LV_STATE_DEFAULT);
     lv_obj_remove_flag(tw.delta_bar_fill, LV_OBJ_FLAG_SCROLLABLE);
 
+    // Single white label — readable on both red and green backgrounds
     tw.delta_bar_lbl = lv_label_create(dbar);
     lv_label_set_text(tw.delta_bar_lbl, "\xC2\xB1" "0.00 s");
-    brl_style_label(tw.delta_bar_lbl, &BRL_FONT_64, BRL_CLR_TEXT);
+    brl_style_label(tw.delta_bar_lbl, &BRL_FONT_64, lv_color_hex(0xFFFFFF));
     lv_obj_align(tw.delta_bar_lbl, LV_ALIGN_CENTER, 0, 0);
 
     // Tap delta bar → scale picker

@@ -39,15 +39,39 @@ export default function DetailScreen({ navigation, route }: Props) {
     <View style={s.root}>
       {/* Header */}
       <View style={s.hdr}>
-        <View style={{ flex:1 }}>
-          <Text style={s.trackName}>{session.name}</Text>
-          <Text style={s.sessionId}>{session.track} · {session.id}</Text>
-        </View>
+        <Text style={s.trackName}>{session.name}</Text>
+        <Text style={s.sessionId}>{session.track} · {session.id}</Text>
+      </View>
+
+      {/* Primary action row — one-tap to each analysis surface */}
+      <View style={s.actionsRow}>
         <TouchableOpacity
-          style={s.mapBtn}
+          style={s.actionPrimary}
+          onPress={() => navigation.navigate('Charts', { sessionId: session.id })}
+        >
+          <Text style={s.actionPrimaryIcon}>📊</Text>
+          <Text style={s.actionPrimaryTxt}>Analyse</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={s.actionSecondary}
           onPress={() => navigation.navigate('Map', { sessionId: session.id })}
         >
-          <Text style={s.mapBtnTxt}>Karte</Text>
+          <Text style={s.actionSecondaryIcon}>🗺️</Text>
+          <Text style={s.actionSecondaryTxt}>Karte</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={s.actionSecondary}
+          onPress={() => navigation.navigate('Video', { videoId: session.id, mode: 'stream' })}
+        >
+          <Text style={s.actionSecondaryIcon}>🎥</Text>
+          <Text style={s.actionSecondaryTxt}>Video</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={s.actionSecondary}
+          onPress={() => navigation.navigate('Compare', { sessionId: session.id })}
+        >
+          <Text style={s.actionSecondaryIcon}>⇄</Text>
+          <Text style={s.actionSecondaryTxt}>Vergleich</Text>
         </TouchableOpacity>
       </View>
 
@@ -112,20 +136,36 @@ const sc = StyleSheet.create({
 
 const s = StyleSheet.create({
   root:       { flex:1, backgroundColor: C.bg },
-  hdr:        { flexDirection:'row', alignItems:'center', padding:16, paddingBottom:8 },
+  hdr:        { padding:16, paddingBottom:8 },
   trackName:  { color: C.text, fontSize:20, fontWeight:'700' },
   sessionId:  { color: C.dim, fontSize:12, marginTop:2 },
-  mapBtn:     { backgroundColor: C.accent, borderRadius:8, paddingHorizontal:16, paddingVertical:10 },
+
+  actionsRow: { flexDirection:'row', paddingHorizontal:12, paddingBottom:12, gap:8 },
+  actionPrimary:{ flex:1.4, backgroundColor: C.accent, borderRadius:10,
+                  paddingVertical:14, alignItems:'center' },
+  actionPrimaryIcon:{ fontSize:22 },
+  actionPrimaryTxt:{ color:'#000', fontWeight:'800', fontSize:14, marginTop:2 },
+  actionSecondary:{ flex:1, backgroundColor: C.surface2, borderRadius:10,
+                    paddingVertical:14, alignItems:'center',
+                    borderWidth:1, borderColor: C.border },
+  actionSecondaryIcon:{ fontSize:22 },
+  actionSecondaryTxt:{ color: C.text, fontWeight:'700', fontSize:13, marginTop:2 },
+
+  // Retained legacy styles in case they're referenced below
+  hdrBtn:     { borderRadius:8, paddingHorizontal:14, paddingVertical:10, marginLeft:6 },
+  analyseBtn: { backgroundColor: C.surface2, borderWidth:1, borderColor: C.accent },
+  analyseBtnTxt: { color: C.accent, fontWeight:'700', fontSize:14 },
+  mapBtn:     { backgroundColor: C.accent },
   mapBtnTxt:  { color:'#000', fontWeight:'700', fontSize:14 },
   statsRow:   { flexDirection:'row', padding:8 },
   tableHdr:   { flexDirection:'row', paddingVertical:8, borderBottomWidth:1, borderColor:'#333', marginBottom:4 },
   hdrTxt:     { color: C.dim, fontSize:11, fontWeight:'600', textTransform:'uppercase' },
   lapRow:     { flexDirection:'row', paddingVertical:10, borderBottomWidth:1, borderColor:'#1a1a1a', alignItems:'center' },
-  lapBest:    { backgroundColor:'#0a1a0f', borderRadius:6 },
+  lapBest:    { backgroundColor: C.highlight, borderRadius:6 },
   lapTxt:     { color: C.text, fontSize:14 },
   lapBestTxt: { color: C.text, fontWeight:'700' },
-  faster:     { color: C.accent },
-  slower:     { color: C.danger },
+  faster:     { color: C.faster },
+  slower:     { color: C.warn },
   secTxt:     { color: C.dim, fontSize:12 },
   col0:       { width:28, marginRight:4 },
   col1:       { width:88 },

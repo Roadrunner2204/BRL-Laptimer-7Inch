@@ -17,7 +17,9 @@
 
 #include "data_server.h"
 #include "../storage/sd_mgr.h"
+#include "../storage/session_store.h"
 #include "../data/lap_data.h"
+#include "../data/track_db.h"
 #include "compat.h"
 
 #include <string.h>
@@ -27,6 +29,7 @@
 
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "cJSON.h"
 
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
@@ -46,7 +49,7 @@ static bool           s_running   = false;
 static esp_err_t set_cors_headers(httpd_req_t *req)
 {
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin",  "*");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Methods", "GET, DELETE, OPTIONS");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Content-Type");
     httpd_resp_set_hdr(req, "Connection", "close");
     return ESP_OK;
@@ -75,6 +78,7 @@ static const char *extract_session_id(const char *uri)
 // OPTIONS (preflight for CORS)
 static esp_err_t handle_options(httpd_req_t *req)
 {
+    ESP_LOGI(TAG, "OPTIONS %s", req->uri);
     set_cors_headers(req);
     httpd_resp_send(req, nullptr, 0);
     return ESP_OK;
@@ -83,9 +87,16 @@ static esp_err_t handle_options(httpd_req_t *req)
 // GET / -- status JSON
 static esp_err_t handle_root(httpd_req_t *req)
 {
-    ESP_LOGI(TAG, "GET /");
+    // Log User-Agent so we can distinguish the BRL app from Android system
+    // captive-portal probes (Dalvik/okhttp vs expo/react-native-fetch).
+    char ua[96];
+    if (httpd_req_get_hdr_value_str(req, "User-Agent", ua, sizeof(ua)) != ESP_OK) {
+        strcpy(ua, "(no UA)");
+    }
+    ESP_LOGI(TAG, "GET /   UA=%s", ua);
+
     char buf[256];
-    snprintf(buf, sizeof(buf),
+    int n = snprintf(buf, sizeof(buf),
              "{\"device\":\"BRL-Laptimer\","
              "\"wifi_mode\":%d,"
              "\"sd\":%s,"
@@ -95,12 +106,18 @@ static esp_err_t handle_root(httpd_req_t *req)
 
     set_cors_headers(req);
     httpd_resp_set_type(req, "application/json");
-    return httpd_resp_send(req, buf, strlen(buf));
+    esp_err_t e = httpd_resp_send(req, buf, n);
+    ESP_LOGI(TAG, "GET / done: %s (%d bytes)", esp_err_to_name(e), n);
+    return e;
 }
 
-// GET /sessions -- list session IDs from /sdcard/sessions/
+// GET /sessions -- list session SUMMARIES so the Android app can show
+// name/track/lap-count/best-time BEFORE the user downloads the full session.
+// Each entry: {"id","name","track","lap_count","best_ms"}. id is the
+// filename stem (e.g. "20260412_131035") — Android parses date/time from it.
 static esp_err_t handle_sessions(httpd_req_t *req)
 {
+    ESP_LOGI(TAG, "GET /sessions (summaries)");
     set_cors_headers(req);
     httpd_resp_set_type(req, "application/json");
 
@@ -110,48 +127,33 @@ static esp_err_t handle_sessions(httpd_req_t *req)
         return httpd_resp_send(req, err, strlen(err));
     }
 
-    DIR *dir = opendir("/sdcard/sessions");
-    if (!dir) {
+    SessionSummary *summaries = (SessionSummary *)heap_caps_malloc(
+        sizeof(SessionSummary) * MAX_LAPS_PER_SESSION, MALLOC_CAP_SPIRAM);
+    if (!summaries) {
+        ESP_LOGE(TAG, "summaries alloc failed");
         return httpd_resp_send(req, "[]", 2);
     }
+    int n = session_store_list_summaries(summaries, MAX_LAPS_PER_SESSION);
 
-    // Build JSON array of session IDs
-    // Use chunked encoding to avoid sizing the buffer upfront
     httpd_resp_send_chunk(req, "[", 1);
-
-    struct dirent *ent;
-    bool first = true;
-    while ((ent = readdir(dir)) != nullptr) {
-        // Skip directories and non-.json files
-        if (ent->d_type == DT_DIR) continue;
-        const char *name = ent->d_name;
-        size_t nlen = strlen(name);
-        if (nlen < 6 || strcmp(name + nlen - 5, ".json") != 0) continue;
-
-        // Strip .json extension to get session ID
-        char id[64];
-        size_t id_len = nlen - 5;
-        if (id_len >= sizeof(id)) id_len = sizeof(id) - 1;
-        memcpy(id, name, id_len);
-        id[id_len] = '\0';
-
-        char entry[80];
-        int elen;
-        if (first) {
-            elen = snprintf(entry, sizeof(entry), "\"%s\"", id);
-            first = false;
-        } else {
-            elen = snprintf(entry, sizeof(entry), ",\"%s\"", id);
-        }
-        httpd_resp_send_chunk(req, entry, elen);
+    char entry[256];
+    for (int i = 0; i < n; i++) {
+        const SessionSummary &s = summaries[i];
+        // JSON-escape minimal: we control the strings, but track names could
+        // contain quotes — be safe and skip entries with non-printable chars.
+        int elen = snprintf(entry, sizeof(entry),
+            "%s{\"id\":\"%s\",\"name\":\"%s\",\"track\":\"%s\","
+            "\"lap_count\":%u,\"best_ms\":%lu}",
+            (i == 0) ? "" : ",",
+            s.id, s.name, s.track,
+            (unsigned)s.lap_count, (unsigned long)s.best_ms);
+        if (elen > 0) httpd_resp_send_chunk(req, entry, elen);
     }
-    closedir(dir);
-
     httpd_resp_send_chunk(req, "]", 1);
-    // Finish chunked response
     httpd_resp_send_chunk(req, nullptr, 0);
 
-    ESP_LOGI(TAG, "GET /sessions");
+    heap_caps_free(summaries);
+    ESP_LOGI(TAG, "GET /sessions -- %d summaries sent", n);
     return ESP_OK;
 }
 
@@ -232,6 +234,312 @@ static esp_err_t handle_session_delete(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     const char *ok = "{\"ok\":true}";
     return httpd_resp_send(req, ok, strlen(ok));
+}
+
+// GET /videos -- list recorded AVI files with size
+static esp_err_t handle_videos(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "GET /videos");
+    set_cors_headers(req);
+    httpd_resp_set_type(req, "application/json");
+
+    if (!g_state.sd_available) {
+        return httpd_resp_send(req, "[]", 2);
+    }
+    DIR *dir = opendir("/sdcard/videos");
+    if (!dir) {
+        return httpd_resp_send(req, "[]", 2);
+    }
+
+    httpd_resp_send_chunk(req, "[", 1);
+    struct dirent *ent;
+    bool first = true;
+    char entry[160];
+    while ((ent = readdir(dir)) != nullptr) {
+        if (ent->d_type == DT_DIR) continue;
+        const char *name = ent->d_name;
+        size_t nlen = strlen(name);
+        if (nlen < 5 || strcmp(name + nlen - 4, ".avi") != 0) continue;
+
+        char path[128];
+        snprintf(path, sizeof(path), "/sdcard/videos/%s", name);
+        struct stat st;
+        long size = 0;
+        if (stat(path, &st) == 0) size = (long)st.st_size;
+
+        // id = filename without .avi
+        char id[80];
+        size_t id_len = nlen - 4;
+        if (id_len >= sizeof(id)) id_len = sizeof(id) - 1;
+        memcpy(id, name, id_len);
+        id[id_len] = '\0';
+
+        int elen = snprintf(entry, sizeof(entry),
+            "%s{\"id\":\"%s\",\"size\":%ld}",
+            first ? "" : ",", id, size);
+        if (elen > 0) httpd_resp_send_chunk(req, entry, elen);
+        first = false;
+    }
+    closedir(dir);
+    httpd_resp_send_chunk(req, "]", 1);
+    httpd_resp_send_chunk(req, nullptr, 0);
+    return ESP_OK;
+}
+
+// GET /video/{id} -- stream AVI file
+static esp_err_t handle_video_get(httpd_req_t *req)
+{
+    // URI is /video/<id>
+    const char *prefix = "/video/";
+    size_t plen = strlen(prefix);
+    if (strncmp(req->uri, prefix, plen) != 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req, "bad uri", 7);
+    }
+    const char *id = req->uri + plen;
+    if (strlen(id) == 0 || strchr(id, '/') || strchr(id, '.') == id) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req, "bad id", 6);
+    }
+
+    char path[160];
+    snprintf(path, sizeof(path), "/sdcard/videos/%s.avi", id);
+
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        set_cors_headers(req);
+        httpd_resp_set_status(req, "404 Not Found");
+        return httpd_resp_send(req, "{\"error\":\"not found\"}", 21);
+    }
+
+    ESP_LOGI(TAG, "GET /video/%s -- streaming", id);
+    set_cors_headers(req);
+    httpd_resp_set_type(req, "video/avi");
+
+    // Stream in big chunks for throughput. 32 KB is a good balance for
+    // WiFi RTT + SD read speed.
+    static uint8_t chunk[32 * 1024];
+    size_t n;
+    while ((n = fread(chunk, 1, sizeof(chunk), f)) > 0) {
+        if (httpd_resp_send_chunk(req, (const char *)chunk, n) != ESP_OK) {
+            fclose(f);
+            ESP_LOGW(TAG, "/video/%s: client aborted", id);
+            httpd_resp_send_chunk(req, nullptr, 0);
+            return ESP_FAIL;
+        }
+    }
+    fclose(f);
+    return httpd_resp_send_chunk(req, nullptr, 0);
+}
+
+// DELETE /video/{id} -- remove AVI from SD
+static esp_err_t handle_video_delete(httpd_req_t *req)
+{
+    const char *prefix = "/video/";
+    size_t plen = strlen(prefix);
+    if (strncmp(req->uri, prefix, plen) != 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req, "bad uri", 7);
+    }
+    const char *id = req->uri + plen;
+    if (strlen(id) == 0 || strchr(id, '/') || strchr(id, '.') == id) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req, "bad id", 6);
+    }
+    char path[160];
+    snprintf(path, sizeof(path), "/sdcard/videos/%s.avi", id);
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        set_cors_headers(req);
+        httpd_resp_set_status(req, "404 Not Found");
+        return httpd_resp_send(req, "{\"error\":\"not found\"}", 21);
+    }
+    unlink(path);
+    ESP_LOGI(TAG, "DELETE /video/%s", id);
+    set_cors_headers(req);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, "{\"ok\":true}", 11);
+}
+
+// ---------------------------------------------------------------------------
+// Tracks API
+//
+// GET  /tracks        -- list all known tracks (builtin + user) as JSON
+// POST /track         -- accept JSON body, persist to /sdcard/tracks/*.json,
+//                        then reload the live user-track catalog so the new
+//                        track is immediately usable on the device UI.
+//
+// JSON body format (same as the on-SD file so we can round-trip):
+//   { "name":"...", "country":"DE", "length_km":4.5, "is_circuit":true,
+//     "sf":[lat1,lon1,lat2,lon2],
+//     "fin":[lat1,lon1,lat2,lon2],      // optional, A-B only
+//     "sectors":[{"lat":..,"lon":..,"name":"S1"}, ...] }
+// ---------------------------------------------------------------------------
+
+static esp_err_t handle_tracks_get(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "GET /tracks");
+    set_cors_headers(req);
+    httpd_resp_set_type(req, "application/json");
+
+    httpd_resp_send_chunk(req, "[", 1);
+    char entry[192];
+    int total = track_total_count();
+    for (int i = 0; i < total; i++) {
+        const TrackDef *td = track_get(i);
+        if (!td) continue;
+        int elen = snprintf(entry, sizeof(entry),
+            "%s{\"name\":\"%s\",\"country\":\"%s\","
+            "\"is_circuit\":%s,\"user_created\":%s,"
+            "\"sector_count\":%u,\"length_km\":%.3f}",
+            (i == 0) ? "" : ",",
+            td->name, td->country,
+            td->is_circuit ? "true" : "false",
+            td->user_created ? "true" : "false",
+            (unsigned)td->sector_count, td->length_km);
+        if (elen > 0) httpd_resp_send_chunk(req, entry, elen);
+    }
+    httpd_resp_send_chunk(req, "]", 1);
+    httpd_resp_send_chunk(req, nullptr, 0);
+    return ESP_OK;
+}
+
+// Reply helper: {"error":"..."} with status + CORS
+static esp_err_t send_err(httpd_req_t *req, const char *status, const char *msg)
+{
+    set_cors_headers(req);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_status(req, status);
+    char buf[160];
+    int n = snprintf(buf, sizeof(buf), "{\"error\":\"%s\"}", msg);
+    return httpd_resp_send(req, buf, n);
+}
+
+static esp_err_t handle_track_post(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "POST /track (len=%d)", (int)req->content_len);
+
+    if (!g_state.sd_available) {
+        return send_err(req, "503 Service Unavailable", "SD not available");
+    }
+    if (req->content_len <= 0 || req->content_len > 8192) {
+        return send_err(req, "413 Payload Too Large", "body 1..8192 bytes required");
+    }
+
+    // Read full body
+    char *body = (char *)malloc(req->content_len + 1);
+    if (!body) return send_err(req, "500 Internal Server Error", "oom");
+    int total = 0;
+    while (total < req->content_len) {
+        int r = httpd_req_recv(req, body + total, req->content_len - total);
+        if (r <= 0) {
+            free(body);
+            return send_err(req, "400 Bad Request", "recv failed");
+        }
+        total += r;
+    }
+    body[total] = '\0';
+
+    cJSON *doc = cJSON_Parse(body);
+    free(body);
+    if (!doc) return send_err(req, "400 Bad Request", "invalid JSON");
+
+    TrackDef td = {};
+    td.user_created = true;
+
+    cJSON *j = cJSON_GetObjectItem(doc, "name");
+    if (!cJSON_IsString(j) || strlen(j->valuestring) < 2) {
+        cJSON_Delete(doc);
+        return send_err(req, "400 Bad Request", "name required (>=2 chars)");
+    }
+    strncpy(td.name, j->valuestring, sizeof(td.name) - 1);
+
+    j = cJSON_GetObjectItem(doc, "country");
+    if (cJSON_IsString(j)) strncpy(td.country, j->valuestring, sizeof(td.country) - 1);
+    else strncpy(td.country, "Custom", sizeof(td.country) - 1);
+
+    j = cJSON_GetObjectItem(doc, "length_km");
+    if (cJSON_IsNumber(j)) td.length_km = (float)j->valuedouble;
+
+    j = cJSON_GetObjectItem(doc, "is_circuit");
+    td.is_circuit = cJSON_IsTrue(j);
+
+    // Start/finish line — required, 4 numbers
+    cJSON *sf = cJSON_GetObjectItem(doc, "sf");
+    if (!cJSON_IsArray(sf) || cJSON_GetArraySize(sf) < 4) {
+        cJSON_Delete(doc);
+        return send_err(req, "400 Bad Request", "sf[4] required");
+    }
+    td.sf_lat1 = cJSON_GetArrayItem(sf, 0)->valuedouble;
+    td.sf_lon1 = cJSON_GetArrayItem(sf, 1)->valuedouble;
+    td.sf_lat2 = cJSON_GetArrayItem(sf, 2)->valuedouble;
+    td.sf_lon2 = cJSON_GetArrayItem(sf, 3)->valuedouble;
+
+    // Finish line — only required for A-B
+    if (!td.is_circuit) {
+        cJSON *fin = cJSON_GetObjectItem(doc, "fin");
+        if (!cJSON_IsArray(fin) || cJSON_GetArraySize(fin) < 4) {
+            cJSON_Delete(doc);
+            return send_err(req, "400 Bad Request", "fin[4] required for A-B track");
+        }
+        td.fin_lat1 = cJSON_GetArrayItem(fin, 0)->valuedouble;
+        td.fin_lon1 = cJSON_GetArrayItem(fin, 1)->valuedouble;
+        td.fin_lat2 = cJSON_GetArrayItem(fin, 2)->valuedouble;
+        td.fin_lon2 = cJSON_GetArrayItem(fin, 3)->valuedouble;
+    }
+
+    // Sectors (optional, up to MAX_SECTORS)
+    cJSON *secs = cJSON_GetObjectItem(doc, "sectors");
+    if (cJSON_IsArray(secs)) {
+        int n = cJSON_GetArraySize(secs);
+        for (int i = 0; i < n && td.sector_count < MAX_SECTORS; i++) {
+            cJSON *sp = cJSON_GetArrayItem(secs, i);
+            if (!sp) continue;
+            cJSON *lat  = cJSON_GetObjectItem(sp, "lat");
+            cJSON *lon  = cJSON_GetObjectItem(sp, "lon");
+            cJSON *sname = cJSON_GetObjectItem(sp, "name");
+            if (!cJSON_IsNumber(lat) || !cJSON_IsNumber(lon)) continue;
+            td.sectors[td.sector_count].lat = lat->valuedouble;
+            td.sectors[td.sector_count].lon = lon->valuedouble;
+            if (cJSON_IsString(sname)) {
+                strncpy(td.sectors[td.sector_count].name, sname->valuestring,
+                        SECTOR_NAME_LEN - 1);
+            } else {
+                snprintf(td.sectors[td.sector_count].name, SECTOR_NAME_LEN,
+                         "S%d", td.sector_count + 1);
+            }
+            td.sector_count++;
+        }
+    }
+
+    cJSON_Delete(doc);
+
+    // Hold g_state_mutex across save + catalog reload. Without this, the
+    // HTTP task (Core 0) memsets g_user_tracks[] while the LVGL task
+    // (Core 1) may be reading track_get(...)->name for label text — race
+    // causes random LoadProhibited on the display.
+    bool locked = (g_state_mutex &&
+                   xSemaphoreTake(g_state_mutex, pdMS_TO_TICKS(2000)) == pdTRUE);
+
+    bool saved = session_store_save_user_track(&td);
+    if (saved) session_store_load_user_tracks();
+
+    if (locked) xSemaphoreGive(g_state_mutex);
+
+    if (!saved) {
+        return send_err(req, "500 Internal Server Error", "save failed");
+    }
+
+    ESP_LOGI(TAG, "POST /track -- saved '%s' (%s, %u sectors)",
+             td.name, td.is_circuit ? "circuit" : "A-B", td.sector_count);
+
+    set_cors_headers(req);
+    httpd_resp_set_type(req, "application/json");
+    char ok[128];
+    int n = snprintf(ok, sizeof(ok),
+                     "{\"ok\":true,\"name\":\"%s\",\"total\":%d}",
+                     td.name, track_total_count());
+    return httpd_resp_send(req, ok, n);
 }
 
 // GET /generate_204 -- Android captive portal detection
@@ -361,6 +669,15 @@ static const httpd_uri_t s_uri_handlers[] = {
     { .uri = "/session/*",     .method = HTTP_GET,    .handler = handle_session_get,     .user_ctx = nullptr },
     { .uri = "/session/*",     .method = HTTP_DELETE, .handler = handle_session_delete,  .user_ctx = nullptr },
     { .uri = "/session/*",     .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
+    { .uri = "/videos",        .method = HTTP_GET,    .handler = handle_videos,          .user_ctx = nullptr },
+    { .uri = "/videos",        .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
+    { .uri = "/video/*",       .method = HTTP_GET,    .handler = handle_video_get,       .user_ctx = nullptr },
+    { .uri = "/video/*",       .method = HTTP_DELETE, .handler = handle_video_delete,    .user_ctx = nullptr },
+    { .uri = "/video/*",       .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
+    { .uri = "/tracks",        .method = HTTP_GET,    .handler = handle_tracks_get,      .user_ctx = nullptr },
+    { .uri = "/tracks",        .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
+    { .uri = "/track",         .method = HTTP_POST,   .handler = handle_track_post,      .user_ctx = nullptr },
+    { .uri = "/track",         .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
     { .uri = "/generate_204",  .method = HTTP_GET,    .handler = handle_generate_204,    .user_ctx = nullptr },
     { .uri = "/hotspot-detect.html", .method = HTTP_GET, .handler = handle_generate_204, .user_ctx = nullptr },
     { .uri = "/ncsi.txt",      .method = HTTP_GET,    .handler = handle_generate_204,    .user_ctx = nullptr },
@@ -375,8 +692,13 @@ void data_server_start(void)
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn   = httpd_uri_match_wildcard;
-    config.max_uri_handlers = 16;
+    config.max_uri_handlers = 24;
     config.lru_purge_enable = true;
+    // Default stack is 4 KB — too small for POST /track, which allocates a
+    // TrackDef on stack, parses cJSON, writes SD, then reloads the whole
+    // user-track catalog (N × cJSON_Parse + 2 KB static buf). Overflows
+    // the httpd task and panics. Bump to 12 KB.
+    config.stack_size = 12288;
 
     esp_err_t err = httpd_start(&s_httpd, &config);
     if (err != ESP_OK) {

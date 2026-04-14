@@ -1,0 +1,42 @@
+
+# Claudify — personal & runtime files
+CLAUDE.local.md
+.claude/logs/
+.claude/agent-memory/
+.claude/backups/
+.claude/hooks/__counter
+__NEEDS_ONBOARD
+
+# ESP-IDF build artefacts
+/build/
+/sdkconfig
+/sdkconfig.old
+/managed_components/
+/dependencies.lock
+/.cache/
+/.clangd
+
+# Android app build + node deps
+/android-app/android/
+/android-app/node_modules/
+/android-app/build/
+/android-app/.expo/
+
+# Installer binaries (large, regenerable from tools/*.spec)
+/installer/
+
+# Editor
+/.vscode/
+
+# Scratch / personal notes
+Scratchpad.md
+Daily Notes/
+Task Board.md
+SETUP.md
+
+# Claudify runtime (not part of product code)
+/.claude/
+/CLAUDE.md
+
+# MCP config
+/.mcp.json

@@ -5,19 +5,36 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
+    "primaryColor": "#0096FF",
     "splash": {
-      "backgroundColor": "#0D0D0D",
+      "backgroundColor": "#000000",
       "resizeMode": "contain"
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#0D0D0D"
+        "backgroundColor": "#000000"
       },
       "package": "com.brl.telemetry",
-      "usesCleartextTraffic": true
+      "usesCleartextTraffic": true,
+      "permissions": [
+        "android.permission.INTERNET",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.ACCESS_WIFI_STATE",
+        "android.permission.CHANGE_NETWORK_STATE",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION"
+      ],
+      "config": {
+        "location": {
+          "locationWhenInUsePermission": "Standort wird zum Zentrieren der Karte im Strecken-Editor verwendet."
+        }
+      }
     },
     "extra": {
-      "eas": {}
-    }
+      "eas": {
+        "projectId": "98d6755d-1caf-42dd-8d20-f587b08fbebd"
+      }
+    },
+    "owner": "bavarian-racelabs"
   }
 }
