@@ -11,7 +11,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity, Switch,
+  View, Text, StyleSheet, ScrollView, TouchableOpacity, Switch, TextInput,
   useWindowDimensions, PanResponder, Modal, Alert,
 } from 'react-native';
 import { C } from '../theme';
@@ -22,6 +22,9 @@ import {
 } from '../overlayConfig';
 import VideoOverlay, { WIDGET_SIZES } from '../components/VideoOverlay';
 import { LapChannels } from '../analysis';
+import {
+  Template, listTemplates, saveTemplate, deleteTemplate,
+} from '../overlayTemplates';
 
 const WIDGET_LABEL: Record<WidgetType, string> = {
   speed:      'Geschwindigkeit',
@@ -165,6 +168,10 @@ export default function OverlayConfigScreen() {
   const [cfg, setCfg] = useState<OverlayConfig>(DEFAULT_OVERLAY_CONFIG);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [showTemplateModal, setShowTemplateModal] = useState(false);
+  const [showSaveModal, setShowSaveModal] = useState(false);
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [saveName, setSaveName] = useState('');
   const [time, setTime] = useState(15000);
   const preview = React.useMemo(samplePreviewChannels, []);
 
@@ -210,6 +217,43 @@ export default function OverlayConfigScreen() {
     updateCfg({ ...cfg, widgets: [...cfg.widgets, fresh] });
     setSelectedId(id);
     setShowAddModal(false);
+  }
+
+  async function openTemplateModal() {
+    setTemplates(await listTemplates());
+    setShowTemplateModal(true);
+  }
+
+  function applyTemplate(tpl: Template) {
+    // Deep-clone the template config so later edits don't mutate the
+    // template (built-ins especially — they're module-level constants).
+    const cloned: OverlayConfig = JSON.parse(JSON.stringify(tpl.config));
+    updateCfg(cloned);
+    setSelectedId(null);
+    setShowTemplateModal(false);
+  }
+
+  async function confirmDeleteTemplate(tpl: Template) {
+    if (tpl.builtin) return;
+    Alert.alert(`"${tpl.name}" löschen?`,
+      'Gespeicherte Vorlage wird entfernt.',
+      [
+        { text: 'Abbrechen', style: 'cancel' },
+        { text: 'Löschen', style: 'destructive', onPress: async () => {
+          await deleteTemplate(tpl.id);
+          setTemplates(await listTemplates());
+        }},
+      ]);
+  }
+
+  async function doSaveTemplate() {
+    const name = saveName.trim();
+    if (!name) return;
+    await saveTemplate(name, cfg);
+    setSaveName('');
+    setShowSaveModal(false);
+    // Refresh list so the new template appears if the picker is re-opened.
+    setTemplates(await listTemplates());
   }
 
   function deleteWidget(id: string) {
@@ -364,6 +408,20 @@ export default function OverlayConfigScreen() {
           fmt={v => `${Math.round((v / 255) * 100)} %`}
         />
 
+        <Text style={s.section}>Vorlagen</Text>
+        <View style={s.templateBtnRow}>
+          <TouchableOpacity style={s.tplBtn} onPress={openTemplateModal}>
+            <Text style={s.tplBtnTxt}>📂  Vorlage laden</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[s.tplBtn, s.tplBtnPrim]}
+                            onPress={() => {
+                              setSaveName('');
+                              setShowSaveModal(true);
+                            }}>
+            <Text style={[s.tplBtnTxt, { color: '#000' }]}>💾  Speichern</Text>
+          </TouchableOpacity>
+        </View>
+
         <TouchableOpacity
           style={s.resetBtn}
           onPress={() => updateCfg(DEFAULT_OVERLAY_CONFIG)}
@@ -389,6 +447,86 @@ export default function OverlayConfigScreen() {
                               onPress={() => setShowAddModal(false)}>
               <Text style={s.modalCancelTxt}>Abbrechen</Text>
             </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Template-picker modal */}
+      <Modal visible={showTemplateModal} transparent animationType="fade"
+             onRequestClose={() => setShowTemplateModal(false)}>
+        <TouchableOpacity style={s.modalBackdrop} activeOpacity={1}
+                          onPress={() => setShowTemplateModal(false)}>
+          <TouchableOpacity style={[s.modalCard, { maxHeight: '80%' }]}
+                            activeOpacity={1}>
+            <Text style={s.modalTitle}>Vorlage laden</Text>
+            <ScrollView style={{ maxHeight: 400 }}
+                        showsVerticalScrollIndicator={false}>
+              {templates.length === 0 && (
+                <Text style={s.templateEmpty}>Keine Vorlagen vorhanden.</Text>
+              )}
+              {templates.map(tpl => (
+                <View key={tpl.id} style={s.templateRow}>
+                  <TouchableOpacity style={{ flex: 1 }}
+                                    onPress={() => applyTemplate(tpl)}>
+                    <Text style={s.templateName}>
+                      {tpl.builtin && '★ '}
+                      {tpl.name}
+                    </Text>
+                    <Text style={s.templateMeta}>
+                      {tpl.config.widgets.filter(w => w.visible).length} Widgets sichtbar
+                      {tpl.builtin && '  ·  Vorlage'}
+                    </Text>
+                  </TouchableOpacity>
+                  {!tpl.builtin && (
+                    <TouchableOpacity style={s.templateDel}
+                                      onPress={() => confirmDeleteTemplate(tpl)}>
+                      <Text style={s.templateDelTxt}>🗑</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              ))}
+            </ScrollView>
+            <TouchableOpacity style={s.modalCancel}
+                              onPress={() => setShowTemplateModal(false)}>
+              <Text style={s.modalCancelTxt}>Schließen</Text>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Save-as-template modal (name prompt) */}
+      <Modal visible={showSaveModal} transparent animationType="fade"
+             onRequestClose={() => setShowSaveModal(false)}>
+        <TouchableOpacity style={s.modalBackdrop} activeOpacity={1}
+                          onPress={() => setShowSaveModal(false)}>
+          <TouchableOpacity style={s.modalCard} activeOpacity={1}>
+            <Text style={s.modalTitle}>Als Vorlage speichern</Text>
+            <Text style={s.saveHint}>
+              Aktuelles Layout wird unter dem gewählten Namen gespeichert.
+            </Text>
+            <TextInput
+              style={s.saveInput}
+              placeholder="z.B. Mein Setup, Tour, Qualifying…"
+              placeholderTextColor={C.dim}
+              value={saveName}
+              onChangeText={setSaveName}
+              autoFocus
+              maxLength={40}
+            />
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 14 }}>
+              <TouchableOpacity
+                style={[s.tplBtn, { flex: 1 }]}
+                onPress={() => setShowSaveModal(false)}>
+                <Text style={s.tplBtnTxt}>Abbrechen</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[s.tplBtn, s.tplBtnPrim, { flex: 1 },
+                        !saveName.trim() && { opacity: 0.4 }]}
+                onPress={doSaveTemplate}
+                disabled={!saveName.trim()}>
+                <Text style={[s.tplBtnTxt, { color: '#000' }]}>Speichern</Text>
+              </TouchableOpacity>
+            </View>
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
@@ -466,4 +604,30 @@ const s = StyleSheet.create({
   modalRowTxt: { color: C.text, fontSize: 15, fontWeight: '600' },
   modalCancel: { marginTop: 14, padding: 10, alignItems: 'center' },
   modalCancelTxt:{ color: C.dim, fontSize: 13, fontWeight: '700' },
+
+  // Template UI
+  templateBtnRow:{ flexDirection: 'row', gap: 8 },
+  tplBtn:       { flex: 1, paddingVertical: 10, borderRadius: 8,
+                  backgroundColor: C.surface2, alignItems: 'center',
+                  borderWidth: 1, borderColor: C.border },
+  tplBtnPrim:   { backgroundColor: C.accent, borderColor: C.accent },
+  tplBtnTxt:    { color: C.text, fontSize: 13, fontWeight: '700' },
+
+  templateRow:  { flexDirection: 'row', alignItems: 'center',
+                  paddingVertical: 12,
+                  borderBottomWidth: 1, borderBottomColor: C.border },
+  templateName: { color: C.text, fontSize: 15, fontWeight: '700' },
+  templateMeta: { color: C.dim, fontSize: 11, marginTop: 2 },
+  templateDel:  { width: 40, height: 40, borderRadius: 20,
+                  alignItems: 'center', justifyContent: 'center',
+                  backgroundColor: C.surface2 },
+  templateDelTxt:{ fontSize: 16 },
+  templateEmpty:{ color: C.dim, fontSize: 13, fontStyle: 'italic',
+                  textAlign: 'center', paddingVertical: 20 },
+
+  saveHint:    { color: C.dim, fontSize: 12, marginBottom: 12 },
+  saveInput:   { backgroundColor: C.surface2, borderWidth: 1,
+                 borderColor: C.border, borderRadius: 8,
+                 paddingHorizontal: 12, paddingVertical: 10,
+                 color: C.text, fontSize: 15 },
 });
