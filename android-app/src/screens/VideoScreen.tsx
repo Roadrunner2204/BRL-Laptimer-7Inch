@@ -2,9 +2,13 @@
  * VideoScreen — play a recorded AVI either directly from the device (stream
  * over WiFi) or from a cached local copy (after download).
  *
- * Phase 4 scope: basic playback + scrubber. Data overlay comes in Phase 5 —
- * we design the layout so a <Canvas> / SVG can sit on top of the <Video>
- * later without restructuring.
+ * Uses libVLC (via react-native-vlc-media-player) instead of expo-av's
+ * ExoPlayer, because our AVIs carry MJPEG video + PCM audio which is not
+ * a format ExoPlayer decodes by default (symptom: timeline advances but
+ * the video surface stays black). libVLC ships its own codecs and handles
+ * AVI / MJPEG / PCM natively on both Android and iOS.
+ *
+ * Data-overlay composition stays unchanged — SVG on top of the player view.
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -12,7 +16,7 @@ import {
   View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, Alert,
   useWindowDimensions, ScrollView,
 } from 'react-native';
-import { Video, ResizeMode, AVPlaybackStatus } from 'expo-av';
+import { VLCPlayer } from 'react-native-vlc-media-player';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { RouteProp } from '@react-navigation/native';
@@ -39,11 +43,29 @@ function fmtMs(ms: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+// Playback state shape, decoupled from any single player implementation.
+// Time values in milliseconds for consistency with the rest of the app.
+interface PlaybackState {
+  isLoaded: boolean;
+  positionMs: number;
+  durationMs: number;
+  isPlaying: boolean;
+}
+
 export default function VideoScreen({ route, navigation }: Props) {
   const { width: winW } = useWindowDimensions();
-  const videoRef = useRef<Video>(null);
+  // VLCPlayer exposes a `seek(fraction)` method via ref. We don't strictly
+  // need the ref for play/pause (driven by `paused` prop) but seek has no
+  // prop equivalent.
+  const videoRef = useRef<any>(null);
   const [source, setSource] = useState<{ uri: string } | null>(null);
-  const [status, setStatus] = useState<AVPlaybackStatus | null>(null);
+  const [status, setStatus] = useState<PlaybackState>({
+    isLoaded: false, positionMs: 0, durationMs: 0, isPlaying: false,
+  });
+  // Explicit play-state prop drives VLC's `paused` prop. We start paused
+  // so the user can see the first frame + overlay without auto-playback
+  // blasting audio the moment they open a video.
+  const [isPlaying, setIsPlaying] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [progressPct, setProgressPct] = useState<number | null>(null);   // 0..1, null = size unknown
   const [progressBytes, setProgressBytes] = useState<number>(0);
@@ -244,34 +266,58 @@ export default function VideoScreen({ route, navigation }: Props) {
     ]);
   }
 
-  const posMs = status?.isLoaded ? status.positionMillis : 0;
-  const durMs = status?.isLoaded ? (status.durationMillis ?? 0) : 0;
-  const isPlaying = status?.isLoaded ? status.isPlaying : false;
+  const posMs = status.positionMs;
+  const durMs = status.durationMs;
 
   return (
     <View style={s.root}>
       {/* Video surface (16:9 aspect) */}
       <View style={[s.videoWrap, { height: videoH }]}>
         {source ? (
-          <Video
+          <VLCPlayer
             ref={videoRef}
-            source={source}
+            source={{ uri: source.uri }}
             style={s.video}
-            useNativeControls={false}
-            resizeMode={ResizeMode.CONTAIN}
-            onPlaybackStatusUpdate={setStatus}
-            shouldPlay={false}
+            paused={!isPlaying}
+            resizeMode="contain"
+            // libVLC fires progress at its own cadence (~4 Hz). Normalize
+            // to milliseconds — vlc-media-player reports currentTime and
+            // duration in milliseconds on the Android/iOS native bridge.
+            onProgress={(e: any) => {
+              const cur = typeof e?.currentTime === 'number' ? e.currentTime : 0;
+              const dur = typeof e?.duration    === 'number' ? e.duration    : 0;
+              setStatus(prev => ({
+                isLoaded: true,
+                positionMs: cur,
+                durationMs: dur > 0 ? dur : prev.durationMs,
+                isPlaying: prev.isPlaying,
+              }));
+            }}
+            onPlaying={() => setStatus(p => ({ ...p, isLoaded: true, isPlaying: true }))}
+            onPaused={()  => setStatus(p => ({ ...p, isPlaying: false }))}
+            onStopped={() => setStatus(p => ({ ...p, isPlaying: false }))}
+            onEnd={() => {
+              // Rewind to start on end so the user can replay without
+              // having to tap the scrubber first.
+              setIsPlaying(false);
+              videoRef.current?.seek?.(0);
+              setStatus(p => ({ ...p, positionMs: 0, isPlaying: false }));
+            }}
+            onError={(e: any) => {
+              // eslint-disable-next-line no-console
+              console.warn('[VLC] playback error', e);
+            }}
           />
         ) : (
           <ActivityIndicator color={C.accent} size="large" style={{ marginTop: 60 }} />
         )}
 
         {/* Telemetry HUD overlay — fully user-configurable */}
-        {showOverlay && overlayChannels && status?.isLoaded && (
+        {showOverlay && overlayChannels && status.isLoaded && (
           <VideoOverlay
             width={winW}
             height={videoH}
-            timeMs={status.positionMillis}
+            timeMs={status.positionMs}
             channels={overlayChannels}
             delta={overlayDelta ?? undefined}
             lapNumber={session && overlayLap != null ? session.laps[overlayLap]?.lap : undefined}
@@ -356,11 +402,8 @@ export default function VideoScreen({ route, navigation }: Props) {
       <View style={s.controls}>
         <TouchableOpacity
           style={s.playBtn}
-          onPress={() => {
-            if (isPlaying) videoRef.current?.pauseAsync();
-            else           videoRef.current?.playAsync();
-          }}
-          disabled={!status?.isLoaded}
+          onPress={() => setIsPlaying(p => !p)}
+          disabled={!source}
         >
           <Text style={s.playTxt}>{isPlaying ? '❚❚' : '▶'}</Text>
         </TouchableOpacity>
@@ -392,17 +435,22 @@ export default function VideoScreen({ route, navigation }: Props) {
           <View style={s.scrubTrack}>
             <View style={[s.scrubFill, { width: `${(posMs / durMs) * 100}%` }]} />
           </View>
-          {/* Tap-to-seek: divide screen width in regions */}
+          {/* Tap-to-seek — libVLC's seek() expects a fraction 0..1, not a
+              millisecond position like expo-av did. We also optimistically
+              update positionMs locally so the bar jumps immediately rather
+              than waiting for the next onProgress tick (4 Hz = feels laggy). */}
           <View
             style={StyleSheet.absoluteFill}
             onStartShouldSetResponder={() => true}
             onResponderGrant={e => {
               const frac = Math.max(0, Math.min(1, e.nativeEvent.locationX / winW));
-              videoRef.current?.setPositionAsync(frac * durMs);
+              videoRef.current?.seek?.(frac);
+              setStatus(p => ({ ...p, positionMs: frac * durMs }));
             }}
             onResponderMove={e => {
               const frac = Math.max(0, Math.min(1, e.nativeEvent.locationX / winW));
-              videoRef.current?.setPositionAsync(frac * durMs);
+              videoRef.current?.seek?.(frac);
+              setStatus(p => ({ ...p, positionMs: frac * durMs }));
             }}
           />
         </View>
