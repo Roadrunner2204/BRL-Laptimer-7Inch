@@ -12,7 +12,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Switch,
-  useWindowDimensions, PanResponder,
+  useWindowDimensions, PanResponder, Modal, Alert,
 } from 'react-native';
 import { C } from '../theme';
 import {
@@ -24,12 +24,23 @@ import VideoOverlay, { WIDGET_SIZES } from '../components/VideoOverlay';
 import { LapChannels } from '../analysis';
 
 const WIDGET_LABEL: Record<WidgetType, string> = {
-  speed:     'Geschwindigkeit',
-  lapTime:   'Rundenzeit',
-  delta:     'Delta',
-  gMeter:    'G-Meter',
-  trackName: 'Streckenname',
+  speed:      'Geschwindigkeit',
+  lapTime:    'Rundenzeit',
+  delta:      'Delta',
+  gMeter:     'G-Meter',
+  trackName:  'Streckenname',
+  speedBar:   'Speed-Balken',
+  gForce:     'G-Kraft gesamt',
+  lapNumber:  'Rundennummer',
+  miniMap:    'Mini-Karte',
 };
+
+// Every type the "Hinzufügen" button can instantiate. Multiple instances
+// of the same type are allowed — each gets a unique id via Date.now().
+const ADDABLE_TYPES: WidgetType[] = [
+  'speed', 'lapTime', 'delta', 'gMeter', 'trackName',
+  'speedBar', 'gForce', 'lapNumber', 'miniMap',
+];
 
 const ANCHOR_LABEL: Record<WidgetAnchor, string> = {
   start:  '◧ links',
@@ -153,6 +164,7 @@ export default function OverlayConfigScreen() {
 
   const [cfg, setCfg] = useState<OverlayConfig>(DEFAULT_OVERLAY_CONFIG);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [showAddModal, setShowAddModal] = useState(false);
   const [time, setTime] = useState(15000);
   const preview = React.useMemo(samplePreviewChannels, []);
 
@@ -185,6 +197,32 @@ export default function OverlayConfigScreen() {
   function updateWidget(id: string, patch: Partial<Widget>) {
     const widgets = cfg.widgets.map(w => w.id === id ? { ...w, ...patch } : w);
     updateCfg({ ...cfg, widgets });
+  }
+
+  // Instantiate a new widget in the middle of the frame. User can drag it
+  // to the desired position afterward. Multiple instances of the same type
+  // are allowed — each gets a unique id based on timestamp.
+  function addWidget(type: WidgetType) {
+    const id = `${type}_${Date.now()}`;
+    const fresh: Widget = {
+      id, type, x: 0.5, y: 0.5, anchor: 'center', visible: true,
+    };
+    updateCfg({ ...cfg, widgets: [...cfg.widgets, fresh] });
+    setSelectedId(id);
+    setShowAddModal(false);
+  }
+
+  function deleteWidget(id: string) {
+    Alert.alert(
+      'Widget entfernen?',
+      'Das Widget wird aus dem Overlay entfernt. Die Einstellung kann jederzeit durch „Hinzufügen" wiederhergestellt werden.',
+      [
+        { text: 'Abbrechen', style: 'cancel' },
+        { text: 'Entfernen', style: 'destructive', onPress: () => {
+          updateCfg({ ...cfg, widgets: cfg.widgets.filter(w => w.id !== id) });
+          if (selectedId === id) setSelectedId(null);
+        }},
+      ]);
   }
 
   return (
@@ -220,7 +258,12 @@ export default function OverlayConfigScreen() {
       </View>
 
       <View style={s.body}>
-        <Text style={s.section}>Widgets</Text>
+        <View style={s.sectionRow}>
+          <Text style={s.section}>Widgets</Text>
+          <TouchableOpacity style={s.addBtn} onPress={() => setShowAddModal(true)}>
+            <Text style={s.addBtnTxt}>+  Hinzufügen</Text>
+          </TouchableOpacity>
+        </View>
         {cfg.widgets.map(w => {
           const isSel = selectedId === w.id;
           return (
@@ -296,6 +339,11 @@ export default function OverlayConfigScreen() {
                       );
                     })}
                   </ScrollView>
+
+                  <TouchableOpacity style={s.delWidgetBtn}
+                                    onPress={() => deleteWidget(w.id)}>
+                    <Text style={s.delWidgetTxt}>Widget entfernen</Text>
+                  </TouchableOpacity>
                 </View>
               )}
             </View>
@@ -323,6 +371,27 @@ export default function OverlayConfigScreen() {
           <Text style={s.resetBtnTxt}>Zurücksetzen</Text>
         </TouchableOpacity>
       </View>
+
+      {/* Add-widget picker modal — opens from the "+ Hinzufügen" button. */}
+      <Modal visible={showAddModal} transparent animationType="fade"
+             onRequestClose={() => setShowAddModal(false)}>
+        <TouchableOpacity style={s.modalBackdrop} activeOpacity={1}
+                          onPress={() => setShowAddModal(false)}>
+          <TouchableOpacity style={s.modalCard} activeOpacity={1}>
+            <Text style={s.modalTitle}>Widget hinzufügen</Text>
+            {ADDABLE_TYPES.map(t => (
+              <TouchableOpacity key={t} style={s.modalRow}
+                                onPress={() => addWidget(t)}>
+                <Text style={s.modalRowTxt}>{WIDGET_LABEL[t]}</Text>
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity style={s.modalCancel}
+                              onPress={() => setShowAddModal(false)}>
+              <Text style={s.modalCancelTxt}>Abbrechen</Text>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
     </ScrollView>
   );
 }
@@ -374,4 +443,27 @@ const s = StyleSheet.create({
   resetBtn:    { marginTop: 30, padding: 12, borderRadius: 8,
                  borderWidth: 1, borderColor: C.danger, alignItems: 'center' },
   resetBtnTxt: { color: C.danger, fontWeight: '700' },
+
+  sectionRow:  { flexDirection: 'row', alignItems: 'center',
+                 justifyContent: 'space-between' },
+  addBtn:      { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6,
+                 backgroundColor: C.accent },
+  addBtnTxt:   { color: '#000', fontSize: 12, fontWeight: '700' },
+
+  delWidgetBtn:{ marginTop: 14, paddingVertical: 10, borderRadius: 6,
+                 borderWidth: 1, borderColor: C.danger, alignItems: 'center' },
+  delWidgetTxt:{ color: C.danger, fontSize: 12, fontWeight: '700' },
+
+  modalBackdrop:{ flex: 1, backgroundColor: 'rgba(0,0,0,0.75)',
+                  justifyContent: 'center', alignItems: 'center',
+                  padding: 24 },
+  modalCard:   { width: '100%', maxWidth: 360, backgroundColor: C.surface,
+                 borderRadius: 12, padding: 16 },
+  modalTitle:  { color: C.text, fontSize: 17, fontWeight: '700',
+                 marginBottom: 14 },
+  modalRow:    { paddingVertical: 12, borderBottomWidth: 1,
+                 borderBottomColor: C.border },
+  modalRowTxt: { color: C.text, fontSize: 15, fontWeight: '600' },
+  modalCancel: { marginTop: 14, padding: 10, alignItems: 'center' },
+  modalCancelTxt:{ color: C.dim, fontSize: 13, fontWeight: '700' },
 });

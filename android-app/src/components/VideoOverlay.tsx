@@ -11,7 +11,7 @@
  */
 
 import React, { useMemo } from 'react';
-import Svg, { Rect, Circle, Line, Text as SvgText } from 'react-native-svg';
+import Svg, { Rect, Circle, Line, Text as SvgText, Polyline } from 'react-native-svg';
 import { StyleSheet, View } from 'react-native';
 import { LapChannels, fmtLapTime, fmtDelta } from '../analysis';
 import {
@@ -27,6 +27,10 @@ interface Props {
   lapNumber?: number;
   trackName?: string;
   config?: OverlayConfig;
+  /** Optional [lat, lon, lap_ms] track points for the current lap — used
+   *  by the MiniMap widget to draw the circuit outline + car dot. When
+   *  omitted, MiniMap falls back to a placeholder circle. */
+  trackPath?: Array<[number, number, number]>;
 }
 
 function sampleAt(ts: number[], vs: number[], t: number): number {
@@ -56,6 +60,10 @@ export const WIDGET_SIZES: Record<WidgetType, { w: number; h: number }> = {
   delta:     { w: 130, h: 32  },
   gMeter:    { w: 140, h: 160 },
   trackName: { w: 200, h: 24  },
+  speedBar:  { w: 220, h: 24  },
+  gForce:    { w: 120, h: 62  },
+  lapNumber: { w: 90,  h: 50  },
+  miniMap:   { w: 170, h: 130 },
 };
 
 // Left edge of a widget's bounding box given its anchor point + width.
@@ -66,7 +74,7 @@ function leftOf(anchorPx: number, w: number, a: WidgetAnchor): number {
 }
 
 export default function VideoOverlay({
-  width, height, timeMs, channels, delta, lapNumber, trackName, config,
+  width, height, timeMs, channels, delta, lapNumber, trackName, config, trackPath,
 }: Props) {
   const cfg = config ?? DEFAULT_OVERLAY_CONFIG;
   const fs = cfg.fontScale;
@@ -119,6 +127,23 @@ export default function VideoOverlay({
               return <TrackNameWidget key={key} px={px} py={py} anchor={w.anchor}
                        fs={wfs} alpha={alpha}
                        accent={w.color ?? cfg.accentColor} name={trackName} />;
+            case 'speedBar':
+              return <SpeedBarWidget key={key} px={px} py={py} anchor={w.anchor}
+                       fs={wfs} alpha={alpha}
+                       accent={w.color ?? cfg.accentColor} value={speed} />;
+            case 'gForce':
+              return <GForceWidget key={key} px={px} py={py} anchor={w.anchor}
+                       fs={wfs} alpha={alpha} color={w.color}
+                       gLat={gLat} gLong={gLong} />;
+            case 'lapNumber':
+              return <LapNumberWidget key={key} px={px} py={py} anchor={w.anchor}
+                       fs={wfs} alpha={alpha}
+                       color={w.color ?? cfg.accentColor} lapNumber={lapNumber} />;
+            case 'miniMap':
+              return <MiniMapWidget key={key} px={px} py={py} anchor={w.anchor}
+                       fs={wfs} alpha={alpha}
+                       accent={w.color ?? cfg.accentColor}
+                       path={trackPath} timeMs={timeMs} />;
             default:
               return null;
           }
@@ -244,6 +269,169 @@ function GMeterWidget({ px, py, anchor, fs, alpha, accent, gLat, gLong }:
                fontSize={10 * fs} fontWeight="700" textAnchor="middle">
         {Math.sqrt(gLat * gLat + gLong * gLong).toFixed(1)} g
       </SvgText>
+    </>
+  );
+}
+
+// ── Phase 3 widgets ────────────────────────────────────────────────
+
+function SpeedBarWidget({ px, py, anchor, fs, alpha, accent, value }:
+                         WidgetRenderProps & { accent: string; value: number }) {
+  const w = WIDGET_SIZES.speedBar.w * fs;
+  const h = WIDGET_SIZES.speedBar.h * fs;
+  const left = leftOf(px, w, anchor);
+  const MAX = 250;   // km/h full-scale; picked wide enough for motorsport
+  const pct = Math.max(0, Math.min(1, value / MAX));
+  return (
+    <>
+      <Rect x={left} y={py} width={w} height={h} rx={h / 2}
+            fill="#000" fillOpacity={alpha} />
+      <Rect x={left + 2} y={py + 2} width={Math.max(0, pct * w - 4)}
+            height={h - 4} rx={(h - 4) / 2} fill={accent} />
+      <SvgText x={left + w / 2} y={py + h / 2 + 4 * fs} fill="#fff"
+               fontSize={11 * fs} fontWeight="700" textAnchor="middle">
+        {value.toFixed(0)} km/h
+      </SvgText>
+    </>
+  );
+}
+
+function GForceWidget({ px, py, anchor, fs, alpha, color, gLat, gLong }:
+                       WidgetRenderProps & { color?: string; gLat: number; gLong: number }) {
+  const w = WIDGET_SIZES.gForce.w * fs;
+  const h = WIDGET_SIZES.gForce.h * fs;
+  const left = leftOf(px, w, anchor);
+  const total = Math.sqrt(gLat * gLat + gLong * gLong);
+  return (
+    <>
+      <Rect x={left} y={py} width={w} height={h} rx={8}
+            fill="#000" fillOpacity={alpha} />
+      <SvgText x={px} y={py + 40 * fs} fill={color ?? '#fff'}
+               fontSize={34 * fs} fontWeight="900"
+               textAnchor={svgTextAnchor(anchor)}>
+        {total.toFixed(1)}
+      </SvgText>
+      <SvgText x={px} y={py + 56 * fs} fill="#aaa"
+               fontSize={11 * fs} fontWeight="600"
+               textAnchor={svgTextAnchor(anchor)}>
+        g gesamt
+      </SvgText>
+    </>
+  );
+}
+
+function LapNumberWidget({ px, py, anchor, fs, alpha, color, lapNumber }:
+                          WidgetRenderProps & { color: string; lapNumber?: number }) {
+  const w = WIDGET_SIZES.lapNumber.w * fs;
+  const h = WIDGET_SIZES.lapNumber.h * fs;
+  const left = leftOf(px, w, anchor);
+  const lap = lapNumber ?? 0;
+  return (
+    <>
+      <Rect x={left} y={py} width={w} height={h} rx={8}
+            fill="#000" fillOpacity={alpha} />
+      <SvgText x={px} y={py + 18 * fs} fill="#aaa"
+               fontSize={10 * fs} fontWeight="700"
+               textAnchor={svgTextAnchor(anchor)}>
+        RUNDE
+      </SvgText>
+      <SvgText x={px} y={py + 42 * fs} fill={color}
+               fontSize={28 * fs} fontWeight="900"
+               textAnchor={svgTextAnchor(anchor)}>
+        {lap}
+      </SvgText>
+    </>
+  );
+}
+
+function MiniMapWidget({ px, py, anchor, fs, alpha, accent, path, timeMs }:
+                        WidgetRenderProps & {
+                          accent: string;
+                          path?: Array<[number, number, number]>;
+                          timeMs: number;
+                        }) {
+  const boxW = WIDGET_SIZES.miniMap.w * fs;
+  const boxH = WIDGET_SIZES.miniMap.h * fs;
+  const left = leftOf(px, boxW, anchor);
+  const pad = 8 * fs;
+  const innerW = boxW - 2 * pad;
+  const innerH = boxH - 2 * pad;
+
+  // Fallback: no track data → draw a hollow rounded box with a hint.
+  if (!path || path.length < 3) {
+    return (
+      <>
+        <Rect x={left} y={py} width={boxW} height={boxH} rx={8}
+              fill="#000" fillOpacity={alpha} />
+        <SvgText x={left + boxW / 2} y={py + boxH / 2 + 4 * fs} fill="#666"
+                 fontSize={10 * fs} textAnchor="middle" fontStyle="italic">
+          Keine Streckendaten
+        </SvgText>
+      </>
+    );
+  }
+
+  // Compute lat/lon bounding box, then scale uniformly so the circuit
+  // fills the widget while preserving aspect (no stretch).
+  let minLat = path[0][0], maxLat = path[0][0];
+  let minLon = path[0][1], maxLon = path[0][1];
+  for (const p of path) {
+    if (p[0] < minLat) minLat = p[0]; if (p[0] > maxLat) maxLat = p[0];
+    if (p[1] < minLon) minLon = p[1]; if (p[1] > maxLon) maxLon = p[1];
+  }
+  const dLat = Math.max(1e-7, maxLat - minLat);
+  // 1° of longitude shrinks with latitude — correct for aspect so north
+  // doesn't look squashed.
+  const latMid = (minLat + maxLat) / 2;
+  const dLonM = (maxLon - minLon) * Math.cos(latMid * Math.PI / 180);
+  const dMax = Math.max(dLat, Math.abs(dLonM));
+  const scaleY = innerH / dMax;
+  const scaleX = innerW / dMax;
+  const scale = Math.min(scaleX, scaleY);
+  const cx0 = left + pad + innerW / 2;
+  const cy0 = py   + pad + innerH / 2;
+
+  const project = (lat: number, lon: number): [number, number] => {
+    // Flat-earth around latMid; flip Y because SVG y grows downward while
+    // latitude grows northward.
+    const dx = (lon - (minLon + maxLon) / 2) * Math.cos(latMid * Math.PI / 180);
+    const dy = (lat - (minLat + maxLat) / 2);
+    return [cx0 + dx * scale, cy0 - dy * scale];
+  };
+
+  const points = path.map(p => {
+    const [x, y] = project(p[0], p[1]);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+
+  // Car position: interpolate between track_points bracketing timeMs.
+  let carX = cx0, carY = cy0;
+  {
+    const N = path.length;
+    if (timeMs <= path[0][2]) {
+      [carX, carY] = project(path[0][0], path[0][1]);
+    } else if (timeMs >= path[N - 1][2]) {
+      [carX, carY] = project(path[N - 1][0], path[N - 1][1]);
+    } else {
+      let j = 0;
+      while (j < N - 1 && path[j + 1][2] < timeMs) j++;
+      const a = path[j], b = path[Math.min(j + 1, N - 1)];
+      const span = Math.max(1, b[2] - a[2]);
+      const f = (timeMs - a[2]) / span;
+      const lat = a[0] + f * (b[0] - a[0]);
+      const lon = a[1] + f * (b[1] - a[1]);
+      [carX, carY] = project(lat, lon);
+    }
+  }
+
+  return (
+    <>
+      <Rect x={left} y={py} width={boxW} height={boxH} rx={8}
+            fill="#000" fillOpacity={alpha} />
+      <Polyline points={points} stroke="#888" strokeWidth={1.5}
+                fill="none" strokeLinejoin="round" strokeLinecap="round" />
+      <Circle cx={carX} cy={carY} r={4 * fs} fill={accent}
+              stroke="#fff" strokeWidth={1.5} />
     </>
   );
 }

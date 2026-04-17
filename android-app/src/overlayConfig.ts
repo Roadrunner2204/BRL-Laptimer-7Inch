@@ -17,7 +17,16 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 export type Corner = 'tl' | 'tr' | 'bl' | 'br';
 
 // ── v2: widget-based layout ───────────────────────────────────────────
-export type WidgetType   = 'speed' | 'lapTime' | 'delta' | 'gMeter' | 'trackName';
+export type WidgetType =
+  | 'speed'        // big numeric km/h
+  | 'lapTime'      // big numeric lap time + optional lap number prefix
+  | 'delta'        // faster/slower vs reference
+  | 'gMeter'       // 2D G-G dot with circle grid
+  | 'trackName'    // track name banner
+  | 'speedBar'     // horizontal 0..maxKmh fill bar
+  | 'gForce'       // big numeric total G
+  | 'lapNumber'    // big numeric lap number only ("R3")
+  | 'miniMap';     // current lap's track outline + current-position dot
 export type WidgetAnchor = 'start' | 'center' | 'end';
 
 export interface Widget {

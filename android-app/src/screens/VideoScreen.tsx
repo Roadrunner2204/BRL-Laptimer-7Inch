@@ -277,6 +277,9 @@ export default function VideoScreen({ route, navigation }: Props) {
             lapNumber={session && overlayLap != null ? session.laps[overlayLap]?.lap : undefined}
             trackName={session?.track}
             config={overlayCfg}
+            trackPath={session && overlayLap != null
+              ? session.laps[overlayLap]?.track_points
+              : undefined}
           />
         )}
 
