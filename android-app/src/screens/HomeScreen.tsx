@@ -168,13 +168,13 @@ export default function HomeScreen({ navigation }: Props) {
         </TouchableOpacity>
         <TouchableOpacity
           style={s.quickCard}
-          onPress={() => navigation.navigate('Sessions', { mode: 'device' })}
+          onPress={() => navigation.navigate('Videos')}
           disabled={!deviceInfo}
         >
-          <Text style={[s.quickIcon, !deviceInfo && { opacity: 0.3 }]}>📡</Text>
-          <Text style={[s.quickTitle, !deviceInfo && { opacity: 0.3 }]}>Gerät</Text>
+          <Text style={[s.quickIcon, !deviceInfo && { opacity: 0.3 }]}>🎥</Text>
+          <Text style={[s.quickTitle, !deviceInfo && { opacity: 0.3 }]}>Videos</Text>
           <Text style={[s.quickSub, !deviceInfo && { opacity: 0.3 }]}>
-            {deviceInfo ? 'synchronisieren' : 'offline'}
+            {deviceInfo ? 'ansehen & löschen' : 'offline'}
           </Text>
         </TouchableOpacity>
         <TouchableOpacity

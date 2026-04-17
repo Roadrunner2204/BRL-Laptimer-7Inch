@@ -10,6 +10,7 @@ import DetailScreen    from './screens/DetailScreen';
 import MapScreen       from './screens/MapScreen';
 import ChartsScreen    from './screens/ChartsScreen';
 import VideoScreen     from './screens/VideoScreen';
+import VideosScreen    from './screens/VideosScreen';
 import CompareScreen   from './screens/CompareScreen';
 import OverlayConfigScreen from './screens/OverlayConfigScreen';
 import TrackCreatorScreen from './screens/TrackCreatorScreen';
@@ -28,6 +29,7 @@ export type RootStackParamList = {
   Map:      { sessionId: string };
   Charts:   { sessionId: string };
   Video:    { videoId: string; sessionId?: string; mode: 'stream' | 'download' };
+  Videos:   undefined;
   Compare:  { sessionId: string };
   OverlayConfig: undefined;
   TrackCreator: { initial?: import('./types').Track } | undefined;
@@ -61,6 +63,7 @@ export default function App() {
         <Stack.Screen name="Map"      component={MapScreen}      options={{ title: 'Karte', headerTransparent: true, headerTintColor: C.text }} />
         <Stack.Screen name="Charts"   component={ChartsScreen}   options={{ title: 'Analyse' }} />
         <Stack.Screen name="Video"    component={VideoScreen}    options={{ title: 'Video' }} />
+        <Stack.Screen name="Videos"   component={VideosScreen}   options={{ title: 'Videos' }} />
         <Stack.Screen name="Compare"  component={CompareScreen}  options={{ title: 'Runden vergleichen' }} />
         <Stack.Screen name="OverlayConfig" component={OverlayConfigScreen} options={{ title: 'Overlay anpassen' }} />
         <Stack.Screen name="TrackCreator"  component={TrackCreatorScreen}  options={{ title: 'Strecke erstellen' }} />

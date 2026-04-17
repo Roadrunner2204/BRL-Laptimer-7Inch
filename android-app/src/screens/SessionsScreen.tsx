@@ -304,17 +304,34 @@ export default function SessionsScreen({ navigation, route }: Props) {
                 )}
               </View>
 
-              {/* Video badge (if video exists for this session on device) */}
+              {/* Video badge — per-lap naming (<sid>_lapN) means one session
+                  can have many videos. Count + sum them; tap navigates to
+                  the Videos list for selection. Legacy <sid>.avi still
+                  matches and plays directly. */}
               {(() => {
-                const video = deviceVideos.find(v => v.id === r.id);
-                if (!video) return null;
-                const mb = (video.size / (1024 * 1024)).toFixed(1);
+                const laps = deviceVideos.filter(
+                  v => v.id === r.id || v.id.startsWith(r.id + '_lap'));
+                if (laps.length === 0) return null;
+                const mb = (laps.reduce((n, v) => n + v.size, 0) / (1024 * 1024)).toFixed(1);
+                const legacy = laps.length === 1 && laps[0].id === r.id;
                 return (
                   <TouchableOpacity
                     style={s.videoBadge}
-                    onPress={() => navigation.navigate('Video', { videoId: r.id, mode: 'stream' })}
+                    onPress={() => {
+                      if (legacy) {
+                        navigation.navigate('Video', {
+                          videoId:   r.id,
+                          sessionId: r.id,
+                          mode:      'stream',
+                        });
+                      } else {
+                        navigation.navigate('Videos');
+                      }
+                    }}
                   >
-                    <Text style={s.videoBadgeTxt}>🎥  Video {mb} MB</Text>
+                    <Text style={s.videoBadgeTxt}>
+                      🎥  {laps.length === 1 ? 'Video' : `${laps.length} Videos`}  ·  {mb} MB
+                    </Text>
                   </TouchableOpacity>
                 );
               })()}
