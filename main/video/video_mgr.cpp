@@ -33,8 +33,15 @@ static const char *TAG = "video_mgr";
 static VideoState s_state = VIDEO_IDLE;
 static bool s_pipeline_ready = false;
 static uint32_t s_rec_start_ms = 0;
-static bool s_auto_record = true;     // auto-start when timing begins
-static bool s_was_timing_active = false;
+static bool s_auto_record = true;     // auto-start when a lap/run begins
+// Edge tracker for auto-start/stop. Tracks g_state.timing.in_lap — NOT
+// timing_active. Reason: on A-B tracks timing_active latches true on the
+// first start-line crossing and stays true forever (so the UI keeps the
+// last run's times visible). Using timing_active as the edge signal
+// meant the 2nd and later A-B runs never produced a rising edge, so
+// auto-start didn't fire. in_lap cleanly toggles per run on both A-B
+// and circuits, which is what we actually want to hook into.
+static bool s_was_in_lap = false;
 static uint8_t s_quality = 80;
 // Passthrough recording: write raw MJPEG frames straight to the AVI and let
 // the Android app render the data overlay at playback time. Default ON —
@@ -343,50 +350,54 @@ static void video_monitor_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(500));
 
         bool camera_ready = brl_uvc_connected() && sd_mgr_available();
-        bool timing_now   = g_state.timing.timing_active;
-        bool rising       = timing_now && !s_was_timing_active;
-        bool falling      = !timing_now && s_was_timing_active;
+        bool in_lap_now   = g_state.timing.in_lap;
+        bool rising       = in_lap_now && !s_was_in_lap;
+        bool falling      = !in_lap_now && s_was_in_lap;
 
-        // ── Auto-start on rising edge of timing_active ───────────────
-        // Works for both circuits AND A-B: start_lap() sets timing_active
-        // on the first S/F crossing. The edge is detected here 500 ms
-        // later; the first ~500 ms of the opening lap is clipped but
-        // that's acceptable vs. losing the whole video.
-        // If start_recording FAILS (audio/USB bringup glitch), do NOT
-        // consume the edge — the `continue` skips the tracker update so
-        // the next tick retries. Otherwise a one-off failure silently
-        // loses the whole recording.
-        // If the camera isn't ready yet, also don't consume the edge:
-        // we want to auto-start the moment it shows up.
+        // ── Auto-start on rising edge of in_lap ──────────────────────
+        // Fires on EVERY new lap/run start:
+        //   • Circuit first lap: in_lap goes false→true at S/F.
+        //   • Circuit lap N→N+1: finish_lap+start_lap happen within one
+        //     logic_task tick, so the monitor samples in_lap as stably
+        //     true across consecutive 500 ms polls → no spurious edge.
+        //   • A-B run 1: false→true on S crossing.
+        //   • A-B run 2+: finish_lap() sets in_lap=false (and stops the
+        //     previous video directly); next S crossing goes false→true
+        //     again → rising edge → auto-start for the next run.
+        //
+        // If start_recording FAILS (audio/USB bringup glitch) or the
+        // camera isn't ready, do NOT consume the edge — `continue`
+        // skips the tracker update so the next tick retries. Otherwise
+        // a one-off failure silently loses the whole recording.
         if (rising && s_auto_record && s_state == VIDEO_IDLE) {
             if (!camera_ready) {
                 continue;   // wait for camera, keep the edge armed
             }
             uint8_t lap_hint = g_state.timing.lap_number
                                ? g_state.timing.lap_number : 1;
-            log_i("Auto-start recording (timing active, lap=%u)", lap_hint);
+            log_i("Auto-start recording (in_lap rising, lap=%u)", lap_hint);
             if (!video_start_recording(lap_hint)) {
                 log_w("Auto-start failed — will retry next tick");
-                continue;   // keep s_was_timing_active=false for retry
+                continue;   // keep s_was_in_lap=false for retry
             }
         }
 
-        // ── Auto-stop on falling edge of timing_active ───────────────
+        // ── Auto-stop on falling edge of in_lap ──────────────────────
         // Activity-aware grace so the trailing lap finishes cleanly on
-        // circuits. For A-B, lap_timer::finish_lap() stops the video
-        // directly at the finish line — timing_active stays high per the
-        // A-B UI design, so we never actually enter this branch on A-B.
-        // For manual-start recordings this now fires too because the
-        // tracker is updated unconditionally below (used to only update
-        // in the IDLE+auto_record branch, which skipped manual mode).
+        // circuits. For A-B, lap_timer::finish_lap() calls
+        // video_stop_recording() directly at the finish line, so by the
+        // time the monitor sees the falling edge s_state is already
+        // IDLE and this whole block is skipped.
+        // For manual-started recordings on circuits this fires too,
+        // because the tracker below is updated every tick.
         if (falling && s_state == VIDEO_RECORDING && s_auto_record) {
-            log_i("Timing ended — close video after %d min below %.0f km/h",
+            log_i("Lap ended — close video after %d min below %.0f km/h",
                   INCOMPLETE_LAP_GRACE_MS / 60000, (double)IDLE_SPEED_KMH);
             uint32_t idle_ms = 0;
             while (idle_ms < INCOMPLETE_LAP_GRACE_MS) {
                 vTaskDelay(pdMS_TO_TICKS(1000));
-                if (g_state.timing.timing_active) break;   // resumed
-                if (s_state != VIDEO_RECORDING)    break;  // manual stop
+                if (g_state.timing.in_lap)      break;   // new lap started
+                if (s_state != VIDEO_RECORDING) break;   // manual stop
                 float spd = g_state.gps.valid
                             ? g_state.gps.speed_kmh : 0.0f;
                 if (spd >= IDLE_SPEED_KMH) {
@@ -395,17 +406,16 @@ static void video_monitor_task(void *arg)
                     idle_ms += 1000;
                 }
             }
-            if (!g_state.timing.timing_active &&
-                s_state == VIDEO_RECORDING) {
-                log_i("Auto-stop recording (stopped %d min)",
+            if (!g_state.timing.in_lap && s_state == VIDEO_RECORDING) {
+                log_i("Auto-stop recording (idle %d min)",
                       INCOMPLETE_LAP_GRACE_MS / 60000);
                 video_stop_recording();
             }
         }
 
-        // Tracker updated every tick — needed so auto-stop works for
-        // manual-started recordings too.
-        s_was_timing_active = timing_now;
+        // Tracker updated every tick — read fresh after the (possibly
+        // long) grace loop above, not the value captured at tick start.
+        s_was_in_lap = g_state.timing.in_lap;
     }
 }
 
