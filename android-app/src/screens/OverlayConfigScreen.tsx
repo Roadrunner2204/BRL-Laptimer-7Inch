@@ -1,27 +1,130 @@
 /**
- * OverlayConfigScreen — user customizes the video HUD.
+ * OverlayConfigScreen — free-positioning HUD editor.
  *
- * - Toggle each element (speed / lap time / delta / G-meter / track name)
- * - Pick corner position for the big ones
- * - Font size slider
- * - Backdrop opacity slider
- * - Live preview at the top using a sample LapChannels
+ * - Drag any visible widget directly on the video preview (finger-follow).
+ * - Per-widget: visibility toggle + horizontal-anchor picker (start/center/end).
+ * - Global: font scale, accent color (reserved), backdrop opacity.
+ * - Saves on every change so no explicit Save button is needed. Drag moves
+ *   update local state in real time but only persist on gesture release to
+ *   avoid hammering AsyncStorage.
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Switch,
-  useWindowDimensions,
+  useWindowDimensions, PanResponder,
 } from 'react-native';
 import { C } from '../theme';
 import {
-  OverlayConfig, Corner, DEFAULT_OVERLAY_CONFIG,
+  OverlayConfig, DEFAULT_OVERLAY_CONFIG, Widget, WidgetAnchor, WidgetType,
   loadOverlayConfig, saveOverlayConfig,
 } from '../overlayConfig';
-import VideoOverlay from '../components/VideoOverlay';
+import VideoOverlay, { WIDGET_SIZES } from '../components/VideoOverlay';
 import { LapChannels } from '../analysis';
 
-// Inline fallback slider — avoids a native dep. Simple plus/minus buttons.
+const WIDGET_LABEL: Record<WidgetType, string> = {
+  speed:     'Geschwindigkeit',
+  lapTime:   'Rundenzeit',
+  delta:     'Delta',
+  gMeter:    'G-Meter',
+  trackName: 'Streckenname',
+};
+
+const ANCHOR_LABEL: Record<WidgetAnchor, string> = {
+  start:  '◧ links',
+  center: '◨ mitte',
+  end:    '◨ rechts',
+};
+
+function leftOf(anchorPx: number, w: number, a: WidgetAnchor): number {
+  return a === 'start' ? anchorPx
+       : a === 'end'   ? anchorPx - w
+       :                 anchorPx - w / 2;
+}
+
+/** Synthetic channel data for a static preview frame. */
+function samplePreviewChannels(): LapChannels {
+  const n = 60;
+  const t_ms: number[] = [], dist_m: number[] = [], speed_kmh: number[] = [];
+  const g_long: number[] = [], g_lat: number[] = [], heading: number[] = [];
+  for (let i = 0; i < n; i++) {
+    t_ms.push(i * 1000);
+    dist_m.push(i * 50);
+    const phase = i / n;
+    speed_kmh.push(80 + 50 * Math.sin(phase * Math.PI * 2));
+    g_lat.push(1.2 * Math.sin(phase * Math.PI * 4));
+    g_long.push(0.8 * Math.cos(phase * Math.PI * 4));
+    heading.push(phase * 360);
+  }
+  return { t_ms, dist_m, speed_kmh, g_long, g_lat, heading };
+}
+
+// ── Draggable handle overlay ──────────────────────────────────────────
+// A transparent View positioned exactly over the widget's visual extent.
+// PanResponder captures touch + drag; we translate finger delta to widget
+// (x, y) updates. Uses a "latest-ref" so the PanResponder closures always
+// see fresh state/callbacks without being re-created.
+
+interface DragHandleProps {
+  widget: Widget;
+  previewW: number;
+  previewH: number;
+  fs: number;
+  selected: boolean;
+  onSelect: (id: string) => void;
+  onMove: (id: string, x: number, y: number) => void;   // live updates
+  onCommit: () => void;                                  // persist on release
+}
+
+function DragHandle(props: DragHandleProps) {
+  const latest = useRef(props);
+  latest.current = props;
+
+  // Start position captured on grant so move deltas are relative to the
+  // widget's original anchor, not whatever is currently rendered.
+  const startX = useRef(0);
+  const startY = useRef(0);
+
+  const pan = useRef(PanResponder.create({
+    onStartShouldSetPanResponder: () => true,
+    onMoveShouldSetPanResponder:  (_, g) => Math.abs(g.dx) + Math.abs(g.dy) > 2,
+    onPanResponderGrant: () => {
+      startX.current = latest.current.widget.x;
+      startY.current = latest.current.widget.y;
+      latest.current.onSelect(latest.current.widget.id);
+    },
+    onPanResponderMove: (_, g) => {
+      const { widget, previewW, previewH, onMove } = latest.current;
+      const dxFrac = g.dx / previewW;
+      const dyFrac = g.dy / previewH;
+      const nx = Math.max(0, Math.min(1, startX.current + dxFrac));
+      const ny = Math.max(0, Math.min(1, startY.current + dyFrac));
+      onMove(widget.id, nx, ny);
+    },
+    onPanResponderRelease: () => { latest.current.onCommit(); },
+    onPanResponderTerminate: () => { latest.current.onCommit(); },
+  })).current;
+
+  const { widget, previewW, previewH, fs, selected } = props;
+  const size = WIDGET_SIZES[widget.type];
+  const w = size.w * fs;
+  const h = size.h * fs;
+  const left = leftOf(widget.x * previewW, w, widget.anchor);
+  const top  = widget.y * previewH;
+
+  return (
+    <View
+      style={[s.dragHandle, {
+        left, top, width: w, height: h,
+        borderColor: selected ? C.accent : 'rgba(255,255,255,0.35)',
+        borderWidth: selected ? 2 : 1,
+      }]}
+      {...pan.panHandlers}
+    />
+  );
+}
+
+// ── Step slider (avoids a native dep) ────────────────────────────────
 function StepSlider({ value, min, max, step, onChange, fmt }: {
   value: number; min: number; max: number; step: number;
   onChange: (v: number) => void; fmt: (v: number) => string;
@@ -41,128 +144,132 @@ function StepSlider({ value, min, max, step, onChange, fmt }: {
   );
 }
 
-const CORNER_LABEL: Record<Corner, string> = {
-  tl: 'Oben links', tr: 'Oben rechts',
-  bl: 'Unten links', br: 'Unten rechts',
-};
-
-function CornerPicker({ value, onChange }: { value: Corner; onChange: (c: Corner) => void }) {
-  return (
-    <View style={s.cornerRow}>
-      {(['tl', 'tr', 'bl', 'br'] as Corner[]).map(c => (
-        <TouchableOpacity
-          key={c}
-          style={[s.cornerBtn, value === c && s.cornerBtnActive]}
-          onPress={() => onChange(c)}
-        >
-          <Text style={[s.cornerBtnTxt, value === c && { color: '#000' }]}>
-            {CORNER_LABEL[c]}
-          </Text>
-        </TouchableOpacity>
-      ))}
-    </View>
-  );
-}
-
-/** Synthetic channel data for live preview (3 laps of simulated values). */
-function samplePreviewChannels(): LapChannels {
-  const n = 60;
-  const t_ms: number[]     = [];
-  const dist_m: number[]   = [];
-  const speed_kmh: number[]= [];
-  const g_long: number[]   = [];
-  const g_lat: number[]    = [];
-  const heading: number[]  = [];
-  for (let i = 0; i < n; i++) {
-    t_ms.push(i * 1000);
-    dist_m.push(i * 50);
-    const phase = i / n;
-    speed_kmh.push(80 + 50 * Math.sin(phase * Math.PI * 2));
-    g_lat.push(1.2 * Math.sin(phase * Math.PI * 4));
-    g_long.push(0.8 * Math.cos(phase * Math.PI * 4));
-    heading.push(phase * 360);
-  }
-  return { t_ms, dist_m, speed_kmh, g_long, g_lat, heading };
-}
-
+// ── Main screen ───────────────────────────────────────────────────────
 export default function OverlayConfigScreen() {
   const { width: winW } = useWindowDimensions();
   const previewW = winW;
   const previewH = Math.round(winW * 9 / 16);
 
   const [cfg, setCfg] = useState<OverlayConfig>(DEFAULT_OVERLAY_CONFIG);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [time, setTime] = useState(15000);
   const preview = React.useMemo(samplePreviewChannels, []);
 
-  useEffect(() => {
-    loadOverlayConfig().then(setCfg);
-  }, []);
+  useEffect(() => { loadOverlayConfig().then(setCfg); }, []);
 
-  // Animate preview cursor for demo
+  // Animate preview cursor so widget values aren't frozen in the editor.
   useEffect(() => {
     const id = setInterval(() => setTime(t => (t + 500) % 59000), 250);
     return () => clearInterval(id);
   }, []);
 
-  function update<K extends keyof OverlayConfig>(key: K, val: OverlayConfig[K]) {
-    const next = { ...cfg, [key]: val };
+  // Latest cfg ref so the move callback reads the up-to-date state in its
+  // throttled closure without rebuilding the PanResponder per render.
+  const latestCfg = useRef(cfg);
+  latestCfg.current = cfg;
+
+  function updateCfg(next: OverlayConfig, persist = true) {
     setCfg(next);
-    saveOverlayConfig(next);  // persist on every change — no Save button needed
+    if (persist) saveOverlayConfig(next);
+  }
+
+  // Drag live — update state only, persist on commit.
+  function handleMove(id: string, x: number, y: number) {
+    const widgets = latestCfg.current.widgets.map(w =>
+      w.id === id ? { ...w, x, y } : w);
+    setCfg({ ...latestCfg.current, widgets });
+  }
+  function handleCommit() { saveOverlayConfig(latestCfg.current); }
+
+  function updateWidget(id: string, patch: Partial<Widget>) {
+    const widgets = cfg.widgets.map(w => w.id === id ? { ...w, ...patch } : w);
+    updateCfg({ ...cfg, widgets });
   }
 
   return (
     <ScrollView style={s.root} contentContainerStyle={{ paddingBottom: 40 }}>
-      {/* Live preview */}
+      {/* Preview + drag handles */}
       <View style={[s.preview, { width: previewW, height: previewH }]}>
         <View style={s.previewBg}>
-          <Text style={s.previewHint}>Vorschau</Text>
+          <Text style={s.previewHint}>Widget ziehen zum Positionieren</Text>
         </View>
         <VideoOverlay
           width={previewW}
           height={previewH}
           timeMs={time}
           channels={preview}
-          delta={preview.t_ms.map((t, i) => (i - 30) * 100)}
+          delta={preview.t_ms.map((_, i) => (i - 30) * 100)}
           lapNumber={3}
           trackName="BRL Testtrack"
           config={cfg}
         />
+        {cfg.widgets.filter(w => w.visible).map(w => (
+          <DragHandle
+            key={w.id}
+            widget={w}
+            previewW={previewW}
+            previewH={previewH}
+            fs={cfg.fontScale}
+            selected={selectedId === w.id}
+            onSelect={setSelectedId}
+            onMove={handleMove}
+            onCommit={handleCommit}
+          />
+        ))}
       </View>
 
       <View style={s.body}>
-        <Text style={s.section}>Elemente</Text>
-        <ToggleRow label="Geschwindigkeit" value={cfg.showSpeed}   onChange={v => update('showSpeed', v)} />
-        <ToggleRow label="Rundenzeit"      value={cfg.showLapTime} onChange={v => update('showLapTime', v)} />
-        <ToggleRow label="Delta"           value={cfg.showDelta}   onChange={v => update('showDelta', v)} />
-        <ToggleRow label="G-Meter"         value={cfg.showGMeter}  onChange={v => update('showGMeter', v)} />
-        <ToggleRow label="Strecke anzeigen" value={cfg.showTrackName} onChange={v => update('showTrackName', v)} />
-
-        <Text style={s.section}>Position Geschwindigkeit</Text>
-        <CornerPicker value={cfg.positionSpeed} onChange={v => update('positionSpeed', v)} />
-
-        <Text style={s.section}>Position Rundenzeit</Text>
-        <CornerPicker value={cfg.positionLapTime} onChange={v => update('positionLapTime', v)} />
-
-        <Text style={s.section}>Position G-Meter</Text>
-        <CornerPicker value={cfg.positionGMeter} onChange={v => update('positionGMeter', v)} />
+        <Text style={s.section}>Widgets</Text>
+        {cfg.widgets.map(w => (
+          <View key={w.id}
+                style={[s.widgetCard, selectedId === w.id && s.widgetCardSel]}>
+            <View style={s.widgetHead}>
+              <TouchableOpacity style={{ flex: 1 }} onPress={() => setSelectedId(w.id)}>
+                <Text style={s.widgetName}>{WIDGET_LABEL[w.type]}</Text>
+                <Text style={s.widgetPos}>
+                  x {Math.round(w.x * 100)} %  ·  y {Math.round(w.y * 100)} %
+                </Text>
+              </TouchableOpacity>
+              <Switch
+                value={w.visible}
+                onValueChange={v => updateWidget(w.id, { visible: v })}
+                trackColor={{ true: C.accent, false: C.surface2 }}
+                thumbColor="#fff"
+              />
+            </View>
+            <View style={s.anchorRow}>
+              {(['start', 'center', 'end'] as WidgetAnchor[]).map(a => (
+                <TouchableOpacity
+                  key={a}
+                  style={[s.anchorBtn, w.anchor === a && s.anchorBtnActive]}
+                  onPress={() => updateWidget(w.id, { anchor: a })}
+                >
+                  <Text style={[s.anchorBtnTxt, w.anchor === a && { color: '#000' }]}>
+                    {ANCHOR_LABEL[a]}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        ))}
 
         <Text style={s.section}>Schriftgröße</Text>
         <StepSlider
-          value={cfg.fontScale} min={0.7} max={1.6} step={0.1}
-          onChange={v => update('fontScale', v)}
+          value={cfg.fontScale} min={0.6} max={1.8} step={0.1}
+          onChange={v => updateCfg({ ...cfg, fontScale: v })}
           fmt={v => `${Math.round(v * 100)} %`}
         />
 
         <Text style={s.section}>Hintergrund-Deckkraft</Text>
         <StepSlider
           value={cfg.backdropAlpha} min={0} max={255} step={15}
-          onChange={v => update('backdropAlpha', Math.round(v))}
+          onChange={v => updateCfg({ ...cfg, backdropAlpha: Math.round(v) })}
           fmt={v => `${Math.round((v / 255) * 100)} %`}
         />
 
         <TouchableOpacity
           style={s.resetBtn}
-          onPress={() => { setCfg(DEFAULT_OVERLAY_CONFIG); saveOverlayConfig(DEFAULT_OVERLAY_CONFIG); }}
+          onPress={() => updateCfg(DEFAULT_OVERLAY_CONFIG)}
         >
           <Text style={s.resetBtnTxt}>Zurücksetzen</Text>
         </TouchableOpacity>
@@ -171,42 +278,33 @@ export default function OverlayConfigScreen() {
   );
 }
 
-function ToggleRow({ label, value, onChange }: {
-  label: string; value: boolean; onChange: (v: boolean) => void;
-}) {
-  return (
-    <View style={s.toggleRow}>
-      <Text style={s.toggleLbl}>{label}</Text>
-      <Switch
-        value={value}
-        onValueChange={onChange}
-        trackColor={{ true: C.accent, false: C.surface2 }}
-        thumbColor="#fff"
-      />
-    </View>
-  );
-}
-
 const s = StyleSheet.create({
   root:        { flex: 1, backgroundColor: C.bg },
   preview:     { backgroundColor: '#222', position: 'relative' },
   previewBg:   { ...StyleSheet.absoluteFillObject, backgroundColor: '#1a1a22',
                  alignItems: 'center', justifyContent: 'center' },
-  previewHint: { color: '#555', fontSize: 14, fontStyle: 'italic' },
+  previewHint: { color: '#555', fontSize: 13, fontStyle: 'italic' },
+
+  dragHandle:  { position: 'absolute', borderRadius: 4,
+                 backgroundColor: 'transparent' },
 
   body:        { padding: 16 },
   section:     { color: C.dim, fontSize: 11, fontWeight: '700',
                  textTransform: 'uppercase', marginTop: 20, marginBottom: 8 },
 
-  toggleRow:   { flexDirection: 'row', alignItems: 'center',
-                 justifyContent: 'space-between', paddingVertical: 8 },
-  toggleLbl:   { color: C.text, fontSize: 15 },
+  widgetCard:  { backgroundColor: C.surface, borderRadius: 10, padding: 12,
+                 marginBottom: 8, borderWidth: 1, borderColor: 'transparent' },
+  widgetCardSel:{ borderColor: C.accent },
+  widgetHead:  { flexDirection: 'row', alignItems: 'center' },
+  widgetName:  { color: C.text, fontSize: 15, fontWeight: '700' },
+  widgetPos:   { color: C.dim, fontSize: 11, marginTop: 2,
+                 fontVariant: ['tabular-nums'] },
 
-  cornerRow:   { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  cornerBtn:   { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 6,
-                 backgroundColor: C.surface2, minWidth: '48%' },
-  cornerBtnActive: { backgroundColor: C.accent },
-  cornerBtnTxt:{ color: C.dim, fontWeight: '600', fontSize: 13, textAlign: 'center' },
+  anchorRow:   { flexDirection: 'row', marginTop: 10, gap: 6 },
+  anchorBtn:   { flex: 1, paddingVertical: 8, borderRadius: 6,
+                 backgroundColor: C.surface2, alignItems: 'center' },
+  anchorBtnActive:{ backgroundColor: C.accent },
+  anchorBtnTxt:{ color: C.dim, fontWeight: '600', fontSize: 12 },
 
   stepRow:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
   stepBtn:     { width: 48, height: 40, backgroundColor: C.accent, borderRadius: 6,
