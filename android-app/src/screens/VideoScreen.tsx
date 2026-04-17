@@ -23,6 +23,7 @@ import { RouteProp } from '@react-navigation/native';
 import { RootStackParamList } from '../App';
 import { C } from '../theme';
 import { videoUrl, deleteVideoOnDevice } from '../api';
+import { preferWifiDefault, preferCellularDefault } from '../network';
 import { loadSession } from '../storage';
 import { Session } from '../types';
 import { deriveChannels, deltaToReference, LapChannels } from '../analysis';
@@ -132,10 +133,14 @@ export default function VideoScreen({ route, navigation }: Props) {
 
   // Cancel any in-flight download when the screen unmounts so a leftover
   // native task doesn't keep writing to the cache dir after navigation.
+  // Also restore the cellular process-default in case we navigated away
+  // mid-download — otherwise map tiles / Nominatim would remain pinned
+  // to the laptimer AP (which has no uplink).
   useEffect(() => {
     return () => {
       if (dlResumable.current) {
         dlResumable.current.cancelAsync().catch(() => {});
+        preferCellularDefault().catch(() => {});
       }
     };
   }, []);
@@ -165,6 +170,16 @@ export default function VideoScreen({ route, navigation }: Props) {
       setProgressBytes(0);
       setTotalBytes(0);
       await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
+
+      // Android routing: the app's process default is pinned to cellular
+      // so map tiles / Nominatim reach the internet while the laptimer
+      // WiFi (no uplink) stays connected. But expo-file-system's native
+      // downloader uses the PROCESS DEFAULT — meaning without this switch
+      // the download goes out on mobile data, which can't reach
+      // 192.168.4.1, and connect-times-out. Flip to WiFi for the download
+      // and restore in finally so map tiles keep working afterward.
+      try { await preferWifiDefault(); }
+      catch { /* no WiFi acquired — native module not ready; attempt anyway */ }
 
       // createDownloadResumable streams chunks with a progress callback, so
       // the user sees a live byte count even on slow WiFi. Plain
@@ -201,6 +216,8 @@ export default function VideoScreen({ route, navigation }: Props) {
       setProgressPct(null);
       setProgressBytes(0);
       setTotalBytes(0);
+      // Restore the cellular default so map tiles keep loading.
+      try { await preferCellularDefault(); } catch { /* best-effort */ }
     }
   }
 
