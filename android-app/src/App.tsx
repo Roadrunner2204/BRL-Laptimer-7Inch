@@ -27,7 +27,7 @@ export type RootStackParamList = {
   Detail:   { sessionId: string };
   Map:      { sessionId: string };
   Charts:   { sessionId: string };
-  Video:    { videoId: string; mode: 'stream' | 'download' };
+  Video:    { videoId: string; sessionId?: string; mode: 'stream' | 'download' };
   Compare:  { sessionId: string };
   OverlayConfig: undefined;
   TrackCreator: { initial?: import('./types').Track } | undefined;

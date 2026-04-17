@@ -25,6 +25,7 @@
 #include "sd_mgr.h"
 #include "compat.h"
 #include "cJSON.h"
+#include "esp_heap_caps.h"
 
 #include "../gps/gps.h"
 #include "../data/lap_data.h"
@@ -118,26 +119,69 @@ void session_store_begin(const char *track_name, const char *session_name)
 // ---------------------------------------------------------------------------
 // session_store_save_lap
 // ---------------------------------------------------------------------------
-void session_store_save_lap(uint8_t lap_idx)
+void session_store_save_lap(uint8_t lap_idx, const char *video_stem)
 {
-    if (!g_state.sd_available) return;
-    if (strlen(s_session_path) == 0) return;
+    if (!g_state.sd_available) { log_w("save_lap %d: SD unavailable", lap_idx + 1); return; }
+
+    // Defensive bootstrap: if begin() wasn't called (e.g. driver crossed the
+    // start line before the session-name dialog auto-confirmed), create a
+    // minimal session skeleton inline so the lap data is still persisted.
+    // We must NOT call session_store_begin() here — it calls
+    // lap_timer_reset_session() which would wipe the very lap we are about
+    // to save.
+    if (strlen(s_session_path) == 0) {
+        log_w("save_lap %d: session_begin not called — auto-bootstrapping", lap_idx + 1);
+        char id[32];
+        make_file_id(id, sizeof(id));
+        strncpy(g_state.session.session_id, id, sizeof(g_state.session.session_id) - 1);
+        g_state.session.session_id[sizeof(g_state.session.session_id) - 1] = '\0';
+        if (!sd_file_exists("/sessions")) sd_make_dir("/sessions");
+        snprintf(s_session_path, sizeof(s_session_path), "/sessions/%s.json", id);
+        strncpy(s_session_name, "Auto", sizeof(s_session_name) - 1);
+        s_session_name[sizeof(s_session_name) - 1] = '\0';
+
+        cJSON *doc = cJSON_CreateObject();
+        if (doc) {
+            cJSON_AddStringToObject(doc, "id",    id);
+            cJSON_AddStringToObject(doc, "name",  s_session_name);
+            cJSON_AddStringToObject(doc, "track", s_track_name);
+            cJSON_AddItemToObject(doc, "laps", cJSON_CreateArray());
+            char *str = cJSON_PrintUnformatted(doc);
+            cJSON_Delete(doc);
+            if (str) { sd_write_file(s_session_path, str, strlen(str)); free(str); }
+        }
+    }
 
     LapSession &sess = g_state.session;
-    if (lap_idx >= sess.lap_count) return;
+    if (lap_idx >= sess.lap_count) { log_w("save_lap %d: idx >= lap_count(%u)", lap_idx + 1, sess.lap_count); return; }
     RecordedLap &rl = sess.laps[lap_idx];
-    if (!rl.valid) return;
+    if (!rl.valid) { log_w("save_lap %d: lap not valid", lap_idx + 1); return; }
 
-    // Read existing JSON
-    static char file_buf[8192];
-    if (!sd_read_file(s_session_path, file_buf, sizeof(file_buf))) {
-        log_e("Read session failed");
+    // Working buffer in PSRAM — must be large enough for the entire growing
+    // JSON. Each lap's track_points (~90 pts × ~50 B JSON = 4.5 KB) means
+    // 8 KB overflows after 2 laps. 64 KB headroom = ~12 laps with full track.
+    const size_t WORK_BUF_SIZE = 64 * 1024;
+    char *work_buf = (char *)heap_caps_malloc(WORK_BUF_SIZE, MALLOC_CAP_SPIRAM);
+    if (!work_buf) { log_e("save_lap %d: PSRAM alloc failed", lap_idx + 1); return; }
+
+    if (!sd_read_file(s_session_path, work_buf, WORK_BUF_SIZE)) {
+        log_e("save_lap %d: read %s failed", lap_idx + 1, s_session_path);
+        heap_caps_free(work_buf);
+        return;
+    }
+    // Detect silent truncation: if read filled to capacity-1, file is too big.
+    size_t read_len = strlen(work_buf);
+    if (read_len >= WORK_BUF_SIZE - 1) {
+        log_e("save_lap %d: session file > %u bytes — TRUNCATED, lap NOT saved",
+              lap_idx + 1, (unsigned)WORK_BUF_SIZE);
+        heap_caps_free(work_buf);
         return;
     }
 
-    cJSON *doc = cJSON_Parse(file_buf);
+    cJSON *doc = cJSON_Parse(work_buf);
     if (!doc) {
-        log_e("Parse session failed");
+        log_e("save_lap %d: cJSON_Parse failed (file %u bytes)", lap_idx + 1, (unsigned)read_len);
+        heap_caps_free(work_buf);
         return;
     }
 
@@ -172,20 +216,29 @@ void session_store_save_lap(uint8_t lap_idx)
         cJSON_AddItemToObject(lap_obj, "track_points", pts);
     }
 
-    cJSON_AddItemToArray(laps, lap_obj);
-
-    // Serialize back to file -- use sd_write_file via VFS
-    char *str = cJSON_PrintUnformatted(doc);
-    cJSON_Delete(doc);
-
-    if (!str) {
-        log_e("Write failed");
-        return;
+    // Video file stem — app retrieves the lap video via GET /video/<stem>
+    if (video_stem && video_stem[0]) {
+        cJSON_AddStringToObject(lap_obj, "video", video_stem);
     }
 
-    sd_write_file(s_session_path, str, strlen(str));
+    cJSON_AddItemToArray(laps, lap_obj);
+
+    char *str = cJSON_PrintUnformatted(doc);
+    cJSON_Delete(doc);
+    heap_caps_free(work_buf);
+
+    if (!str) { log_e("save_lap %d: cJSON_Print failed", lap_idx + 1); return; }
+
+    size_t out_len = strlen(str);
+    bool ok = sd_write_file(s_session_path, str, out_len);
     free(str);
-    log_i("Lap %d saved", lap_idx + 1);
+
+    if (!ok) {
+        log_e("save_lap %d: sd_write_file %s failed (%u bytes)",
+              lap_idx + 1, s_session_path, (unsigned)out_len);
+        return;
+    }
+    log_i("Lap %d saved (%u bytes total)", lap_idx + 1, (unsigned)out_len);
 }
 
 // ---------------------------------------------------------------------------
@@ -199,9 +252,15 @@ int session_store_list_summaries(SessionSummary *out, int max_count)
     DIR *dir = opendir("/sdcard/sessions");
     if (!dir) return 0;
 
+    // Working buffer in PSRAM — must match save_lap's WORK_BUF_SIZE so we can
+    // read back files of the size we wrote. 8 KB silently truncated big files
+    // and made cJSON_Parse fail, leaving lap_count = 0 in the summary list.
+    const size_t WORK_BUF_SIZE = 64 * 1024;
+    char *buf = (char *)heap_caps_malloc(WORK_BUF_SIZE, MALLOC_CAP_SPIRAM);
+    if (!buf) { log_e("list_summaries: PSRAM alloc failed"); closedir(dir); return 0; }
+
     int count = 0;
     struct dirent *ent;
-    static char buf[8192];
 
     while ((ent = readdir(dir)) != NULL && count < max_count) {
         size_t nlen = strlen(ent->d_name);
@@ -221,16 +280,22 @@ int session_store_list_summaries(SessionSummary *out, int max_count)
         memcpy(s.id, ent->d_name, id_len);
         s.id[id_len] = '\0';
 
-        if (!sd_read_file(fpath, buf, sizeof(buf))) {
-            // Still count it with just the ID
+        if (!sd_read_file(fpath, buf, WORK_BUF_SIZE)) {
+            log_w("list_summaries: read %s failed", fpath);
             strncpy(s.name, s.id, sizeof(s.name) - 1);
             count++;
             continue;
         }
+        size_t read_len = strlen(buf);
+        if (read_len >= WORK_BUF_SIZE - 1) {
+            log_e("list_summaries: %s > %u bytes — truncated, lap_count will be wrong",
+                  fpath, (unsigned)WORK_BUF_SIZE);
+        }
 
         cJSON *doc = cJSON_Parse(buf);
         if (!doc) {
-            log_e("JSON parse error for %s", fpath);
+            log_e("list_summaries: cJSON_Parse failed for %s (%u bytes)",
+                  fpath, (unsigned)read_len);
             strncpy(s.name, s.id, sizeof(s.name) - 1);
             count++;
             continue;
@@ -268,6 +333,7 @@ int session_store_list_summaries(SessionSummary *out, int max_count)
     }
 
     closedir(dir);
+    heap_caps_free(buf);
     return count;
 }
 

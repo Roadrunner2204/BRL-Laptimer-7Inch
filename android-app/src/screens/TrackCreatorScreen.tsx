@@ -20,7 +20,7 @@ import {
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
 import * as Location from 'expo-location';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { RouteProp } from '@react-navigation/native';
+import { RouteProp, useFocusEffect } from '@react-navigation/native';
 import { RootStackParamList } from '../App';
 import { C } from '../theme';
 import { Track, SectorDef, SectorLineDef } from '../types';
@@ -80,14 +80,22 @@ export default function TrackCreatorScreen({ navigation, route }: Props) {
   const webviewRef = useRef<WebView>(null);
   const readyRef = useRef(false);
 
-  // While this screen is open, bind the process default network to cellular
-  // so OSM map tiles + Nominatim search can reach the internet — the
-  // laptimer WiFi stays connected but display calls (postTrack etc.) go
-  // through wifiFetch which explicitly targets the WiFi transport.
-  useEffect(() => {
-    preferCellularDefault();
-    return () => { unbindDefault(); };
-  }, []);
+  // While this screen is FOCUSED (not just mounted), bind the process
+  // default network to cellular so OSM map tiles + Nominatim search can
+  // reach the internet. Display calls (postTrack etc.) go through
+  // wifiFetch which explicitly targets the WiFi transport.
+  //
+  // useFocusEffect (not useEffect) — React Navigation keeps screens
+  // mounted in the back-stack, so an unmount-cleanup never runs when
+  // the user just navigates away. Without unbind on blur the process
+  // would stay pinned to cellular and break the laptimer camera stream
+  // (and any other 192.168.4.1 access via the default native HTTP path).
+  useFocusEffect(
+    React.useCallback(() => {
+      preferCellularDefault();
+      return () => { unbindDefault(); };
+    }, [])
+  );
 
   // On mount: in edit-mode center on the track itself, otherwise on the
   // phone's current GPS position.

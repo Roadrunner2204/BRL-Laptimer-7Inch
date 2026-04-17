@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 /**
  * video_mgr -- Video recording manager
@@ -36,7 +37,22 @@ typedef struct {
 void video_init(void);
 
 /// Start recording to SD card. Returns true on success.
-bool video_start_recording(void);
+/// `lap_hint` selects the initial filename:
+///   0  — manual recording, no session context: /sdcard/videos/REC_<ms>.avi
+///   >0 — session is active, file is named <session_id>_lap<N>.avi
+bool video_start_recording(uint8_t lap_hint);
+
+/// Close current AVI and immediately open a new one named
+/// <session_id>_lap<next_lap_no>.avi. No-op if:
+///   - not currently recording
+///   - current file is already named for this lap (e.g. A-B pre-roll matches)
+/// Called from lap_timer on every start_lap() to give each lap its own video.
+bool video_split_for_next_lap(uint8_t next_lap_no);
+
+/// Basename (without .avi) of the currently open AVI, or "" if not recording.
+/// Used by lap_timer to tag the just-finished lap in session JSON so the app
+/// can map lap → video via GET /video/<stem>.
+void video_get_current_filename_stem(char *buf, size_t len);
 
 /// Stop recording and finalize AVI file.
 void video_stop_recording(void);

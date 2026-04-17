@@ -44,6 +44,10 @@ export default function VideoScreen({ route, navigation }: Props) {
   const [source, setSource] = useState<{ uri: string } | null>(null);
   const [status, setStatus] = useState<AVPlaybackStatus | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const [progressPct, setProgressPct] = useState<number | null>(null);   // 0..1, null = size unknown
+  const [progressBytes, setProgressBytes] = useState<number>(0);
+  const [totalBytes, setTotalBytes] = useState<number>(0);
+  const dlResumable = useRef<FileSystem.DownloadResumable | null>(null);
   const [isLocal, setIsLocal] = useState(false);
   const [localPath, setLocalPath] = useState<string | null>(null);
   const [session, setSession] = useState<Session | null>(null);
@@ -59,20 +63,29 @@ export default function VideoScreen({ route, navigation }: Props) {
     }, [])
   );
 
-  const { videoId, mode } = route.params;
+  const { videoId, sessionId, mode } = route.params;
+  // Session to load for overlay/channels may differ from the videoId — since
+  // the firmware's per-lap split, videoId is a file stem (e.g. "<sid>_lap2")
+  // while the session JSON is keyed by "<sid>". Fall back to videoId when
+  // the caller didn't pass sessionId (legacy path from SessionsScreen).
+  const sessionKey = sessionId ?? videoId;
 
   // Video aspect: assume 16:9 for now (player adapts; overlay fits to actual)
   const videoH = Math.round(winW * 9 / 16);
 
-  // Load the matching session (same ID — session.json + AVI share the ID format)
+  // Load the matching session for overlay data.
   useEffect(() => {
-    loadSession(videoId).then(s => {
+    loadSession(sessionKey).then(s => {
       if (s) {
         setSession(s);
-        setOverlayLap(s.best_lap_idx);
+        // Prefer the lap whose video is actually playing, so the overlay
+        // channels match the picture. Match by lap.video === videoId; fall
+        // back to best_lap_idx when no match (legacy single-file videos).
+        const lapIdx = s.laps.findIndex(l => l.video === videoId);
+        setOverlayLap(lapIdx >= 0 ? lapIdx : s.best_lap_idx);
       }
     });
-  }, [videoId]);
+  }, [sessionKey, videoId]);
 
   const overlayChannels: LapChannels | null = useMemo(() => {
     if (!session || overlayLap == null) return null;
@@ -93,6 +106,16 @@ export default function VideoScreen({ route, navigation }: Props) {
   useEffect(() => {
     init();
   }, [videoId, mode]);
+
+  // Cancel any in-flight download when the screen unmounts so a leftover
+  // native task doesn't keep writing to the cache dir after navigation.
+  useEffect(() => {
+    return () => {
+      if (dlResumable.current) {
+        dlResumable.current.cancelAsync().catch(() => {});
+      }
+    };
+  }, []);
 
   async function init() {
     const localUri = FileSystem.documentDirectory + `videos/${videoId}.avi`;
@@ -115,18 +138,57 @@ export default function VideoScreen({ route, navigation }: Props) {
     const dir = target.substring(0, target.lastIndexOf('/'));
     try {
       setDownloading(true);
+      setProgressPct(null);
+      setProgressBytes(0);
+      setTotalBytes(0);
       await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
-      const res = await FileSystem.downloadAsync(videoUrl(videoId), target);
+
+      // createDownloadResumable streams chunks with a progress callback, so
+      // the user sees a live byte count even on slow WiFi. Plain
+      // downloadAsync has no progress hook and times out silently on large
+      // AVI files. The server-side send_wait_timeout was raised to 30 s too.
+      dlResumable.current = FileSystem.createDownloadResumable(
+        videoUrl(videoId),
+        target,
+        {},
+        ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
+          setProgressBytes(totalBytesWritten);
+          if (totalBytesExpectedToWrite > 0) {
+            setTotalBytes(totalBytesExpectedToWrite);
+            setProgressPct(totalBytesWritten / totalBytesExpectedToWrite);
+          }
+        },
+      );
+
+      const res = await dlResumable.current.downloadAsync();
+      if (!res) return;   // cancelled → dlResumable.cancelAsync resolved first
       if (res.status !== 200) throw new Error(`HTTP ${res.status}`);
-      setSource({ uri: target });
+      setSource({ uri: res.uri });
       setIsLocal(true);
-      setLocalPath(target);
+      setLocalPath(res.uri);
     } catch (e: any) {
-      Alert.alert('Download fehlgeschlagen', e?.message ?? String(e));
+      const msg = e?.message ?? String(e);
+      if (!/cancell?ed/i.test(msg)) {
+        Alert.alert('Download fehlgeschlagen', msg);
+      }
       setSource({ uri: videoUrl(videoId) });  // fall back to streaming
     } finally {
+      dlResumable.current = null;
       setDownloading(false);
+      setProgressPct(null);
+      setProgressBytes(0);
+      setTotalBytes(0);
     }
+  }
+
+  async function cancelDownload() {
+    const r = dlResumable.current;
+    if (!r) return;
+    try {
+      // cancelAsync deletes the partial file and rejects the pending
+      // downloadAsync() promise. The catch in doDownload absorbs it.
+      await r.cancelAsync();
+    } catch { /* ignore — we're tearing down anyway */ }
   }
 
   async function doDeleteLocal() {
@@ -189,8 +251,33 @@ export default function VideoScreen({ route, navigation }: Props) {
 
         {downloading && (
           <View style={s.overlayDownload}>
-            <ActivityIndicator color={C.accent} size="large" />
             <Text style={s.dlTxt}>Lade Video…</Text>
+            {/* Deterministic bar when total size is known, otherwise
+                indeterminate spinner + byte counter. */}
+            {progressPct != null ? (
+              <>
+                <View style={s.dlBarTrack}>
+                  <View style={[s.dlBarFill, { width: `${Math.round(progressPct * 100)}%` }]} />
+                </View>
+                <Text style={s.dlPctTxt}>
+                  {Math.round(progressPct * 100)}%
+                  {'  ·  '}
+                  {(progressBytes / (1024 * 1024)).toFixed(1)} / {(totalBytes / (1024 * 1024)).toFixed(1)} MB
+                </Text>
+              </>
+            ) : (
+              <>
+                <ActivityIndicator color={C.accent} size="large" style={{ marginVertical: 8 }} />
+                {progressBytes > 0 && (
+                  <Text style={s.dlPctTxt}>
+                    {(progressBytes / (1024 * 1024)).toFixed(1)} MB geladen
+                  </Text>
+                )}
+              </>
+            )}
+            <TouchableOpacity style={s.dlCancelBtn} onPress={cancelDownload}>
+              <Text style={s.dlCancelTxt}>Abbrechen</Text>
+            </TouchableOpacity>
           </View>
         )}
       </View>
@@ -311,9 +398,18 @@ const s = StyleSheet.create({
   overlayChipTxt:{ color: C.accent, fontSize: 12, fontWeight: '700' },
   overlayDownload: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.78)', justifyContent: 'center', alignItems: 'center',
+    paddingHorizontal: 40,
   },
-  dlTxt:       { color: C.text, marginTop: 12, fontSize: 14, fontWeight: '600' },
+  dlTxt:       { color: C.text, marginBottom: 14, fontSize: 15, fontWeight: '700' },
+  dlBarTrack:  { width: '100%', height: 8, backgroundColor: C.surface2,
+                 borderRadius: 4, overflow: 'hidden', marginBottom: 8 },
+  dlBarFill:   { height: '100%', backgroundColor: C.accent },
+  dlPctTxt:    { color: C.text, fontSize: 13, fontVariant: ['tabular-nums'],
+                 marginBottom: 14 },
+  dlCancelBtn: { paddingHorizontal: 20, paddingVertical: 10, borderRadius: 6,
+                 borderWidth: 1, borderColor: C.danger, marginTop: 4 },
+  dlCancelTxt: { color: C.danger, fontSize: 13, fontWeight: '700' },
 
   controls:    { flexDirection: 'row', alignItems: 'center',
                  padding: 12, backgroundColor: C.surface, gap: 10 },

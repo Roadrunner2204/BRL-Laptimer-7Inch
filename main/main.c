@@ -95,8 +95,10 @@ void app_main(void)
 
     g_state_mutex = xSemaphoreCreateMutex();
 
-    /* ── JPEG HW codec: MUST init before display BSP (DMA fragmentation) ── */
-    ESP_LOGI(TAG, "video_pipeline_early_init");
+    /* ── JPEG HW codec early-init (BEFORE display + USB) ──
+     * HW codec needed for camera preview (HW JPEG decode → RGB565).
+     * Must init before display BSP (DMA fragmentation) and USB ISO.
+     * Passthrough recording skips codec, but preview always needs it. */
     video_pipeline_early_init();
 
     /* ── Display via BSP (MIPI DSI + EK79007 + GT911 touch) ────── */

@@ -25,6 +25,7 @@
 #include "../obd/obd_bt.h"
 #include "../wifi/wifi_mgr.h"
 #include "../storage/session_store.h"
+#include "../video/video_mgr.h"
 #include "compat.h"
 static const char *TAG = "screen_timing";
 
@@ -669,6 +670,34 @@ lv_obj_t *timing_screen_build() {
     lv_label_set_text(tw.track_name_lbl, td ? td->name : tr(TR_NO_TRACK));
     brl_style_label(tw.track_name_lbl, &BRL_FONT_16, BRL_CLR_TEXT);
     lv_obj_align(tw.track_name_lbl, LV_ALIGN_CENTER, 0, 0);
+
+    // Manual record toggle — right of track name, left of OBD.
+    // Click starts/stops recording. Label text + colour is updated by the
+    // shared sb.rec refresh in app.cpp (which reads video_get_state() +
+    // video_camera_connected() every refresh) so the button reflects
+    // state changes from auto-start + grace-period auto-stop too.
+    tw.rec_btn = lv_button_create(sb);
+    lv_obj_set_size(tw.rec_btn, 130, 30);
+    lv_obj_set_pos(tw.rec_btn, 750, 5);
+    brl_style_btn(tw.rec_btn, BRL_CLR_SURFACE2);
+    tw.rec_lbl = lv_label_create(tw.rec_btn);
+    lv_label_set_text(tw.rec_lbl, LV_SYMBOL_IMAGE " CAM");
+    brl_style_label(tw.rec_lbl, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
+    lv_obj_center(tw.rec_lbl);
+    lv_obj_add_event_cb(tw.rec_btn, [](lv_event_t * /*e*/) {
+        if (!video_camera_connected()) return;
+        if (video_get_state() == VIDEO_RECORDING) {
+            video_stop_recording();
+        } else {
+            // Hint with the current lap number so manual start during a
+            // session produces <session_id>_lap<N>.avi. Zero = no session
+            // context → keeps legacy REC_<ms>.avi behaviour.
+            uint8_t hint = (g_state.session.session_id[0] &&
+                            g_state.timing.lap_number)
+                           ? (uint8_t)g_state.timing.lap_number : 0;
+            video_start_recording(hint);
+        }
+    }, LV_EVENT_CLICKED, nullptr);
 
     // OBD — right side
     tw.sb_obd_lbl = lv_label_create(sb);

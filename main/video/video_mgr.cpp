@@ -50,11 +50,28 @@ static int s_res_index = -1;
 // Task handle for the monitor task
 static TaskHandle_t s_monitor_task = nullptr;
 
-// Preview: raw MJPEG double-buffer in PSRAM (no HW JPEG needed)
-#define PREVIEW_BUF_SIZE (256 * 1024)
-static uint8_t *s_preview_buf[2] = {nullptr, nullptr};
-static volatile uint32_t s_preview_size = 0;
-static volatile int s_preview_idx = 0;   // which buffer has the latest frame
+// ── AVI writer serialization ──
+// Three concurrent callers touch the avi_writer:
+//   1) on_uvc_frame (USB task)   → avi_writer_write_frame
+//   2) audio_writer_task         → avi_writer_write_audio
+//   3) video_split_for_next_lap  → avi_writer_close + avi_writer_open
+// avi_writer has no internal locking — we serialize everything here so the
+// close+open swap is atomic vs. in-flight frame/audio writes.
+static SemaphoreHandle_t s_avi_mux = nullptr;
+
+// Currently open AVI: lap number (0 = manual/REC_) and filename stem
+// ("<session_id>_lap<N>" or "REC_<ms>"), used by lap_timer to tag sessions.
+static uint8_t  s_current_lap_no = 0;
+static char     s_current_stem[64] = {};
+
+// Idle threshold for closing the trailing (incomplete) lap video after
+// timing has ended. We only count seconds where the car is below
+// IDLE_SPEED_KMH as "idle"; any real driving resets the counter. This keeps
+// the camera rolling through long laps (e.g. 8-12 min Nordschleife) where
+// the driver may keep going after an accidental session-end, and still
+// closes the file cleanly 5 min after the car actually stops.
+#define INCOMPLETE_LAP_GRACE_MS  (5 * 60 * 1000)
+#define IDLE_SPEED_KMH           10.0f
 
 // ---------------------------------------------------------------------------
 // UVC frame callback — called from USB context for each MJPEG frame
@@ -98,24 +115,38 @@ static void on_uvc_frame(const uint8_t *data, uint32_t size)
     // ── PASSTHROUGH PATH (recording) ─────────────────────────────────
     // Raw MJPEG frame straight to the AVI file. Skips the decode/overlay/
     // encode pipeline entirely — the Android app renders the overlay.
-    // Preview still goes through the pipeline because LVGL needs RGB565.
     if (s_passthrough && s_state == VIDEO_RECORDING) {
-        avi_writer_write_frame(data, size);
+        // Hold the AVI mutex for the duration of this write so a concurrent
+        // lap-split (close+open) never tears the file mid-chunk.
+        if (s_avi_mux && xSemaphoreTake(s_avi_mux, pdMS_TO_TICKS(50)) == pdTRUE) {
+            if (avi_writer_is_open()) avi_writer_write_frame(data, size);
+            xSemaphoreGive(s_avi_mux);
+        }
         return;
     }
 
+    // ── PREVIEW PATH ─────────────────────────────────────────────────
+    // HW JPEG decode into RGB565 preview buffer. LVGL reads that RGB565
+    // via video_get_preview_frame() — direct blit, no decode in render path.
+    if (s_state == VIDEO_PREVIEW) {
+        if (s_pipeline_ready) {
+            video_pipeline_process(data, size, /*recording=*/false);
+        }
+        return;
+    }
+
+    // ── NON-PASSTHROUGH RECORDING ────────────────────────────────────
+    // Full pipeline: HW decode → overlay → HW encode → AVI
     if (!s_free_q || !s_ready_q || size > VID_SLOT_SIZE) return;
 
     int slot;
     if (xQueueReceive(s_free_q, &slot, 0) != pdTRUE) {
-        // All slots busy — pipeline can't keep up, drop this frame.
         s_frames_dropped++;
         return;
     }
     memcpy(s_slot_buf[slot], data, size);
     s_slot_size[slot] = size;
     if (xQueueSend(s_ready_q, &slot, 0) != pdTRUE) {
-        // Ready queue full — give slot back
         xQueueSend(s_free_q, &slot, 0);
         s_frames_dropped++;
     }
@@ -258,7 +289,10 @@ static void audio_writer_task_fn(void *arg)
         if (got > 0 && s_state == VIDEO_RECORDING) {
             // sample_count = frames per channel = bytes / (channels × bytes_per_sample)
             uint32_t frames = (uint32_t)(got / (mic_channels() * sizeof(int16_t)));
-            avi_writer_write_audio(buf, frames);
+            if (s_avi_mux && xSemaphoreTake(s_avi_mux, pdMS_TO_TICKS(500)) == pdTRUE) {
+                if (avi_writer_is_open()) avi_writer_write_audio(buf, frames);
+                xSemaphoreGive(s_avi_mux);
+            }
         }
     }
     s_audio_writer_task = nullptr;
@@ -275,17 +309,28 @@ static void on_mic_chunk(const int16_t *pcm, uint32_t samples)
 }
 
 // ---------------------------------------------------------------------------
-// Generate unique filename for recording
+// Build AVI path + stem for a given lap number.
+// lap_no == 0 → manual recording, no session context: REC_<ms>.avi
+// lap_no >  0 + session_id set → <session_id>_lap<N>.avi
+// lap_no >  0 + no session_id  → falls back to REC_<ms>_lap<N>.avi so we
+//                                 at least keep the lap number in the name.
+// Fills both `path_out` (full VFS path for fopen) and `stem_out` (basename
+// without .avi, used by the HTTP /video/<id> route).
 // ---------------------------------------------------------------------------
-static void make_rec_path(char *buf, size_t len)
+static void build_rec_path(uint8_t lap_no,
+                           char *path_out, size_t path_len,
+                           char *stem_out, size_t stem_len)
 {
-    // Use session ID if available, otherwise timestamp
-    if (g_state.session.session_id[0]) {
-        snprintf(buf, len, "/sdcard/videos/%s.avi", g_state.session.session_id);
+    const char *sid = g_state.session.session_id;
+    if (lap_no > 0 && sid[0]) {
+        snprintf(stem_out, stem_len, "%s_lap%u", sid, (unsigned)lap_no);
+    } else if (lap_no > 0) {
+        snprintf(stem_out, stem_len, "REC_%lu_lap%u",
+                 (unsigned long)millis(), (unsigned)lap_no);
     } else {
-        uint32_t ms = millis();
-        snprintf(buf, len, "/sdcard/videos/REC_%lu.avi", (unsigned long)ms);
+        snprintf(stem_out, stem_len, "REC_%lu", (unsigned long)millis());
     }
+    snprintf(path_out, path_len, "/sdcard/videos/%s.avi", stem_out);
 }
 
 // ---------------------------------------------------------------------------
@@ -297,30 +342,70 @@ static void video_monitor_task(void *arg)
     while (true) {
         vTaskDelay(pdMS_TO_TICKS(500));
 
-        // Auto-start recording when timing becomes active
-        if (s_auto_record && s_state == VIDEO_IDLE &&
-            brl_uvc_connected() && sd_mgr_available()) {
+        bool camera_ready = brl_uvc_connected() && sd_mgr_available();
+        bool timing_now   = g_state.timing.timing_active;
+        bool rising       = timing_now && !s_was_timing_active;
+        bool falling      = !timing_now && s_was_timing_active;
 
-            bool timing_now = g_state.timing.timing_active;
-            if (timing_now && !s_was_timing_active) {
-                log_i("Auto-start recording (timing active)");
-                video_start_recording();
+        // ── Auto-start on rising edge of timing_active ───────────────
+        // Works for both circuits AND A-B: start_lap() sets timing_active
+        // on the first S/F crossing. The edge is detected here 500 ms
+        // later; the first ~500 ms of the opening lap is clipped but
+        // that's acceptable vs. losing the whole video.
+        // If start_recording FAILS (audio/USB bringup glitch), do NOT
+        // consume the edge — the `continue` skips the tracker update so
+        // the next tick retries. Otherwise a one-off failure silently
+        // loses the whole recording.
+        // If the camera isn't ready yet, also don't consume the edge:
+        // we want to auto-start the moment it shows up.
+        if (rising && s_auto_record && s_state == VIDEO_IDLE) {
+            if (!camera_ready) {
+                continue;   // wait for camera, keep the edge armed
             }
-            s_was_timing_active = timing_now;
+            uint8_t lap_hint = g_state.timing.lap_number
+                               ? g_state.timing.lap_number : 1;
+            log_i("Auto-start recording (timing active, lap=%u)", lap_hint);
+            if (!video_start_recording(lap_hint)) {
+                log_w("Auto-start failed — will retry next tick");
+                continue;   // keep s_was_timing_active=false for retry
+            }
         }
 
-        // Auto-stop when timing ends
-        if (s_state == VIDEO_RECORDING && s_auto_record) {
-            if (!g_state.timing.timing_active && s_was_timing_active) {
-                // Timing just stopped — keep recording for 3 more seconds
-                vTaskDelay(pdMS_TO_TICKS(3000));
-                if (!g_state.timing.timing_active) {
-                    log_i("Auto-stop recording (timing ended)");
-                    video_stop_recording();
+        // ── Auto-stop on falling edge of timing_active ───────────────
+        // Activity-aware grace so the trailing lap finishes cleanly on
+        // circuits. For A-B, lap_timer::finish_lap() stops the video
+        // directly at the finish line — timing_active stays high per the
+        // A-B UI design, so we never actually enter this branch on A-B.
+        // For manual-start recordings this now fires too because the
+        // tracker is updated unconditionally below (used to only update
+        // in the IDLE+auto_record branch, which skipped manual mode).
+        if (falling && s_state == VIDEO_RECORDING && s_auto_record) {
+            log_i("Timing ended — close video after %d min below %.0f km/h",
+                  INCOMPLETE_LAP_GRACE_MS / 60000, (double)IDLE_SPEED_KMH);
+            uint32_t idle_ms = 0;
+            while (idle_ms < INCOMPLETE_LAP_GRACE_MS) {
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                if (g_state.timing.timing_active) break;   // resumed
+                if (s_state != VIDEO_RECORDING)    break;  // manual stop
+                float spd = g_state.gps.valid
+                            ? g_state.gps.speed_kmh : 0.0f;
+                if (spd >= IDLE_SPEED_KMH) {
+                    idle_ms = 0;
+                } else {
+                    idle_ms += 1000;
                 }
             }
-            s_was_timing_active = g_state.timing.timing_active;
+            if (!g_state.timing.timing_active &&
+                s_state == VIDEO_RECORDING) {
+                log_i("Auto-stop recording (stopped %d min)",
+                      INCOMPLETE_LAP_GRACE_MS / 60000);
+                video_stop_recording();
+            }
         }
+
+        // Tracker updated every tick — needed so auto-stop works for
+        // manual-started recordings too.
+        s_was_timing_active = timing_now;
     }
 }
 
@@ -333,16 +418,23 @@ void video_init(void)
     // Create /sdcard/videos directory
     sd_make_dir("/videos");
 
+    // Mutex protecting avi_writer state across USB, audio, and split tasks.
+    if (!s_avi_mux) s_avi_mux = xSemaphoreCreateMutex();
+
     // Initialize UVC camera subsystem
     brl_uvc_init();
 
-    // Start monitor task
-    xTaskCreatePinnedToCore(video_monitor_task, "vid_mon", 4096, nullptr, 2, &s_monitor_task, 0);
+    // Start monitor task. Priority MUST match logic_task (1) — not higher.
+    // At priority 2 the A-B pre-roll's video_start_recording() blocks
+    // logic_task mid-call (ES7210 init + USB SET_INTERFACE + AVI fopen
+    // = 200-500 ms), during which gps_poll + lap_timer_poll can't run.
+    // If the driver crosses S/F during that window the crossing is missed.
+    xTaskCreatePinnedToCore(video_monitor_task, "vid_mon", 4096, nullptr, 1, &s_monitor_task, 0);
 
     log_i("Video manager initialized");
 }
 
-bool video_start_recording(void)
+bool video_start_recording(uint8_t lap_hint)
 {
     if (s_state == VIDEO_RECORDING) {
         log_w("Already recording");
@@ -367,7 +459,18 @@ bool video_start_recording(void)
     }
 
     if (s_res_index < 0 || s_res_index >= s_n_resolutions) {
-        s_res_index = s_n_resolutions - 1;  // default: highest
+        // Default: highest-pixel recording resolution, excluding the 320x240
+        // preview slot. With the whitelist filter in uvc_stream this is
+        // always 1920x1080 unless the camera itself doesn't offer it.
+        int best = 0;
+        uint32_t best_px = 0;
+        for (int i = 0; i < s_n_resolutions; i++) {
+            if (s_resolutions[i].width == 320 && s_resolutions[i].height == 240) continue;
+            uint32_t px = (uint32_t)s_resolutions[i].width *
+                          (uint32_t)s_resolutions[i].height;
+            if (px > best_px) { best_px = px; best = i; }
+        }
+        s_res_index = best_px > 0 ? best : s_n_resolutions - 1;
     }
 
     const UvcResolution &res = s_resolutions[s_res_index];
@@ -406,19 +509,35 @@ bool video_start_recording(void)
         }
     }
 
-    // Ensure mic is initialized (first-call side-effects deferred until needed)
+    // ORDER MATTERS: Start UVC BEFORE mic_init. USB ISO transfers need
+    // ~30 KB DMA-internal; I2S mic init takes ~30+ KB of the same pool.
+    // If mic goes first, USB transfer_alloc fails and we get 0 frames.
+    brl_uvc_set_resolution(s_res_index);
+    if (!brl_uvc_start(on_uvc_frame)) {
+        log_e("UVC stream start failed");
+        return false;
+    }
+
+    // Now mic_init — audio rate/channels are compile-time constants, safe to
+    // query even before first mic_init() succeeds.
     bool audio_ok = mic_init();
     uint32_t aud_rate = audio_ok ? mic_sample_rate() : 0;
     uint8_t  aud_ch   = audio_ok ? mic_channels()    : 0;
 
-    // Open AVI file
-    char path[64];
-    make_rec_path(path, sizeof(path));
+    // Open AVI file. Lap-aware naming so each lap lands in its own file and
+    // the Android app can download per-lap via GET /video/<stem>.
+    char path[80];
+    char stem[64];
+    build_rec_path(lap_hint, path, sizeof(path), stem, sizeof(stem));
     if (!avi_writer_open(path, res.width, res.height, res.fps,
                          aud_rate, aud_ch, 16)) {
         log_e("Cannot open AVI file");
+        brl_uvc_stop();
         return false;
     }
+    s_current_lap_no = lap_hint;
+    strncpy(s_current_stem, stem, sizeof(s_current_stem) - 1);
+    s_current_stem[sizeof(s_current_stem) - 1] = '\0';
 
     // Start audio capture (via decoupled ring buffer)
     if (audio_ok) {
@@ -438,15 +557,6 @@ bool video_start_recording(void)
         } else {
             log_w("Audio stream buffer alloc failed — no audio");
         }
-    }
-
-    // Start UVC streaming
-    brl_uvc_set_resolution(s_res_index);
-    if (!brl_uvc_start(on_uvc_frame)) {
-        log_e("UVC stream start failed");
-        mic_stop();
-        avi_writer_close();
-        return false;
     }
 
     s_rec_start_ms = millis();
@@ -472,7 +582,11 @@ void video_stop_recording(void)
     for (int i = 0; i < 50 && (s_pipeline_task || s_encode_task); i++)
         vTaskDelay(pdMS_TO_TICKS(20));
     uint32_t frames = avi_writer_frame_count();  // capture before close
+    if (s_avi_mux) xSemaphoreTake(s_avi_mux, portMAX_DELAY);
     avi_writer_close();
+    s_current_lap_no = 0;
+    s_current_stem[0] = '\0';
+    if (s_avi_mux) xSemaphoreGive(s_avi_mux);
 
     s_state = VIDEO_IDLE;
     g_state.video_recording = false;
@@ -480,6 +594,58 @@ void video_stop_recording(void)
     uint32_t dur = (millis() - s_rec_start_ms) / 1000;
     log_i("Recording stopped: %lu seconds, %lu frames",
           (unsigned long)dur, (unsigned long)frames);
+}
+
+bool video_split_for_next_lap(uint8_t next_lap_no)
+{
+    if (s_state != VIDEO_RECORDING) return false;
+    if (!s_avi_mux) return false;
+    // Skip if already pointed at this lap (e.g. A-B pre-roll file is named
+    // _lap1.avi and the first S/F crossing also asks for lap 1).
+    if (s_current_lap_no == next_lap_no && avi_writer_is_open()) {
+        log_i("split: lap %u already current, skipping", (unsigned)next_lap_no);
+        return true;
+    }
+
+    // Grab resolution/fps/audio from the currently active UVC config so the
+    // new file matches the old. Audio params from mic in case it's still on.
+    UvcResolution res = s_resolutions[s_res_index >= 0 ? s_res_index : 0];
+    uint32_t aud_rate = mic_sample_rate();
+    uint8_t  aud_ch   = mic_channels();
+
+    char path[80];
+    char stem[64];
+    build_rec_path(next_lap_no, path, sizeof(path), stem, sizeof(stem));
+
+    xSemaphoreTake(s_avi_mux, portMAX_DELAY);
+    if (avi_writer_is_open()) avi_writer_close();
+    bool ok = avi_writer_open(path, res.width, res.height, res.fps,
+                              aud_rate, aud_ch, 16);
+    if (ok) {
+        s_current_lap_no = next_lap_no;
+        strncpy(s_current_stem, stem, sizeof(s_current_stem) - 1);
+        s_current_stem[sizeof(s_current_stem) - 1] = '\0';
+    } else {
+        s_current_lap_no = 0;
+        s_current_stem[0] = '\0';
+        log_e("split: avi_writer_open %s failed", path);
+    }
+    xSemaphoreGive(s_avi_mux);
+
+    if (ok) log_i("split: -> %s (lap %u)", path, (unsigned)next_lap_no);
+    return ok;
+}
+
+void video_get_current_filename_stem(char *buf, size_t len)
+{
+    if (!buf || len == 0) return;
+    if (!s_avi_mux || xSemaphoreTake(s_avi_mux, pdMS_TO_TICKS(100)) != pdTRUE) {
+        buf[0] = '\0';
+        return;
+    }
+    strncpy(buf, s_current_stem, len - 1);
+    buf[len - 1] = '\0';
+    xSemaphoreGive(s_avi_mux);
 }
 
 void video_start_preview(void)
@@ -490,8 +656,8 @@ void video_start_preview(void)
     s_n_resolutions = brl_uvc_get_resolutions(s_resolutions, UVC_MAX_RESOLUTIONS);
     if (s_n_resolutions == 0) return;
 
-    // For preview: pick a moderate resolution (640x480 or lower)
-    s_res_index = s_n_resolutions - 1;  // lowest res by default
+    // For preview: pick lowest resolution (320x240)
+    s_res_index = s_n_resolutions - 1;
     for (int i = 0; i < s_n_resolutions; i++) {
         if (s_resolutions[i].width <= 320) {
             s_res_index = i;
@@ -501,7 +667,8 @@ void video_start_preview(void)
 
     const UvcResolution &res = s_resolutions[s_res_index];
 
-    // Initialize pipeline for HW JPEG decode → RGB565 preview
+    // Init HW JPEG pipeline for preview (decode MJPEG → RGB565 buffer).
+    // RGB565 goes straight to LVGL image widget — no decode in render path.
     if (!s_pipeline_ready) {
         if (!video_pipeline_init(res.width, res.height)) {
             log_e("Pipeline init for preview failed");
@@ -510,22 +677,14 @@ void video_start_preview(void)
         s_pipeline_ready = true;
     }
 
-    // Set up decoupled USB→pipeline path for preview too
-    if (!pipeline_decoupler_init()) {
-        log_e("Pipeline decoupler init failed");
+    // Start UVC AFTER pipeline init: USB transfers are small (~7.5 KB) and
+    // fit fine alongside the pipeline's DMA-aligned RGB buffers.
+    brl_uvc_set_resolution(s_res_index);
+    if (!brl_uvc_start(on_uvc_frame)) {
+        log_e("UVC stream start failed");
         return;
     }
-    int tmp;
-    while (xQueueReceive(s_ready_q, &tmp, 0) == pdTRUE) xQueueSend(s_free_q, &tmp, 0);
-    s_frames_dropped = 0;
-    if (!s_pipeline_task) {
-        s_pipeline_run = true;
-        xTaskCreatePinnedToCore(pipeline_task_fn, "vid_pipe",
-                                6144, nullptr, 5, &s_pipeline_task, 1);
-    }
 
-    brl_uvc_set_resolution(s_res_index);
-    brl_uvc_start(on_uvc_frame);
     s_state = VIDEO_PREVIEW;
     log_i("Preview started: %dx%d (HW decode → RGB565)", res.width, res.height);
 }
@@ -590,20 +749,17 @@ void video_set_quality(uint8_t quality)
     video_pipeline_set_quality(quality);
 }
 
+// HW-decoded RGB565 preview (from video_pipeline). LVGL renders this directly.
 const uint8_t *video_get_preview_frame(uint16_t *width, uint16_t *height)
 {
-    // Legacy RGB565 path (if pipeline is active)
     return video_pipeline_get_preview(width, height);
 }
 
+// MJPEG path no longer used — preview goes via RGB565 for LVGL cache stability.
 const uint8_t *video_get_preview_mjpeg(uint32_t *size_out)
 {
-    if (s_preview_size == 0 || !s_preview_buf[s_preview_idx]) {
-        if (size_out) *size_out = 0;
-        return nullptr;
-    }
-    if (size_out) *size_out = s_preview_size;
-    return s_preview_buf[s_preview_idx];
+    if (size_out) *size_out = 0;
+    return nullptr;
 }
 
 uint32_t video_get_rec_duration_s(void)

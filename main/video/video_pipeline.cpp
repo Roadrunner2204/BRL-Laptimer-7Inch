@@ -357,3 +357,5 @@ void video_pipeline_set_quality(uint8_t q)
     if (q > 95) q = 95;
     s_quality = q;
 }
+
+// No standalone decode - LVGL handles MJPEG directly via lv_image_decoder

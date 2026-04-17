@@ -40,6 +40,11 @@ typedef struct {
     int16_t   delta_bar_h;
     // Status bar labels
     lv_obj_t *sb_gps_lbl, *sb_obd_lbl;
+    // Manual Record button (status bar). Label child is driven by the
+    // existing sb.rec state-refresh path in app.cpp — clicking the button
+    // itself toggles video_start/stop_recording.
+    lv_obj_t *rec_btn;
+    lv_obj_t *rec_lbl;
     // Header
     lv_obj_t *track_name_lbl;
     // GPS map widget (shown when a slot has FIELD_MAP)

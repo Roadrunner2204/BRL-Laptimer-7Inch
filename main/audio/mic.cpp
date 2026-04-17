@@ -37,6 +37,7 @@ static const uint32_t CHUNK_BYTES   = CHUNK_SAMPLES * (MIC_BITS / 8) * MIC_CHANN
 // State -----------------------------------------------------------------------
 static esp_codec_dev_handle_t s_mic_dev = nullptr;
 static bool s_initialized = false;
+static bool s_init_failed = false;   // sticky: once init fails, do NOT retry
 static bool s_codec_open = false;    // tracks esp_codec_dev_open/close pairing
 static volatile bool s_running = false;
 static mic_chunk_cb_t s_cb = nullptr;
@@ -78,17 +79,27 @@ static void mic_task(void *arg)
 bool mic_init(void)
 {
     if (s_initialized) return true;
+    // Once bsp_audio_init has failed (DMA NO_MEM), the BSP leaves i2s_data_if
+    // NULL. Retrying bsp_audio_codec_microphone_init asserts on NULL deref.
+    // Stay disabled for the rest of the session — recording continues silently.
+    if (s_init_failed) return false;
 
-    // BSP sets up I2S TX+RX channels (needed for codec clocks)
+    // BSP sets up I2S TX+RX channels (needed for codec clocks).
+    // ESP_ERR_INVALID_STATE means a prior partial init succeeded — only safe
+    // to proceed if this isn't the first call. On the FIRST call, INVALID_STATE
+    // shouldn't happen; if it does, treat it as a hard failure to be safe.
     esp_err_t err = bsp_audio_init(nullptr);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        log_e("bsp_audio_init: %s", esp_err_to_name(err));
+    if (err != ESP_OK) {
+        log_e("bsp_audio_init: %s — mic disabled for this session",
+              esp_err_to_name(err));
+        s_init_failed = true;
         return false;
     }
 
     s_mic_dev = bsp_audio_codec_microphone_init();
     if (!s_mic_dev) {
-        log_e("bsp_audio_codec_microphone_init returned NULL");
+        log_e("bsp_audio_codec_microphone_init returned NULL — mic disabled");
+        s_init_failed = true;
         return false;
     }
 
@@ -96,6 +107,7 @@ bool mic_init(void)
     s_chunk_buf = (int16_t *)heap_caps_malloc(CHUNK_BYTES, MALLOC_CAP_SPIRAM);
     if (!s_chunk_buf) {
         log_e("chunk buf alloc failed (%lu B)", (unsigned long)CHUNK_BYTES);
+        s_init_failed = true;
         return false;
     }
 

@@ -11,6 +11,7 @@
 #include "../storage/session_store.h"
 #include "../storage/track_best.h"
 #include "../data/track_db.h"
+#include "../video/video_mgr.h"
 #include "../compat.h"
 #include <math.h>
 
@@ -196,8 +197,22 @@ static void finish_lap(uint32_t cross_ms) {
     // the user crosses the start line again for a new run.
     lt.in_lap = false;
 
-    // Async save (non-blocking stub — session_store queues it)
-    session_store_save_lap(sess.lap_count - 1);
+    // Grab the filename of the AVI that covers this lap BEFORE any split
+    // happens — the currently-open file is the one that was recording during
+    // the now-finished lap. Empty stem when camera wasn't recording.
+    char video_stem[64];
+    video_get_current_filename_stem(video_stem, sizeof(video_stem));
+
+    // Async save (non-blocking stub — session_store queues it). Pass the
+    // video filename stem so the app can map lap -> /video/<stem>.
+    session_store_save_lap(sess.lap_count - 1, video_stem[0] ? video_stem : nullptr);
+
+    // A-B: the run is definitively over at the finish line — close the video
+    // right away so the file index is finalised and the app can stream it.
+    // Circuits keep rolling; video_mgr's grace timer handles trailing idle.
+    if (!s_is_circuit) {
+        video_stop_recording();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +230,11 @@ static void start_lap(uint32_t cross_ms) {
     lt.lap_number++;
     alloc_lap_buf();
     log_i("Start lap %d", lt.lap_number);
+
+    // Give this new lap its own video file. video_mgr no-ops when not
+    // recording (no camera / manual stop) and when the current file is
+    // already the right lap (A-B pre-roll case).
+    video_split_for_next_lap((uint8_t)lt.lap_number);
 }
 
 // ---------------------------------------------------------------------------
@@ -492,3 +512,4 @@ const TrackPoint* lap_timer_get_cur_points(uint16_t *count_out) {
     if (count_out) *count_out = g_state.timing.in_lap ? s_cur_count : 0;
     return (g_state.timing.in_lap && s_cur_buf) ? s_cur_buf : nullptr;
 }
+

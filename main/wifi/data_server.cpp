@@ -287,6 +287,14 @@ static esp_err_t handle_videos(httpd_req_t *req)
 }
 
 // GET /video/{id} -- stream AVI file
+//
+// IMPORTANT: Must NOT use httpd_resp_send_chunk() here. That API hard-codes
+// `Transfer-Encoding: chunked` and provides no way to advertise file size
+// up front, which means the Android app (expo-file-system) can't compute a
+// percentage — it only sees `totalBytesExpectedToWrite = -1` and the UI
+// falls back to a spinner. We instead write the HTTP response by hand via
+// httpd_send(), with a proper Content-Length header, so the app gets real
+// progress data.
 static esp_err_t handle_video_get(httpd_req_t *req)
 {
     // URI is /video/<id>
@@ -305,6 +313,14 @@ static esp_err_t handle_video_get(httpd_req_t *req)
     char path[160];
     snprintf(path, sizeof(path), "/sdcard/videos/%s.avi", id);
 
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        set_cors_headers(req);
+        httpd_resp_set_status(req, "404 Not Found");
+        return httpd_resp_send(req, "{\"error\":\"not found\"}", 21);
+    }
+    long file_size = (long)st.st_size;
+
     FILE *f = fopen(path, "rb");
     if (!f) {
         set_cors_headers(req);
@@ -312,24 +328,51 @@ static esp_err_t handle_video_get(httpd_req_t *req)
         return httpd_resp_send(req, "{\"error\":\"not found\"}", 21);
     }
 
-    ESP_LOGI(TAG, "GET /video/%s -- streaming", id);
-    set_cors_headers(req);
-    httpd_resp_set_type(req, "video/avi");
+    ESP_LOGI(TAG, "GET /video/%s -- streaming %ld bytes", id, file_size);
 
-    // Stream in big chunks for throughput. 32 KB is a good balance for
-    // WiFi RTT + SD read speed.
+    // Craft the response line + headers by hand. Content-Length is the
+    // whole point; we also send `Connection: close` so the client treats
+    // end-of-stream as end-of-response (defensive — if an fread short-read
+    // truncates the body, the framing still terminates cleanly).
+    char header[320];
+    int hlen = snprintf(header, sizeof(header),
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: video/avi\r\n"
+        "Content-Length: %ld\r\n"
+        "Accept-Ranges: none\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "Access-Control-Allow-Methods: GET, DELETE, OPTIONS\r\n"
+        "Access-Control-Allow-Headers: Content-Type\r\n"
+        "Connection: close\r\n"
+        "\r\n",
+        file_size);
+    if (httpd_send(req, header, hlen) <= 0) {
+        fclose(f);
+        ESP_LOGW(TAG, "/video/%s: header send failed", id);
+        return ESP_FAIL;
+    }
+
+    // Stream body in 32 KB chunks — balance between throughput and heap
+    // overhead. Static buffer so we don't pressure the httpd task stack.
     static uint8_t chunk[32 * 1024];
     size_t n;
+    long sent_total = 0;
     while ((n = fread(chunk, 1, sizeof(chunk), f)) > 0) {
-        if (httpd_resp_send_chunk(req, (const char *)chunk, n) != ESP_OK) {
+        int sent = httpd_send(req, (const char *)chunk, n);
+        if (sent <= 0) {
             fclose(f);
-            ESP_LOGW(TAG, "/video/%s: client aborted", id);
-            httpd_resp_send_chunk(req, nullptr, 0);
+            ESP_LOGW(TAG, "/video/%s: client aborted at %ld/%ld bytes",
+                     id, sent_total, file_size);
             return ESP_FAIL;
         }
+        sent_total += sent;
     }
     fclose(f);
-    return httpd_resp_send_chunk(req, nullptr, 0);
+    if (sent_total != file_size) {
+        ESP_LOGW(TAG, "/video/%s: short send %ld/%ld (file shrunk mid-read?)",
+                 id, sent_total, file_size);
+    }
+    return ESP_OK;
 }
 
 // DELETE /video/{id} -- remove AVI from SD
@@ -812,6 +855,15 @@ void data_server_start(void)
     // user-track catalog (N × cJSON_Parse + 2 KB static buf). Overflows
     // the httpd task and panics. Bump to 12 KB.
     config.stack_size = 12288;
+    // ── Socket timeouts for large video downloads ─────────────────────────
+    // Default send_wait_timeout = 5 s. A 50 MB AVI over 5 Mbit/s WiFi takes
+    // ~80 s; if the phone briefly stalls (GC, context switch, handover
+    // between dual-network STA+AP paths) and the TCP send window fills for
+    // more than 5 s, httpd_resp_send_chunk returns ESP_FAIL, we log "client
+    // aborted", and the app sees the download fail mid-stream. 30 s gives
+    // real-world slack without holding a stale socket forever.
+    config.send_wait_timeout = 30;
+    config.recv_wait_timeout = 15;
 
     esp_err_t err = httpd_start(&s_httpd, &config);
     if (err != ESP_OK) {

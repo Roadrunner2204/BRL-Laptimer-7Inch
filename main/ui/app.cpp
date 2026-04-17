@@ -307,7 +307,7 @@ static void cb_tile_timing(lv_event_t * /*e*/) {
         open_tracks_screen();
     } else {
         timing_screen_open();
-        sb_timing = {tw.sb_gps_lbl, nullptr, tw.sb_obd_lbl};
+        sb_timing = {tw.sb_gps_lbl, nullptr, tw.sb_obd_lbl, tw.rec_lbl};
     }
 }
 static void cb_tile_tracks (lv_event_t * /*e*/) { open_tracks_screen();  }
@@ -444,7 +444,7 @@ static void cb_track_select(lv_event_t *e) {
     const TrackDef *td = track_get(idx);
     ESP_LOGI(TAG, "[APP] Track selected: %s\n", td ? td->name : "?");
     timing_screen_open();
-    sb_timing = {tw.sb_gps_lbl, nullptr, tw.sb_obd_lbl};
+    sb_timing = {tw.sb_gps_lbl, nullptr, tw.sb_obd_lbl, tw.rec_lbl};
     // timing_screen_open loads a new LVGL screen — sub screen will be cleaned up on next menu_show
     s_scr_sub = nullptr;
 }
@@ -1050,7 +1050,7 @@ static void cb_tc_save(lv_event_t* /*e*/) {
             s_scr_sub = nullptr;
         }
         timing_screen_rebuild();
-        sb_timing = {tw.sb_gps_lbl, nullptr, tw.sb_obd_lbl};
+        sb_timing = {tw.sb_gps_lbl, nullptr, tw.sb_obd_lbl, tw.rec_lbl};
     }, 50, nullptr);
     lv_timer_set_repeat_count(tmr, 1);
 }
@@ -2348,12 +2348,18 @@ static void open_car_profiles_screen() {
 // ---------------------------------------------------------------------------
 // Camera Preview Screen
 // ---------------------------------------------------------------------------
+// Camera preview: HW-decoded RGB565 (no LVGL JPEG decoder in the draw path)
+// ---------------------------------------------------------------------------
 static lv_obj_t *s_preview_img = nullptr;
 static lv_image_dsc_t s_preview_dsc = {};
 static lv_timer_t *s_preview_tmr = nullptr;
 
 static void preview_stop_and_back(lv_event_t * /*e*/) {
+    // Order matters: stop timer first (no more set_src), then clear the
+    // widget's src (releases LVGL's reference to the RGB buffer), then
+    // stop the preview pipeline which actually owns the buffer.
     if (s_preview_tmr) { lv_timer_delete(s_preview_tmr); s_preview_tmr = nullptr; }
+    if (s_preview_img) lv_image_set_src(s_preview_img, NULL);
     video_stop_preview();
     s_preview_img = nullptr;
     open_settings_screen();
@@ -2365,7 +2371,7 @@ static void open_preview_screen() {
     lv_obj_t *scr = make_sub_screen("Kamera", preview_stop_and_back);
     lv_obj_t *content = build_content_area(scr, false);
 
-    // Full-size image widget for camera preview
+    // Full-size image widget; LVGL will render the RGB565 buffer as-is.
     s_preview_img = lv_image_create(content);
     lv_obj_set_size(s_preview_img, LV_PCT(100), LV_PCT(100));
     lv_obj_center(s_preview_img);
@@ -2377,25 +2383,24 @@ static void open_preview_screen() {
     brl_style_label(info, &BRL_FONT_24, BRL_CLR_TEXT_DIM);
     lv_obj_center(info);
 
-    // Timer to poll decoded RGB565 frames from HW JPEG pipeline
-    s_preview_tmr = lv_timer_create([](lv_timer_t *t) {
+    // Timer polls the RGB565 preview buffer produced by the HW JPEG decoder.
+    s_preview_tmr = lv_timer_create([](lv_timer_t * /*t*/) {
         if (!s_preview_img) return;
 
         uint16_t pw = 0, ph = 0;
         const uint8_t *rgb = video_get_preview_frame(&pw, &ph);
         if (!rgb || pw == 0 || ph == 0) return;
 
-        // Display decoded RGB565 buffer directly (no TJPGD needed)
         s_preview_dsc.header.magic  = LV_IMAGE_HEADER_MAGIC;
         s_preview_dsc.header.cf     = LV_COLOR_FORMAT_RGB565;
         s_preview_dsc.header.flags  = 0;
         s_preview_dsc.header.w      = pw;
         s_preview_dsc.header.h      = ph;
-        s_preview_dsc.header.stride = pw * 2;  // RGB565 = 2 bytes/pixel
+        s_preview_dsc.header.stride = pw * 2;
         s_preview_dsc.data_size     = (uint32_t)pw * ph * 2;
         s_preview_dsc.data          = rgb;
 
-        // Force LVGL to re-read the buffer (bypass image cache)
+        // NULL-then-set forces LVGL to re-read the buffer (bypasses image cache).
         lv_image_set_src(s_preview_img, NULL);
         lv_image_set_src(s_preview_img, &s_preview_dsc);
 
@@ -2731,7 +2736,9 @@ static void open_settings_screen() {
         } else if (video_camera_connected()) {
             lv_obj_t *brec = make_setting_btn(r, tr(TR_VIDEO_REC_START), BRL_CLR_DANGER, LV_ALIGN_RIGHT_MID, -310);
             lv_obj_add_event_cb(brec, [](lv_event_t* /*e*/){
-                video_start_recording();
+                // Manual recording from settings — no session context:
+                // lap_hint=0 keeps the legacy REC_<ms>.avi naming.
+                video_start_recording(0);
                 open_settings_screen();
             }, LV_EVENT_CLICKED, nullptr);
             lv_obj_t *bprev = make_setting_btn(r, tr(TR_VIDEO_PREVIEW), BRL_CLR_ACCENT, LV_ALIGN_RIGHT_MID, -155);

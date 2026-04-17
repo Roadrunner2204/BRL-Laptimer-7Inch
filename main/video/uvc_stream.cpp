@@ -46,9 +46,35 @@ static uint8_t s_ep_addr = 0;
 static int s_best_alt = 0;
 
 static SemaphoreHandle_t s_xfer_done = nullptr;   // used for control transfers
+static SemaphoreHandle_t s_stream_ready = nullptr; // signals when stream_task has allocated transfers
 static QueueHandle_t     s_iso_done_q = nullptr;  // usb_transfer_t* of completed ISO xfers
 
-#define ISO_XFERS_INFLIGHT  2    // 2 transfers in flight — no ISO gaps
+// N=2 inflight transfers. N=4 crashed because it starved I2S DMA.
+// N=1 capped fps at 5-10 even at 720p because the stack couldn't
+// double-buffer. N=2 is the stable sweet spot.
+#define ISO_XFERS_INFLIGHT  2
+
+// 8 packets × base_mps bytes per transfer = good scheduling buffer.
+// Tried 4 on 2026-04-16 with mult=2 alt — measured fps HALVED because
+// the camera doubled frame size at higher quality instead of keeping fps,
+// and smaller xfers gave the stream_task less tolerance for preemption.
+#define ISO_PKTS_PER_XFER   8
+
+// Largest USB ISO "mult" we're willing to negotiate.
+// **MEASURED 2026-04-16**: this camera has a fixed ~3.5 Mbit/s MJPEG
+// encoder cap. At mult=1 it delivers ~8 fps × 55 KB. At mult=2 it
+// delivers ~4 fps × 120 KB (higher quality, same bitrate). mult=3
+// would probably be the same pattern. Since fps matters more than
+// per-frame quality for a laptimer, mult=1 is the right choice on this
+// hardware. Left as a #define so a higher-end camera swap can flip it.
+#define MAX_ISO_MULT        1
+
+// USB ISO transfers — allocated ONCE at first successful start and reused
+// across all subsequent start/stop cycles. The first allocation uses the
+// freshest DMA budget. Once I2S (mic) takes its share, fragmentation makes
+// re-allocating these 7.5 KB blocks impossible — so we never free them.
+static usb_transfer_t *s_xfers[ISO_XFERS_INFLIGHT] = {};
+static bool s_xfers_allocated = false;
 
 // ---------------------------------------------------------------------------
 static void usb_host_lib_task(void *arg) {
@@ -224,50 +250,68 @@ static void process_uvc_payload(const uint8_t *data, int len) {
 // ---------------------------------------------------------------------------
 static void stream_task(void *arg) {
     (void)arg;
-    int mps = s_ep_mps & 0x7FF;
-    if (mps == 0) mps = 512;
-    // 32 packets × 944 B = ~30 KB per transfer, 4 ms of ISO data.
-    // 2 in-flight = 60 KB — fits in the 128 KB DMA reserve.
-    // Bigger bursts = fewer callbacks/sec, less overhead, more reliable assembly.
-    int num_pkts = 32;
-    int xfer_size = mps * num_pkts;
+    int base_mps = s_ep_mps & 0x7FF;
+    if (base_mps == 0) base_mps = 512;
+    int mult = ((s_ep_mps >> 11) & 0x03) + 1;
+    int pkt_size = base_mps * mult;
+    int num_pkts = ISO_PKTS_PER_XFER;
+    int xfer_size = pkt_size * num_pkts;
 
-    log_i("ISO stream: mps=%d, pkts=%d, size=%d, N=%d", mps, num_pkts, xfer_size,
-          ISO_XFERS_INFLIGHT);
+    log_i("ISO stream: mps=%d×mult%d=%d B/µF, pkts=%d, size=%d, N=%d",
+          base_mps, mult, pkt_size, num_pkts, xfer_size, ISO_XFERS_INFLIGHT);
 
     // Create completion queue (before any transfers exist to avoid race)
     if (!s_iso_done_q) {
         s_iso_done_q = xQueueCreate(ISO_XFERS_INFLIGHT * 2, sizeof(usb_transfer_t*));
     }
     if (!s_xfer_done) s_xfer_done = xSemaphoreCreateBinary();
+    if (!s_stream_ready) s_stream_ready = xSemaphoreCreateBinary();
 
-    // Allocate N transfers with retry (DMA RAM may be transiently fragmented)
-    usb_transfer_t *xfers[ISO_XFERS_INFLIGHT] = {};
-    for (int i = 0; i < ISO_XFERS_INFLIGHT; i++) {
-        esp_err_t err = ESP_FAIL;
-        for (int attempt = 0; attempt < 5; attempt++) {
-            err = usb_host_transfer_alloc(xfer_size, num_pkts, &xfers[i]);
-            if (err == ESP_OK) break;
-            log_w("xfer %d alloc try %d: %s (free DMA=%u)", i, attempt,
-                  esp_err_to_name(err),
-                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
-            vTaskDelay(pdMS_TO_TICKS(100));
+    // Allocate transfers ONCE — first start gets the freshest DMA budget.
+    // Reused for all subsequent sessions so DMA fragmentation can't kill us.
+    if (!s_xfers_allocated) {
+        for (int i = 0; i < ISO_XFERS_INFLIGHT; i++) {
+            esp_err_t err = ESP_FAIL;
+            for (int attempt = 0; attempt < 5; attempt++) {
+                err = usb_host_transfer_alloc(xfer_size, num_pkts, &s_xfers[i]);
+                if (err == ESP_OK) break;
+                log_w("xfer %d alloc try %d: %s (free DMA=%u)", i, attempt,
+                      esp_err_to_name(err),
+                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
+            if (err != ESP_OK) {
+                log_e("Transfer %d alloc failed: %s (need %d bytes)", i,
+                      esp_err_to_name(err), xfer_size);
+                for (int k = 0; k < i; k++) {
+                    if (s_xfers[k]) { usb_host_transfer_free(s_xfers[k]); s_xfers[k] = nullptr; }
+                }
+                s_streaming = false;
+                if (s_stream_ready) xSemaphoreGive(s_stream_ready);
+                vTaskDelete(nullptr); return;
+            }
         }
-        if (err != ESP_OK) {
-            log_e("Transfer %d alloc failed: %s (need %d bytes)", i,
-                  esp_err_to_name(err), xfer_size);
-            for (int k = 0; k < i; k++) usb_host_transfer_free(xfers[k]);
-            s_streaming = false;
-            vTaskDelete(nullptr); return;
-        }
-        xfers[i]->device_handle = s_dev_hdl;
-        xfers[i]->bEndpointAddress = s_ep_addr;
-        xfers[i]->callback = xfer_cb;
-        xfers[i]->num_bytes = xfer_size;
-        xfers[i]->timeout_ms = 0;
-        for (int p = 0; p < num_pkts; p++)
-            xfers[i]->isoc_packet_desc[p].num_bytes = mps;
+        s_xfers_allocated = true;
+        log_i("USB transfers allocated (persistent): %d × %d bytes", ISO_XFERS_INFLIGHT, xfer_size);
     }
+
+    // Re-configure each session — device handle / EP may have re-enumerated
+    for (int i = 0; i < ISO_XFERS_INFLIGHT; i++) {
+        s_xfers[i]->device_handle = s_dev_hdl;
+        s_xfers[i]->bEndpointAddress = s_ep_addr;
+        s_xfers[i]->callback = xfer_cb;
+        s_xfers[i]->num_bytes = xfer_size;
+        s_xfers[i]->timeout_ms = 0;
+        for (int p = 0; p < num_pkts; p++)
+            s_xfers[i]->isoc_packet_desc[p].num_bytes = pkt_size;
+    }
+
+    // Drain any stale completions from a previous session
+    usb_transfer_t *stale;
+    while (xQueueReceive(s_iso_done_q, &stale, 0) == pdTRUE) {}
+
+    // Signal that transfers are ready — brl_uvc_start() waits for this
+    if (s_stream_ready) xSemaphoreGive(s_stream_ready);
 
     s_frame_len = 0;
     s_frames_delivered = 0;
@@ -276,7 +320,7 @@ static void stream_task(void *arg) {
     // Prime all transfers — they all run in parallel; ISO stream is continuous
     int inflight = 0;
     for (int i = 0; i < ISO_XFERS_INFLIGHT; i++) {
-        if (usb_host_transfer_submit(xfers[i]) == ESP_OK) inflight++;
+        if (usb_host_transfer_submit(s_xfers[i]) == ESP_OK) inflight++;
     }
 
     // Main loop: process completions, then resubmit.
@@ -297,7 +341,7 @@ static void stream_task(void *arg) {
             for (int i = 0; i < num_pkts; i++) {
                 int plen = done->isoc_packet_desc[i].actual_num_bytes;
                 if (plen >= 2) process_uvc_payload(done->data_buffer + offset, plen);
-                offset += mps;
+                offset += pkt_size;
             }
         }
 
@@ -309,21 +353,14 @@ static void stream_task(void *arg) {
         }
     }
 
-    // Drain remaining in-flight transfers so we can free safely
+    // Drain remaining in-flight transfers so the next session can re-submit them.
+    // Do NOT free — s_xfers[] is persistent across sessions.
     while (inflight > 0) {
         usb_transfer_t *done = nullptr;
         if (xQueueReceive(s_iso_done_q, &done, pdMS_TO_TICKS(500)) == pdTRUE) {
             inflight--;
         } else break;
     }
-    for (int i = 0; i < ISO_XFERS_INFLIGHT; i++) {
-        if (xfers[i]) usb_host_transfer_free(xfers[i]);
-    }
-
-    // Drain any late completions left in the queue so they don't leak into
-    // the next session with dangling pointers.
-    usb_transfer_t *stale;
-    while (xQueueReceive(s_iso_done_q, &stale, 0) == pdTRUE) {}
 
     log_i("Stream exit: %lu frames delivered", (unsigned long)s_frames_delivered);
     vTaskDelete(nullptr);
@@ -371,18 +408,33 @@ static void client_event_cb(const usb_host_client_event_msg_t *ev, void *arg) {
                 log_i("MJPEG format (index=%d)", mjpeg_fmt);
             }
 
-            // MJPEG frame
+            // MJPEG frame — whitelist only the resolutions the product uses.
+            // Recording targets: 1920x1080, 1440x1080, 1280x960, 1280x720.
+            // Preview:            320x240. Everything else the camera
+            // advertises (1024x768, 800x600, 640x480) is dropped so the UI
+            // picker stays clean and the user can't land on a broken res.
             if (bLen >= 26 && p[1] == 0x24 && p[2] == 0x07 && mjpeg_fmt > 0
                 && s_n_resolutions < UVC_MAX_RESOLUTIONS) {
-                UvcResolution &r = s_resolutions[s_n_resolutions];
-                r.format_idx = mjpeg_fmt;
-                r.frame_idx = p[3];
-                r.width = p[5] | (p[6] << 8);
-                r.height = p[7] | (p[8] << 8);
-                uint32_t iv = p[21] | (p[22] << 8) | (p[23] << 16) | (p[24] << 24);
-                r.fps = iv > 0 ? (uint8_t)(10000000 / iv) : 30;
-                log_i("  %dx%d @ %d fps", r.width, r.height, r.fps);
-                s_n_resolutions++;
+                uint16_t w = p[5] | (p[6] << 8);
+                uint16_t h = p[7] | (p[8] << 8);
+                bool keep = (w == 1920 && h == 1080) ||
+                            (w == 1440 && h == 1080) ||
+                            (w == 1280 && h ==  960) ||
+                            (w == 1280 && h ==  720) ||
+                            (w ==  320 && h ==  240);
+                if (keep) {
+                    UvcResolution &r = s_resolutions[s_n_resolutions];
+                    r.format_idx = mjpeg_fmt;
+                    r.frame_idx = p[3];
+                    r.width  = w;
+                    r.height = h;
+                    uint32_t iv = p[21] | (p[22] << 8) | (p[23] << 16) | (p[24] << 24);
+                    r.fps = iv > 0 ? (uint8_t)(10000000 / iv) : 30;
+                    log_i("  %dx%d @ %d fps  [kept]", w, h, r.fps);
+                    s_n_resolutions++;
+                } else {
+                    log_i("  %dx%d  [dropped — not a product target]", w, h);
+                }
             }
 
             // Endpoint on interface 1 (video streaming)
@@ -390,11 +442,25 @@ static void client_event_cb(const usb_host_client_event_msg_t *ev, void *arg) {
                 uint8_t ep = p[2], attr = p[3];
                 uint16_t raw_mps = p[4] | (p[5] << 8);
                 uint16_t base_mps = raw_mps & 0x7FF;
+                int mult = ((raw_mps >> 11) & 0x03) + 1;
+                // Diagnostic dump: every ISO video-streaming alt-setting the
+                // camera advertises. Used to check whether a higher-bandwidth
+                // mult=2/3 alt exists that we're skipping — those would lift
+                // the camera's effective MJPEG bitrate ceiling (~3.5 Mbit/s
+                // on mult=1 means uniform ~8 fps at every recording res).
                 if ((ep & 0x80) && (attr & 0x03) == 0x01) {
-                    // Pick highest MPS with mult=1 (no additional transactions)
-                    // to avoid brownout from mult=3 high-current mode
-                    int mult = ((raw_mps >> 11) & 0x03) + 1;
-                    if (base_mps > best_mps && mult == 1) {
+                    uint32_t band = (uint32_t)base_mps * mult * 8000;
+                    log_i("  ISO alt=%d ep=0x%02X mps=%u×mult%d → %u B/µF (%lu B/s)",
+                          cur_alt, ep, base_mps, mult, base_mps * mult,
+                          (unsigned long)band);
+                }
+                if ((ep & 0x80) && (attr & 0x03) == 0x01 && mult <= MAX_ISO_MULT) {
+                    // Pick highest total per-µframe bandwidth (base_mps * mult).
+                    // mult>1 raises current draw — capped at MAX_ISO_MULT.
+                    uint32_t this_band = (uint32_t)base_mps * mult;
+                    uint32_t best_band = (uint32_t)best_mps *
+                                         (((s_ep_mps >> 11) & 0x03) + 1);
+                    if (this_band > best_band) {
                         best_mps = base_mps;
                         s_best_alt = cur_alt;
                         s_ep_addr = ep;
@@ -409,7 +475,20 @@ static void client_event_cb(const usb_host_client_event_msg_t *ev, void *arg) {
             p += bLen;
         }
 
-        if (s_n_resolutions > 0) s_selected_res = s_n_resolutions - 1;
+        // Default selection = largest recording resolution (skip the 320x240
+        // preview entry). Descriptor order isn't guaranteed — pick by pixel
+        // count. Falls back to last entry if only the preview slot matched.
+        if (s_n_resolutions > 0) {
+            int best = 0;
+            uint32_t best_px = 0;
+            for (int i = 0; i < s_n_resolutions; i++) {
+                if (s_resolutions[i].width == 320 && s_resolutions[i].height == 240) continue;
+                uint32_t px = (uint32_t)s_resolutions[i].width *
+                              (uint32_t)s_resolutions[i].height;
+                if (px > best_px) { best_px = px; best = i; }
+            }
+            s_selected_res = best_px > 0 ? best : s_n_resolutions - 1;
+        }
         s_camera_connected = true;
         log_i("Camera ready: %d res, EP=0x%02X %s, alt=%d, MPS=%d",
               s_n_resolutions, s_ep_addr, s_ep_is_iso ? "ISO" : "BULK",
@@ -430,6 +509,11 @@ void brl_uvc_init(void) {
     if (s_usb_host_installed) return;
     s_frame_buf = (uint8_t *)heap_caps_malloc(MAX_FRAME_SIZE, MALLOC_CAP_SPIRAM);
     if (!s_frame_buf) { log_e("Frame buf alloc failed"); return; }
+
+    // Pre-create the stream-ready semaphore so brl_uvc_start() can block on it
+    // BEFORE stream_task gets a chance to run. Otherwise the take is skipped
+    // (semaphore still NULL) and start() returns true while alloc is pending.
+    if (!s_stream_ready) s_stream_ready = xSemaphoreCreateBinary();
 
     usb_host_config_t hcfg = {}; hcfg.intr_flags = ESP_INTR_FLAG_LEVEL1;
     esp_err_t err = usb_host_install(&hcfg);
@@ -511,8 +595,32 @@ bool brl_uvc_start(uvc_frame_cb_t cb) {
     // Camera needs ~200ms after SET_INTERFACE before producing valid frames
     vTaskDelay(pdMS_TO_TICKS(300));
 
+    // Semaphore must exist before stream_task starts — otherwise the take
+    // below is skipped and start() returns success before alloc is checked.
+    if (!s_stream_ready) s_stream_ready = xSemaphoreCreateBinary();
+    // Drain any stale signal from a prior aborted run.
+    xSemaphoreTake(s_stream_ready, 0);
+
     s_streaming = true;
     xTaskCreatePinnedToCore(stream_task, "uvc_read", 6144, nullptr, 4, nullptr, 0);
+
+    // Wait for stream_task to either succeed or fail allocating transfers.
+    // stream_task signals the semaphore in BOTH cases — on failure it sets
+    // s_streaming=false first, so we check that to distinguish.
+    if (xSemaphoreTake(s_stream_ready, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        log_e("Stream task did not signal within 2s");
+        s_streaming = false;
+        // Release the alt 6 interface so EP 0x81 doesn't leak — otherwise
+        // the next start fails with "EP with 129 address already allocated".
+        usb_host_interface_release(s_client_hdl, s_dev_hdl, 1);
+        return false;
+    }
+    if (!s_streaming) {
+        log_e("Stream task failed to allocate transfers");
+        // Same EP-leak guard as above
+        usb_host_interface_release(s_client_hdl, s_dev_hdl, 1);
+        return false;
+    }
 
     log_i("Streaming: %dx%d@%d EP=0x%02X alt=%d", s_active_w, s_active_h, s_active_fps, s_ep_addr, s_best_alt);
     return true;

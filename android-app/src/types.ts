@@ -6,6 +6,10 @@ export interface Lap {
   total_ms: number;
   sectors: number[];      // sector times in ms
   track_points: TrackPoint[];
+  /** Filename stem (no .avi) of the per-lap AVI covering this lap, if
+   *  recording was active. Fetch via GET /video/<stem>. Absent on older
+   *  sessions recorded before the per-lap video split was added. */
+  video?: string;
 }
 
 export interface Session {

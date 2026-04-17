@@ -75,7 +75,21 @@ export default function DetailScreen({ navigation, route }: Props) {
         </TouchableOpacity>
         <TouchableOpacity
           style={s.actionSecondary}
-          onPress={() => navigation.navigate('Video', { videoId: session.id, mode: 'stream' })}
+          onPress={() => {
+            // Firmware now splits video per lap: each lap JSON entry carries
+            // its own `video` stem (file basename without .avi). Pick the
+            // best lap's video; fall back to the first lap with a video;
+            // legacy sessions (no per-lap video) fall back to session.id
+            // which matches the old <sessionId>.avi naming.
+            const best = session.laps[session.best_lap_idx];
+            const firstWithVideo = session.laps.find(l => l.video);
+            const videoId = best?.video ?? firstWithVideo?.video ?? session.id;
+            navigation.navigate('Video', {
+              videoId,
+              sessionId: session.id,
+              mode: 'stream',
+            });
+          }}
         >
           <Text style={s.actionSecondaryIcon}>🎥</Text>
           <Text style={s.actionSecondaryTxt}>Video</Text>
