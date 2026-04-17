@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { Video, ResizeMode, AVPlaybackStatus } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
 import { RouteProp } from '@react-navigation/native';
 import { RootStackParamList } from '../App';
 import { C } from '../theme';
@@ -199,6 +200,36 @@ export default function VideoScreen({ route, navigation }: Props) {
     setSource({ uri: videoUrl(videoId) });
   }
 
+  // Export the already-downloaded AVI via the native share sheet. User
+  // picks the target (Downloads, Drive, WhatsApp, Email, …). We don't
+  // touch the source file — it stays in the app's doc dir for continued
+  // in-app playback. The AVI MIME is `video/avi`; some gallery apps
+  // prefer `video/x-msvideo`, but the share sheet handles both.
+  async function doExport() {
+    if (!localPath) {
+      Alert.alert('Kein lokales Video',
+        'Bitte erst „Download" drücken, damit eine lokale Kopie entsteht.');
+      return;
+    }
+    try {
+      const available = await Sharing.isAvailableAsync();
+      if (!available) {
+        Alert.alert('Teilen nicht verfügbar',
+          'Auf diesem Gerät steht kein Share-Dienst bereit.');
+        return;
+      }
+      await Sharing.shareAsync(localPath, {
+        mimeType: 'video/avi',
+        dialogTitle: 'Video exportieren',
+        UTI: 'public.avi',          // iOS hint, ignored on Android
+      });
+    } catch (e: any) {
+      // User cancelling the share sheet resolves fine on Android; this
+      // catch is for actual failures (permission, missing provider).
+      Alert.alert('Export fehlgeschlagen', e?.message ?? String(e));
+    }
+  }
+
   async function doDeleteOnDevice() {
     Alert.alert('Video am Gerät löschen?', 'Das Video wird unwiderruflich von der HDD gelöscht.', [
       { text: 'Abbrechen', style: 'cancel' },
@@ -338,6 +369,11 @@ export default function VideoScreen({ route, navigation }: Props) {
         {!isLocal && !downloading && (
           <TouchableOpacity style={s.actionBtn} onPress={() => doDownload()}>
             <Text style={s.actionTxt}>⬇ Download</Text>
+          </TouchableOpacity>
+        )}
+        {isLocal && (
+          <TouchableOpacity style={s.actionBtn} onPress={doExport}>
+            <Text style={s.actionTxt}>↗ Teilen</Text>
           </TouchableOpacity>
         )}
         {isLocal && (
