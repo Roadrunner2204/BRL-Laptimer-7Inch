@@ -90,26 +90,35 @@ export default function VideoOverlay({
         {cfg.widgets.filter(w => w.visible).map(w => {
           const px = w.x * width;
           const py = w.y * height;
+          // Effective font scale = global × per-widget. Clamped so an
+          // accidental 0 doesn't make text invisible; ceiling prevents
+          // runaway size from eating the whole frame.
+          const wfs = fs * Math.max(0.3, Math.min(3, w.scale ?? 1.0));
           const key = w.id;
           switch (w.type) {
             case 'speed':
               return <SpeedWidget key={key} px={px} py={py} anchor={w.anchor}
-                       fs={fs} alpha={alpha} value={speed} />;
+                       fs={wfs} alpha={alpha} color={w.color} value={speed} />;
             case 'lapTime':
               return <LapTimeWidget key={key} px={px} py={py} anchor={w.anchor}
-                       fs={fs} alpha={alpha} timeMs={timeMs} lapNumber={lapNumber} />;
+                       fs={wfs} alpha={alpha} color={w.color}
+                       timeMs={timeMs} lapNumber={lapNumber} />;
             case 'delta':
               if (dlt == null) return null;
+              // widget.color overrides the faster/slower auto-color so the
+              // user can pick a fixed tone if they prefer.
               return <DeltaWidget key={key} px={px} py={py} anchor={w.anchor}
-                       fs={fs} alpha={alpha} value={dlt} color={deltaColor} />;
+                       fs={wfs} alpha={alpha}
+                       value={dlt} color={w.color ?? deltaColor} />;
             case 'gMeter':
               return <GMeterWidget key={key} px={px} py={py} anchor={w.anchor}
-                       fs={fs} alpha={alpha} accent={cfg.accentColor}
+                       fs={wfs} alpha={alpha} accent={w.color ?? cfg.accentColor}
                        gLat={gLat} gLong={gLong} />;
             case 'trackName':
               if (!trackName) return null;
               return <TrackNameWidget key={key} px={px} py={py} anchor={w.anchor}
-                       fs={fs} alpha={alpha} accent={cfg.accentColor} name={trackName} />;
+                       fs={wfs} alpha={alpha}
+                       accent={w.color ?? cfg.accentColor} name={trackName} />;
             default:
               return null;
           }
@@ -129,8 +138,8 @@ interface WidgetRenderProps {
   alpha: number;
 }
 
-function SpeedWidget({ px, py, anchor, fs, alpha, value }:
-                      WidgetRenderProps & { value: number }) {
+function SpeedWidget({ px, py, anchor, fs, alpha, color, value }:
+                      WidgetRenderProps & { color?: string; value: number }) {
   const w = WIDGET_SIZES.speed.w * fs;
   const h = WIDGET_SIZES.speed.h * fs;
   const left = leftOf(px, w, anchor);
@@ -138,7 +147,7 @@ function SpeedWidget({ px, py, anchor, fs, alpha, value }:
     <>
       <Rect x={left} y={py} width={w} height={h} rx={8}
             fill="#000" fillOpacity={alpha} />
-      <SvgText x={px} y={py + 42 * fs} fill="#fff"
+      <SvgText x={px} y={py + 42 * fs} fill={color ?? '#fff'}
                fontSize={40 * fs} fontWeight="900"
                textAnchor={svgTextAnchor(anchor)}>
         {value.toFixed(0)}
@@ -152,8 +161,8 @@ function SpeedWidget({ px, py, anchor, fs, alpha, value }:
   );
 }
 
-function LapTimeWidget({ px, py, anchor, fs, alpha, timeMs, lapNumber }:
-                        WidgetRenderProps & { timeMs: number; lapNumber?: number }) {
+function LapTimeWidget({ px, py, anchor, fs, alpha, color, timeMs, lapNumber }:
+                        WidgetRenderProps & { color?: string; timeMs: number; lapNumber?: number }) {
   const label = `${lapNumber ? `R${lapNumber}  ` : ''}${fmtLapTime(timeMs)}`;
   const w = WIDGET_SIZES.lapTime.w * fs;
   const h = WIDGET_SIZES.lapTime.h * fs;
@@ -162,7 +171,7 @@ function LapTimeWidget({ px, py, anchor, fs, alpha, timeMs, lapNumber }:
     <>
       <Rect x={left} y={py} width={w} height={h} rx={6}
             fill="#000" fillOpacity={alpha} />
-      <SvgText x={px} y={py + 20 * fs} fill="#fff"
+      <SvgText x={px} y={py + 20 * fs} fill={color ?? '#fff'}
                fontSize={14 * fs} fontWeight="700"
                textAnchor={svgTextAnchor(anchor)}>
         {label}

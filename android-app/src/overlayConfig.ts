@@ -30,7 +30,24 @@ export interface Widget {
   /** Horizontal alignment of the widget around (x,y). */
   anchor: WidgetAnchor;
   visible: boolean;
+  /** Per-widget size multiplier on top of the global fontScale. 0.5..2.5. */
+  scale?: number;
+  /** Primary text color override (hex). Undefined → widget's default. */
+  color?: string;
 }
+
+/** Preset text colors exposed by the editor's color-swatch row. */
+export const WIDGET_COLOR_SWATCHES: { name: string; value: string | null }[] = [
+  { name: 'Standard',  value: null       },
+  { name: 'Weiß',      value: '#FFFFFF'  },
+  { name: 'Akzent',    value: '#0096FF'  },
+  { name: 'Orange',    value: '#FF9500'  },
+  { name: 'Rot',       value: '#FF3B30'  },
+  { name: 'Grün',      value: '#34C759'  },
+  { name: 'Gelb',      value: '#FFD60A'  },
+  { name: 'Cyan',      value: '#32ADE6'  },
+  { name: 'Lila',      value: '#AF52DE'  },
+];
 
 export interface OverlayConfig {
   widgets: Widget[];

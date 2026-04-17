@@ -17,6 +17,7 @@ import {
 import { C } from '../theme';
 import {
   OverlayConfig, DEFAULT_OVERLAY_CONFIG, Widget, WidgetAnchor, WidgetType,
+  WIDGET_COLOR_SWATCHES,
   loadOverlayConfig, saveOverlayConfig,
 } from '../overlayConfig';
 import VideoOverlay, { WIDGET_SIZES } from '../components/VideoOverlay';
@@ -220,38 +221,86 @@ export default function OverlayConfigScreen() {
 
       <View style={s.body}>
         <Text style={s.section}>Widgets</Text>
-        {cfg.widgets.map(w => (
-          <View key={w.id}
-                style={[s.widgetCard, selectedId === w.id && s.widgetCardSel]}>
-            <View style={s.widgetHead}>
-              <TouchableOpacity style={{ flex: 1 }} onPress={() => setSelectedId(w.id)}>
-                <Text style={s.widgetName}>{WIDGET_LABEL[w.type]}</Text>
-                <Text style={s.widgetPos}>
-                  x {Math.round(w.x * 100)} %  ·  y {Math.round(w.y * 100)} %
-                </Text>
-              </TouchableOpacity>
-              <Switch
-                value={w.visible}
-                onValueChange={v => updateWidget(w.id, { visible: v })}
-                trackColor={{ true: C.accent, false: C.surface2 }}
-                thumbColor="#fff"
-              />
-            </View>
-            <View style={s.anchorRow}>
-              {(['start', 'center', 'end'] as WidgetAnchor[]).map(a => (
-                <TouchableOpacity
-                  key={a}
-                  style={[s.anchorBtn, w.anchor === a && s.anchorBtnActive]}
-                  onPress={() => updateWidget(w.id, { anchor: a })}
-                >
-                  <Text style={[s.anchorBtnTxt, w.anchor === a && { color: '#000' }]}>
-                    {ANCHOR_LABEL[a]}
+        {cfg.widgets.map(w => {
+          const isSel = selectedId === w.id;
+          return (
+            <View key={w.id}
+                  style={[s.widgetCard, isSel && s.widgetCardSel]}>
+              <View style={s.widgetHead}>
+                <TouchableOpacity style={{ flex: 1 }}
+                                  onPress={() => setSelectedId(isSel ? null : w.id)}>
+                  <Text style={s.widgetName}>
+                    {WIDGET_LABEL[w.type]} {isSel ? '▾' : '▸'}
+                  </Text>
+                  <Text style={s.widgetPos}>
+                    x {Math.round(w.x * 100)} %  ·  y {Math.round(w.y * 100)} %
+                    {w.scale != null && w.scale !== 1 &&
+                      `  ·  ${Math.round(w.scale * 100)} %`}
                   </Text>
                 </TouchableOpacity>
-              ))}
+                <Switch
+                  value={w.visible}
+                  onValueChange={v => updateWidget(w.id, { visible: v })}
+                  trackColor={{ true: C.accent, false: C.surface2 }}
+                  thumbColor="#fff"
+                />
+              </View>
+
+              {/* Always-visible: anchor picker (determines which way the
+                  widget extends from its drag anchor point). */}
+              <View style={s.anchorRow}>
+                {(['start', 'center', 'end'] as WidgetAnchor[]).map(a => (
+                  <TouchableOpacity
+                    key={a}
+                    style={[s.anchorBtn, w.anchor === a && s.anchorBtnActive]}
+                    onPress={() => updateWidget(w.id, { anchor: a })}
+                  >
+                    <Text style={[s.anchorBtnTxt, w.anchor === a && { color: '#000' }]}>
+                      {ANCHOR_LABEL[a]}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              {/* Detail panel only when this widget is selected/expanded —
+                  keeps the list short when you have many widgets. */}
+              {isSel && (
+                <View style={s.detailBox}>
+                  <Text style={s.detailLabel}>Größe</Text>
+                  <StepSlider
+                    value={w.scale ?? 1.0} min={0.5} max={2.5} step={0.1}
+                    onChange={v => updateWidget(w.id, { scale: v })}
+                    fmt={v => `${Math.round(v * 100)} %`}
+                  />
+                  <Text style={s.detailLabel}>Farbe</Text>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false}
+                              contentContainerStyle={{ paddingRight: 10 }}>
+                    {WIDGET_COLOR_SWATCHES.map(sw => {
+                      const active = (w.color ?? null) === sw.value;
+                      return (
+                        <TouchableOpacity
+                          key={sw.name}
+                          style={[s.swatch,
+                                  active && s.swatchActive,
+                                  sw.value
+                                    ? { backgroundColor: sw.value }
+                                    : { backgroundColor: C.surface2,
+                                        borderWidth: 1, borderColor: C.border }]}
+                          onPress={() => updateWidget(w.id,
+                            { color: sw.value === null ? undefined : sw.value })}
+                        >
+                          {sw.value === null && (
+                            <Text style={s.swatchAutoTxt}>Auto</Text>
+                          )}
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </ScrollView>
+                </View>
+              )}
             </View>
-          </View>
-        ))}
+          );
+        })}
 
         <Text style={s.section}>Schriftgröße</Text>
         <StepSlider
@@ -305,6 +354,15 @@ const s = StyleSheet.create({
                  backgroundColor: C.surface2, alignItems: 'center' },
   anchorBtnActive:{ backgroundColor: C.accent },
   anchorBtnTxt:{ color: C.dim, fontWeight: '600', fontSize: 12 },
+
+  detailBox:   { marginTop: 12, paddingTop: 12,
+                 borderTopWidth: 1, borderTopColor: C.border },
+  detailLabel: { color: C.dim, fontSize: 11, fontWeight: '700',
+                 textTransform: 'uppercase', marginBottom: 8, marginTop: 4 },
+  swatch:      { width: 36, height: 36, borderRadius: 18, marginRight: 8,
+                 alignItems: 'center', justifyContent: 'center' },
+  swatchActive:{ borderWidth: 3, borderColor: '#fff' },
+  swatchAutoTxt:{ color: C.dim, fontSize: 9, fontWeight: '700' },
 
   stepRow:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
   stepBtn:     { width: 48, height: 40, backgroundColor: C.accent, borderRadius: 6,
