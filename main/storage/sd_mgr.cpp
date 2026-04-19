@@ -16,6 +16,8 @@
 #include "sdmmc_cmd.h"
 #include "driver/sdmmc_host.h"
 #include "sd_pwr_ctrl_by_on_chip_ldo.h"
+#include "esp_heap_caps.h"
+#include "esp_timer.h"
 
 #include <sys/stat.h>
 #include <dirent.h>
@@ -66,7 +68,12 @@ bool sd_mgr_init(void)
 
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     host.slot = SDMMC_HOST_SLOT_0;              // Waveshare board TF slot is on Slot 0
-    host.max_freq_khz = SDMMC_FREQ_HIGHSPEED;
+    // 2026-04-19: back to 52 MHz now that DMA reserve is 128 KB (previously
+    // 96 KB starved the SDMMC streaming pipeline). At 40 MHz effective
+    // write throughput stuck at ~500 KB/s, limiting 1080p recording to
+    // ~18 fps with 28 KB frames. 52 MHz gives 30 % more clock headroom
+    // — if the SN64G negotiates it, write speed should lift proportionally.
+    host.max_freq_khz = SDMMC_FREQ_52M;
 
     // Power the SD card via on-chip LDO (channel 4)
     sd_pwr_ctrl_ldo_config_t ldo_config = {
@@ -114,7 +121,10 @@ bool sd_mgr_init(void)
 
     s_mounted = true;
     sdmmc_card_print_info(stdout, s_card);
-    log_i("SD card mounted successfully");
+    log_i("SD mounted: %d-bit bus, %lu kHz (requested %d kHz)",
+          (int)slot.width,
+          (unsigned long)s_card->max_freq_khz,
+          host.max_freq_khz);
 
     // Create default directories (ignore errors if they already exist)
     sd_make_dir("/sessions");
@@ -130,6 +140,60 @@ bool sd_mgr_init(void)
 bool sd_mgr_available(void)
 {
     return s_mounted;
+}
+
+// ---------------------------------------------------------------------------
+// sd_mgr_benchmark -- one-shot write throughput probe
+// ---------------------------------------------------------------------------
+void sd_mgr_benchmark(void)
+{
+    if (!s_mounted) { log_w("benchmark: SD not mounted"); return; }
+
+    const size_t CHUNK = 16 * 1024;           // same as AVI writer
+    const size_t TOTAL = 10 * 1024 * 1024;    // 10 MB
+    const size_t N     = TOTAL / CHUNK;
+
+    // Match AVI writer path: 128-byte aligned, internal DMA-capable RAM.
+    uint8_t *buf = (uint8_t *)heap_caps_aligned_alloc(
+        128, CHUNK, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    if (!buf) {
+        log_w("benchmark: alloc %u B DMA failed — trying plain internal", (unsigned)CHUNK);
+        buf = (uint8_t *)heap_caps_malloc(CHUNK, MALLOC_CAP_INTERNAL);
+        if (!buf) { log_e("benchmark: alloc failed, skipping"); return; }
+    }
+    memset(buf, 0xAA, CHUNK);
+
+    const char *path = SD_MOUNT_POINT "/_benchmark.bin";
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        log_e("benchmark: fopen(%s) failed: %s", path, strerror(errno));
+        heap_caps_free(buf);
+        return;
+    }
+
+    int64_t t0 = esp_timer_get_time();
+    size_t written = 0;
+    for (size_t i = 0; i < N; ++i) {
+        size_t w = fwrite(buf, 1, CHUNK, f);
+        if (w != CHUNK) {
+            log_w("benchmark: short write at chunk %u (%u/%u)", (unsigned)i, (unsigned)w, (unsigned)CHUNK);
+            break;
+        }
+        written += w;
+    }
+    fflush(f);
+    fsync(fileno(f));
+    int64_t t1 = esp_timer_get_time();
+    fclose(f);
+
+    double seconds = (t1 - t0) / 1000000.0;
+    double mbps    = (written / 1048576.0) / seconds;
+    log_i("SD benchmark: %.2f MB/s (%u×%u KB = %u MB in %.2f s)",
+          mbps, (unsigned)(written / CHUNK), (unsigned)(CHUNK / 1024),
+          (unsigned)(written / 1048576), seconds);
+
+    remove(path);
+    heap_caps_free(buf);
 }
 
 // ---------------------------------------------------------------------------

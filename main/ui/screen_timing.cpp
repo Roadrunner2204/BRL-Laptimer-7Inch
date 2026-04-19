@@ -658,11 +658,13 @@ lv_obj_t *timing_screen_build() {
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, cb_back, LV_EVENT_CLICKED, nullptr);
 
-    // GPS satellites — left of center
+    // GPS satellites — moved right (2026-04-18 cracked-display workaround,
+    // rec button needs the near-left slot so it's inside the working
+    // top-left triangle; see project_cracked_display_ui_workaround).
     tw.sb_gps_lbl = lv_label_create(sb);
     lv_label_set_text(tw.sb_gps_lbl, LV_SYMBOL_GPS " 0");
     brl_style_label(tw.sb_gps_lbl, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
-    lv_obj_set_pos(tw.sb_gps_lbl, 130, 12);
+    lv_obj_set_pos(tw.sb_gps_lbl, 240, 12);
 
     // Track name — centered
     tw.track_name_lbl = lv_label_create(sb);
@@ -676,9 +678,14 @@ lv_obj_t *timing_screen_build() {
     // shared sb.rec refresh in app.cpp (which reads video_get_state() +
     // video_camera_connected() every refresh) so the button reflects
     // state changes from auto-start + grace-period auto-stop too.
+    // Position moved from x=750 to x=100 on 2026-04-18 — cracked-display
+    // workaround (diagonal crack bottom-left→top-right, dead zone is the
+    // bottom-right triangle; x=750 sits too close to the crack). The
+    // button is still a single toggle: same position for start and stop,
+    // only the label/colour swap via sb.rec refresh in app.cpp.
     tw.rec_btn = lv_button_create(sb);
     lv_obj_set_size(tw.rec_btn, 130, 30);
-    lv_obj_set_pos(tw.rec_btn, 750, 5);
+    lv_obj_set_pos(tw.rec_btn, 100, 5);
     brl_style_btn(tw.rec_btn, BRL_CLR_SURFACE2);
     tw.rec_lbl = lv_label_create(tw.rec_btn);
     lv_label_set_text(tw.rec_lbl, LV_SYMBOL_IMAGE " CAM");

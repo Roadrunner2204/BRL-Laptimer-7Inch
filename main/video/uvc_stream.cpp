@@ -10,10 +10,6 @@
 #include "../compat.h"
 
 #include "usb/usb_host.h"
-#include "esp_log.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/semphr.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -48,6 +44,19 @@ static int s_best_alt = 0;
 static SemaphoreHandle_t s_xfer_done = nullptr;   // used for control transfers
 static SemaphoreHandle_t s_stream_ready = nullptr; // signals when stream_task has allocated transfers
 static QueueHandle_t     s_iso_done_q = nullptr;  // usb_transfer_t* of completed ISO xfers
+static TaskHandle_t      s_stream_task_hdl = nullptr;  // stream_task handle — for exit-wait in stop
+static volatile bool     s_stream_task_alive = false;  // set by stream_task, cleared on its exit
+
+// DMA-alloc guarantee for USB EP claim. Between boot and first record,
+// WiFi/BLE/LVGL transient allocations fragment the internal-DMA pool,
+// leaving gaps too small for the ISO EP handle alloc. By holding 16 KB
+// of internal-DMA captive from boot and freeing it right before each
+// alt=6 claim, we guarantee one contiguous block is always available.
+// After the claim succeeds we re-allocate; failure here is non-fatal
+// (the claim is already done, we just lose the guarantee for the next
+// start cycle until a future window).
+#define USB_CLAIM_RESERVE_SIZE  (16 * 1024)
+static void *s_usb_claim_reserve = nullptr;
 
 // N=2 inflight transfers. N=4 crashed because it starved I2S DMA.
 // N=1 capped fps at 5-10 even at 720p because the stack couldn't
@@ -61,13 +70,19 @@ static QueueHandle_t     s_iso_done_q = nullptr;  // usb_transfer_t* of complete
 #define ISO_PKTS_PER_XFER   8
 
 // Largest USB ISO "mult" we're willing to negotiate.
-// **MEASURED 2026-04-16**: this camera has a fixed ~3.5 Mbit/s MJPEG
-// encoder cap. At mult=1 it delivers ~8 fps × 55 KB. At mult=2 it
-// delivers ~4 fps × 120 KB (higher quality, same bitrate). mult=3
-// would probably be the same pattern. Since fps matters more than
-// per-frame quality for a laptimer, mult=1 is the right choice on this
-// hardware. Left as a #define so a higher-end camera swap can flip it.
+// mult>1 starves I2S mic DMA (see feedback_uvc_camera_mult_cap).
 #define MAX_ISO_MULT        1
+
+// Maximum per-microframe bytes we'll negotiate.
+// 944 = alt=6 = 7.5 MB/s — the highest mult=1 alt the ELP AR0234
+// advertises. Counter-intuitive observation 2026-04-19: lowering this
+// to 640 (alt=4) actually made per-frame sizes BIGGER. Some MJPEG
+// cameras see the negotiated alt bandwidth and adapt their Q-factor:
+// alt=6 with 7.5 MB/s available → camera encodes at lower quality
+// (smaller frames) because "bandwidth is plenty"; alt=4 with 5 MB/s →
+// camera treats it as tight and pushes bigger frames. We want smaller
+// frames (SD is the real cap, not USB), so keep at 944.
+#define MAX_ISO_BASE_MPS    640
 
 // USB ISO transfers — allocated ONCE at first successful start and reused
 // across all subsequent start/stop cycles. The first allocation uses the
@@ -250,6 +265,7 @@ static void process_uvc_payload(const uint8_t *data, int len) {
 // ---------------------------------------------------------------------------
 static void stream_task(void *arg) {
     (void)arg;
+    s_stream_task_alive = true;
     int base_mps = s_ep_mps & 0x7FF;
     if (base_mps == 0) base_mps = 512;
     int mult = ((s_ep_mps >> 11) & 0x03) + 1;
@@ -363,6 +379,8 @@ static void stream_task(void *arg) {
     }
 
     log_i("Stream exit: %lu frames delivered", (unsigned long)s_frames_delivered);
+    s_stream_task_hdl = nullptr;
+    s_stream_task_alive = false;
     vTaskDelete(nullptr);
 }
 
@@ -409,10 +427,12 @@ static void client_event_cb(const usb_host_client_event_msg_t *ev, void *arg) {
             }
 
             // MJPEG frame — whitelist only the resolutions the product uses.
-            // Recording targets: 1920x1080, 1440x1080, 1280x960, 1280x720.
-            // Preview:            320x240. Everything else the camera
-            // advertises (1024x768, 800x600, 640x480) is dropped so the UI
-            // picker stays clean and the user can't land on a broken res.
+            // Recording targets: 1920x1080, 1440x1080, 1280x960, 1280x720
+            // — all 16:9/4:3 matching the 16:9 Android player. 320x240
+            // stays whitelisted purely for the internal settings-screen
+            // preview and is hidden from the user-facing dropdown in
+            // app.cpp. The ELP AR0234 native 1920x1200 (16:10) is
+            // deliberately dropped to avoid crop/letterbox in playback.
             if (bLen >= 26 && p[1] == 0x24 && p[2] == 0x07 && mjpeg_fmt > 0
                 && s_n_resolutions < UVC_MAX_RESOLUTIONS) {
                 uint16_t w = p[5] | (p[6] << 8);
@@ -454,9 +474,11 @@ static void client_event_cb(const usb_host_client_event_msg_t *ev, void *arg) {
                           cur_alt, ep, base_mps, mult, base_mps * mult,
                           (unsigned long)band);
                 }
-                if ((ep & 0x80) && (attr & 0x03) == 0x01 && mult <= MAX_ISO_MULT) {
-                    // Pick highest total per-µframe bandwidth (base_mps * mult).
-                    // mult>1 raises current draw — capped at MAX_ISO_MULT.
+                if ((ep & 0x80) && (attr & 0x03) == 0x01 && mult <= MAX_ISO_MULT
+                    && base_mps <= MAX_ISO_BASE_MPS) {
+                    // Pick highest total per-µframe bandwidth (base_mps * mult),
+                    // capped at MAX_ISO_BASE_MPS so we don't let the camera
+                    // emit frames bigger than the SD write path can swallow.
                     uint32_t this_band = (uint32_t)base_mps * mult;
                     uint32_t best_band = (uint32_t)best_mps *
                                          (((s_ep_mps >> 11) & 0x03) + 1);
@@ -530,6 +552,50 @@ void brl_uvc_init(void) {
         while (true) usb_host_client_handle_events(s_client_hdl, portMAX_DELAY);
     }, "usb_evt", 4096, nullptr, 3, nullptr, 0);
 
+    // Pre-allocate the persistent ISO xfer buffers NOW while the internal-DMA
+    // pool is still fresh. Deferring to record-start means mic I2S DMA,
+    // NimBLE, LVGL widgets and USB enumeration have already fragmented the
+    // 98 KB reserve below the ~7.5 KB contiguous block one ISO transfer
+    // needs (symptom: xfer alloc "ESP_ERR_NO_MEM (free DMA=960)" plus
+    // "USBH: EP Alloc error" on interface claim). Worst-case size is the
+    // real case: every camera we support picks alt with mult=1 mps=944.
+    // If a future camera picks a smaller alt, the extra bytes just sit
+    // unused in the pre-allocated buffer — harmless.
+    if (!s_iso_done_q) {
+        s_iso_done_q = xQueueCreate(ISO_XFERS_INFLIGHT * 2, sizeof(usb_transfer_t *));
+    }
+    const int pre_xfer_size = MAX_ISO_BASE_MPS * ISO_PKTS_PER_XFER;  // 944 × 8 = 7552
+    for (int i = 0; i < ISO_XFERS_INFLIGHT; i++) {
+        esp_err_t xerr = usb_host_transfer_alloc(pre_xfer_size, ISO_PKTS_PER_XFER, &s_xfers[i]);
+        if (xerr != ESP_OK) {
+            log_e("Pre-alloc xfer %d failed: %s (free DMA=%u) — will retry at record-start",
+                  i, esp_err_to_name(xerr),
+                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+            for (int k = 0; k < i; k++) {
+                if (s_xfers[k]) { usb_host_transfer_free(s_xfers[k]); s_xfers[k] = nullptr; }
+            }
+            s_xfers_allocated = false;
+            goto xfer_prealloc_done;
+        }
+    }
+    s_xfers_allocated = true;
+    log_i("ISO xfers pre-alloc: %d × %d B (free DMA=%u)",
+          ISO_XFERS_INFLIGHT, pre_xfer_size,
+          (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+xfer_prealloc_done:
+
+    // Reserve a contiguous chunk of internal DMA to hand back at claim
+    // time — see s_usb_claim_reserve declaration above for why.
+    if (!s_usb_claim_reserve) {
+        s_usb_claim_reserve = heap_caps_malloc(USB_CLAIM_RESERVE_SIZE,
+                                                MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+        if (s_usb_claim_reserve) {
+            log_i("USB claim reserve: %u B @ %p", USB_CLAIM_RESERVE_SIZE, s_usb_claim_reserve);
+        } else {
+            log_w("USB claim reserve alloc failed — EP claim may hit NO_MEM later");
+        }
+    }
+
     s_usb_host_installed = true;
     log_i("USB Host + UVC initialized (free DMA=%u)",
           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
@@ -551,9 +617,13 @@ void brl_uvc_set_resolution(int idx) {
 }
 
 bool brl_uvc_start(uvc_frame_cb_t cb) {
+    uint32_t t0 = millis();
+    #define UTL(fmt, ...) log_i("[uvc +%4lu ms] " fmt, (unsigned long)(millis() - t0), ##__VA_ARGS__)
+
     if (!s_camera_connected || !s_ep_addr || s_n_resolutions == 0) {
         log_e("Cannot start"); return false;
     }
+    UTL("enter");
 
     const UvcResolution &r = s_resolutions[s_selected_res];
     s_frame_cb = cb; s_active_w = r.width; s_active_h = r.height; s_active_fps = r.fps;
@@ -561,6 +631,7 @@ bool brl_uvc_start(uvc_frame_cb_t cb) {
     if (!s_xfer_done) s_xfer_done = xSemaphoreCreateBinary();
 
     // Step 1: Claim interface at alt 0 (zero bandwidth) for negotiation
+    UTL("claim(alt=0) begin");
     esp_err_t claim_err = usb_host_interface_claim(s_client_hdl, s_dev_hdl, 1, 0);
     if (claim_err != ESP_OK) {
         // Interface might still be claimed — release and retry
@@ -572,25 +643,63 @@ bool brl_uvc_start(uvc_frame_cb_t cb) {
             return false;
         }
     }
+    UTL("claim(alt=0) OK");
     if (!send_set_interface(1, 0)) log_w("SET_INTERFACE(1,0) failed");
     vTaskDelay(pdMS_TO_TICKS(50));
+    UTL("SET_INTERFACE(alt=0) done");
 
     // Step 2: UVC Probe/Commit negotiation
+    UTL("uvc_negotiate begin");
     if (!uvc_negotiate(r)) {
         log_w("UVC negotiate failed — retrying after delay");
         vTaskDelay(pdMS_TO_TICKS(200));
         if (!uvc_negotiate(r)) log_w("UVC negotiate retry failed — trying anyway");
     }
+    UTL("uvc_negotiate done");
 
     // Step 3: Switch to high-bandwidth alt (THIS makes camera stream!)
+    // Free the boot-time DMA reserve RIGHT BEFORE the claim so the USB
+    // EP-handle alloc has a guaranteed-contiguous internal-DMA block
+    // regardless of how WiFi/BLE/LVGL fragmented the pool during idle.
+    // Re-alloc after success so the next record-start has the same
+    // guarantee. Retry 2x with delay in case the reserve still isn't
+    // enough on a particularly bad fragmentation day.
     usb_host_interface_release(s_client_hdl, s_dev_hdl, 1);
     vTaskDelay(pdMS_TO_TICKS(50));
-    usb_host_interface_claim(s_client_hdl, s_dev_hdl, 1, s_best_alt);
+    if (s_usb_claim_reserve) {
+        heap_caps_free(s_usb_claim_reserve);
+        s_usb_claim_reserve = nullptr;
+    }
+    UTL("claim(alt=%d) begin", s_best_alt);
+    esp_err_t alt_claim_err = usb_host_interface_claim(s_client_hdl, s_dev_hdl, 1, s_best_alt);
+    if (alt_claim_err != ESP_OK) {
+        log_w("claim(alt %d) attempt 1 = %s — release + retry after 300 ms",
+              s_best_alt, esp_err_to_name(alt_claim_err));
+        usb_host_interface_release(s_client_hdl, s_dev_hdl, 1);
+        vTaskDelay(pdMS_TO_TICKS(300));
+        alt_claim_err = usb_host_interface_claim(s_client_hdl, s_dev_hdl, 1, s_best_alt);
+    }
+    if (alt_claim_err != ESP_OK) {
+        log_e("claim(alt %d) failed: %s — aborting start",
+              s_best_alt, esp_err_to_name(alt_claim_err));
+        // Restore reserve so the next attempt benefits from it again
+        s_usb_claim_reserve = heap_caps_malloc(USB_CLAIM_RESERVE_SIZE,
+                                                MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+        return false;
+    }
+    // Claim succeeded. Re-allocation of the reserve is deferred to
+    // brl_uvc_stop(), because right now DMA is tight (claim + ISO
+    // submissions + SDMMC DMA descriptors all just fired up). By
+    // stop-time the recording's transient DMA consumers are gone and
+    // the reserve slot is free again.
+    UTL("claim(alt=%d) OK", s_best_alt);
     if (!send_set_interface(1, s_best_alt)) {
         log_e("SET_INTERFACE(1,%d) FAILED", s_best_alt);
+        usb_host_interface_release(s_client_hdl, s_dev_hdl, 1);
         return false;
     }
     log_i("SET_INTERFACE(1,%d) OK — camera should be streaming now", s_best_alt);
+    UTL("SET_INTERFACE(alt=%d) done", s_best_alt);
 
     // Camera needs ~200ms after SET_INTERFACE before producing valid frames
     vTaskDelay(pdMS_TO_TICKS(300));
@@ -601,8 +710,30 @@ bool brl_uvc_start(uvc_frame_cb_t cb) {
     // Drain any stale signal from a prior aborted run.
     xSemaphoreTake(s_stream_ready, 0);
 
+    // Hard guard: refuse to start if a previous stream_task is still alive.
+    // Two stream_tasks submitting the same persistent s_xfers[] corrupts the
+    // USB host controller's channel bookkeeping (symptom: EP Alloc NO_MEM
+    // after 2-3 record cycles, fps degrades 54→17→0 as channels leak).
+    if (s_stream_task_alive) {
+        log_w("Prev stream_task still alive — waiting up to 2 s for exit");
+        for (int i = 0; i < 100 && s_stream_task_alive; i++) vTaskDelay(pdMS_TO_TICKS(20));
+        if (s_stream_task_alive) {
+            log_e("Prev stream_task did not exit — aborting start");
+            usb_host_interface_release(s_client_hdl, s_dev_hdl, 1);
+            return false;
+        }
+    }
+
     s_streaming = true;
-    xTaskCreatePinnedToCore(stream_task, "uvc_read", 6144, nullptr, 4, nullptr, 0);
+    BaseType_t tc = xTaskCreatePinnedToCore(
+        stream_task, "uvc_read", 6144, nullptr, 4, &s_stream_task_hdl, 0);
+    if (tc != pdPASS) {
+        log_e("xTaskCreate(stream_task) FAILED — aborting start");
+        s_streaming = false;
+        s_stream_task_hdl = nullptr;
+        usb_host_interface_release(s_client_hdl, s_dev_hdl, 1);
+        return false;
+    }
 
     // Wait for stream_task to either succeed or fail allocating transfers.
     // stream_task signals the semaphore in BOTH cases — on failure it sets
@@ -623,12 +754,23 @@ bool brl_uvc_start(uvc_frame_cb_t cb) {
     }
 
     log_i("Streaming: %dx%d@%d EP=0x%02X alt=%d", s_active_w, s_active_h, s_active_fps, s_ep_addr, s_best_alt);
+    UTL("stream ready, returning");
+    #undef UTL
     return true;
 }
 
 void brl_uvc_stop(void) {
     s_streaming = false; s_frame_cb = nullptr;
-    vTaskDelay(pdMS_TO_TICKS(200));  // wait for stream_task to exit
+    // Wait for stream_task to actually exit (drain loop can take ~1 s per
+    // pending ISO transfer × 2 inflight + vTaskDelete settle time). If we
+    // return early, the next brl_uvc_start() would spawn a second task that
+    // shares s_xfers[] with the still-running old one → USB controller
+    // channel leak → EP Alloc NO_MEM after a few cycles.
+    for (int i = 0; i < 150 && s_stream_task_alive; i++) vTaskDelay(pdMS_TO_TICKS(20));
+    if (s_stream_task_alive) {
+        log_w("stream_task did not exit within 3 s — forcing handle clear");
+        s_stream_task_alive = false;
+    }
 
     if (s_dev_hdl && s_client_hdl) {
         // Step 1: Switch back to zero-bandwidth alt setting (stops camera)
@@ -642,6 +784,21 @@ void brl_uvc_stop(void) {
         // Step 4: Give camera time to settle back to idle
         vTaskDelay(pdMS_TO_TICKS(200));
         usb_host_interface_release(s_client_hdl, s_dev_hdl, 1);
+    }
+
+    // Re-establish the DMA reserve for the NEXT start. By now the
+    // session's transient DMA consumers (ISO submissions, SDMMC
+    // descriptors, etc.) are gone and we can grab a contiguous 16 KB
+    // block again.
+    if (!s_usb_claim_reserve) {
+        s_usb_claim_reserve = heap_caps_malloc(USB_CLAIM_RESERVE_SIZE,
+                                                MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+        if (s_usb_claim_reserve) {
+            log_i("USB claim reserve restored for next start");
+        } else {
+            log_w("USB claim reserve re-alloc failed even after stop — "
+                  "next start uses fallback retry");
+        }
     }
     log_i("Stopped");
 }

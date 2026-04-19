@@ -141,6 +141,7 @@ void app_main(void)
     ESP_LOGI(TAG, "sd_mgr_init");
     sd_mgr_init();
     g_state.sd_available = sd_mgr_available();
+    sd_mgr_benchmark();
 
     /* ── Load tracks from SD ─────────────────────────────────── */
     ESP_LOGI(TAG, "session_store_load");
@@ -210,6 +211,13 @@ void app_main(void)
     );
 
     ESP_LOGI(TAG, "Setup complete — logic on Core 0, LVGL on Core 1 (BSP)");
+
+    /* Diagnostic: one-shot SD benchmark while USB-ISO stream is active.
+     * Kept for on-demand re-testing. Disabled by default — triggers
+     * 30 s Task-WDT on CPU 0 because SDMMC DMA-descriptor allocs stall
+     * under USB-ISO load. Already proved USB<->SD contention (0.32 MB/s
+     * vs 9.29 MB/s idle). Re-enable only when explicitly re-measuring. */
+    // video_run_sd_under_load_benchmark();
 
     /* Note: Unlike Arduino loop(), the BSP's esp_lvgl_port handles the
      * LVGL timer in its own task. app_main() can return here. The logic

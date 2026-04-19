@@ -22,15 +22,16 @@
 static const char *TAG = "mic";
 
 // Config ----------------------------------------------------------------------
-#define MIC_SAMPLE_RATE   22050         // Hz
+// Mono 16 kHz 16-bit = 32 KB/s SD bandwidth (vs 88 KB/s at stereo 22.05 kHz).
+// The reclaimed 56 KB/s goes to video → ~8 more fps at 11 KB frames.
+// Sound quality is still fine for in-car narration/ambient recording.
+#define MIC_SAMPLE_RATE   16000         // Hz
 #define MIC_BITS          16
-#define MIC_CHANNELS      2             // ES7210 delivers stereo (left+right mic)
+#define MIC_CHANNELS      1             // Mono (only MIC1 enabled on ES7210)
 #define MIC_DMA_FRAME     256           // I2S DMA descriptor size (frames)
 
-// Pick a chunk size that is an integer multiple of the DMA frame. Otherwise
-// every read straddles a descriptor boundary and we hear a "tick" at ~1/chunk.
-// 2048 samples × 2 channels × 2 bytes = 8192 bytes = 16 DMA descriptors per read.
-// At 22050 Hz that's ~93 ms per chunk — close to 100 ms, well aligned.
+// 2048 samples × 1 channel × 2 bytes = 4096 bytes per chunk.
+// At 16 kHz that's 128 ms per chunk — same feel as the old stereo config.
 static const uint32_t CHUNK_SAMPLES = 2048;
 static const uint32_t CHUNK_BYTES   = CHUNK_SAMPLES * (MIC_BITS / 8) * MIC_CHANNELS;
 
@@ -48,26 +49,19 @@ static int16_t *s_chunk_buf = nullptr;
 static void mic_task(void *arg)
 {
     (void)arg;
-    log_i("Mic task started (chunk %lu samples = %lu bytes)",
-          (unsigned long)CHUNK_SAMPLES, (unsigned long)CHUNK_BYTES);
-
     while (s_running) {
         if (!s_mic_dev || !s_chunk_buf) {
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
-
         esp_err_t err = esp_codec_dev_read(s_mic_dev, s_chunk_buf, CHUNK_BYTES);
         if (err != ESP_OK) {
             log_w("codec read err: %s", esp_err_to_name(err));
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
-
         if (s_cb) s_cb(s_chunk_buf, CHUNK_SAMPLES);
     }
-
-    log_i("Mic task exit");
     s_task = nullptr;
     vTaskDelete(nullptr);
 }
@@ -114,6 +108,26 @@ bool mic_init(void)
     // Set gain to a reasonable default (0-100; 40 = moderate)
     esp_codec_dev_set_in_gain(s_mic_dev, 40.0f);
 
+    // Open the codec NOW while internal DMA is still fresh. Deferring to
+    // mic_start() meant esp_codec_dev_open was called at record time,
+    // where it internally triggers i2s_channel_reconfig_std_slot; by then
+    // the DMA reserve is fragmented below what the reconfig needs and
+    // the alloc fails → Store-access fault on the half-reconfigured I2S
+    // channel.
+    esp_codec_dev_sample_info_t fs = {};
+    fs.sample_rate     = MIC_SAMPLE_RATE;
+    fs.channel         = MIC_CHANNELS;
+    fs.bits_per_sample = MIC_BITS;
+    fs.channel_mask    = 0;
+    esp_err_t oerr = esp_codec_dev_open(s_mic_dev, &fs);
+    if (oerr != ESP_OK) {
+        log_e("codec open at boot: %s — mic disabled for this session",
+              esp_err_to_name(oerr));
+        s_init_failed = true;
+        return false;
+    }
+    s_codec_open = true;
+
     s_initialized = true;
     log_i("Mic initialized: %d Hz, %d-bit, %d ch, chunk=%lu samples (%lu B)",
           MIC_SAMPLE_RATE, MIC_BITS, MIC_CHANNELS,
@@ -126,28 +140,19 @@ bool mic_start(mic_chunk_cb_t cb)
     if (!s_initialized && !mic_init()) return false;
     if (s_running) return true;
 
-    // Open the codec device exactly once and keep it open across start/stop
-    // cycles. esp_codec_dev_open() internally calls i2s_channel_disable() as
-    // a defensive safety step — after a close() that warning gets logged for
-    // the already-disabled channel. Keeping it open silences that cleanly and
-    // also saves ~50 ms of codec re-init on every recording start.
-    if (!s_codec_open) {
-        esp_codec_dev_sample_info_t fs = {};
-        fs.sample_rate     = MIC_SAMPLE_RATE;
-        fs.channel         = MIC_CHANNELS;
-        fs.bits_per_sample = MIC_BITS;
-        fs.channel_mask    = 0;
-        esp_err_t err = esp_codec_dev_open(s_mic_dev, &fs);
-        if (err != ESP_OK) {
-            log_e("codec open: %s", esp_err_to_name(err));
-            return false;
-        }
-        s_codec_open = true;
-    }
-
     s_cb = cb;
     s_running = true;
-    xTaskCreatePinnedToCore(mic_task, "mic", 4096, nullptr, 5, &s_task, 0);
+    // 3 KB stack is the sweet spot: smaller (2 KB) caused subtle stack
+    // pressure that regressed USB EP-alloc reliability on first start;
+    // bigger (4 KB) failed more often on rec 2+ heap fragmentation.
+    BaseType_t tc = xTaskCreatePinnedToCore(mic_task, "mic", 3072, nullptr,
+                                             5, &s_task, 0);
+    if (tc != pdPASS) {
+        log_e("xTaskCreate(mic_task) FAILED — no audio this session");
+        s_running = false;
+        s_cb = nullptr;
+        return false;
+    }
     log_i("Mic capture started");
     return true;
 }
@@ -156,9 +161,6 @@ void mic_stop(void)
 {
     if (!s_running) return;
     s_running = false;
-    // Give the task a moment to exit cleanly. We do NOT call
-    // esp_codec_dev_close() here — the codec stays open across
-    // record sessions to avoid I2S channel re-init warnings.
     for (int i = 0; i < 50 && s_task; i++) vTaskDelay(pdMS_TO_TICKS(20));
     s_cb = nullptr;
     log_i("Mic capture stopped");

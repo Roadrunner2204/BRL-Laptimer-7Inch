@@ -23,6 +23,7 @@ extern "C" {
 typedef enum {
     VIDEO_IDLE = 0,
     VIDEO_PREVIEW,
+    VIDEO_ARMED,        ///< camera streaming, warmed up, AE/AWB stable, frames discarded — flip to RECORDING is ~350 ms
     VIDEO_RECORDING,
     VIDEO_ERROR,
 } VideoState;
@@ -56,6 +57,20 @@ void video_get_current_filename_stem(char *buf, size_t len);
 
 /// Stop recording and finalize AVI file.
 void video_stop_recording(void);
+
+/// Pre-warm the camera so a later video_start_recording() call finishes in
+/// ~350 ms (AVI open only) instead of ~2.6 s (UVC bring-up + camera AE/AWB
+/// convergence). Use BEFORE an expected auto-record trigger (e.g. when the
+/// user enters the track, when auto_record is armed in UI). Idempotent —
+/// calling on an already-armed or recording system is a no-op. After arm,
+/// state is VIDEO_ARMED; USB and camera keep streaming but frames are
+/// discarded until recording actually starts.
+void video_arm(void);
+
+/// Tear down an armed camera stream (VIDEO_ARMED → VIDEO_IDLE). Call when
+/// leaving the track / cancelling a session / before going into long idle.
+/// No-op if currently recording (use video_stop_recording instead).
+void video_disarm(void);
 
 /// Start camera preview (for settings screen).
 void video_start_preview(void);
@@ -108,6 +123,11 @@ uint32_t video_get_rec_size_bytes(void);
 /// overlay → HW encode → AVI. Only use this for on-device overlay debugging.
 void video_set_passthrough(bool enabled);
 bool video_get_passthrough(void);
+
+/// Diagnostic: run SD benchmark while UVC stream is actively delivering
+/// ISO transfers. Compared with the boot-time idle benchmark, this isolates
+/// USB→SDMMC DMA contention. Safe to call once per boot after video_init().
+void video_run_sd_under_load_benchmark(void);
 
 #ifdef __cplusplus
 }

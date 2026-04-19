@@ -199,6 +199,9 @@ static lv_obj_t *build_sub_header(lv_obj_t *scr, const char *title,
     lv_obj_set_style_pad_all(hdr, 0, LV_STATE_DEFAULT);
     lv_obj_remove_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
 
+    // Cracked-display workaround (2026-04-18): action button moves to the
+    // LEFT half so it lands in the still-responsive touch area. Back
+    // button was already top-left — it stays.
     lv_obj_t *back = lv_button_create(hdr);
     lv_obj_set_size(back, 110, 38);
     lv_obj_set_pos(back, 6, 6);
@@ -217,7 +220,9 @@ static lv_obj_t *build_sub_header(lv_obj_t *scr, const char *title,
     if (action_btn_out && action_label) {
         lv_obj_t *abtn = lv_button_create(hdr);
         lv_obj_set_size(abtn, 140, 38);
-        lv_obj_align(abtn, LV_ALIGN_RIGHT_MID, -6, 0);
+        // Action button sits just right of the back button, still
+        // inside the working left half of the screen.
+        lv_obj_align(abtn, LV_ALIGN_LEFT_MID, 122, 0);
         brl_style_btn(abtn, BRL_CLR_ACCENT);
         lv_obj_t *al = lv_label_create(abtn);
         lv_label_set_text(al, action_label);
@@ -348,8 +353,11 @@ static void build_menu_screen(bool is_rebuild = false) {
     brl_style_label(brand, &BRL_FONT_20, BRL_CLR_ACCENT);
     lv_obj_align(brand, LV_ALIGN_CENTER, 0, 0);
 
-    // 2×2 tile grid (y=96, available h=504)
-    const int TW = 500, TH = 248, GAP = 8, X0 = 8, Y0 = 96;
+    // Cracked-display workaround (2026-04-18): stack the 4 tiles in a
+    // single left column so every tile lands in the still-responsive
+    // touch zone. Horizontal per-tile layout: icon left, labels right
+    // of the icon. Right half of the screen stays empty on purpose.
+    const int TW = 500, TH = 120, GAP = 8, X0 = 8, Y0 = 96;
     struct { const char *icon; TrKey label_key; TrKey sub_key; lv_event_cb_t cb; } tiles[4] = {
         { LV_SYMBOL_PLAY,     TR_TILE_TIMING,   TR_TILE_TIMING_SUB,   cb_tile_timing   },
         { LV_SYMBOL_GPS,      TR_TILE_TRACKS,   TR_TILE_TRACKS_SUB,   cb_tile_tracks   },
@@ -358,10 +366,9 @@ static void build_menu_screen(bool is_rebuild = false) {
     };
 
     for (int i = 0; i < 4; i++) {
-        int col = i % 2, row = i / 2;
         lv_obj_t *tile = lv_obj_create(s_scr_menu);
         lv_obj_set_size(tile, TW, TH);
-        lv_obj_set_pos(tile, X0 + col*(TW+GAP), Y0 + row*(TH+GAP));
+        lv_obj_set_pos(tile, X0, Y0 + i*(TH+GAP));
         brl_style_card(tile);
         lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_remove_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
@@ -370,19 +377,19 @@ static void build_menu_screen(bool is_rebuild = false) {
 
         lv_obj_t *ico = lv_label_create(tile);
         lv_label_set_text(ico, tiles[i].icon);
-        lv_obj_set_style_text_font(ico, &BRL_FONT_64, LV_STATE_DEFAULT);
+        lv_obj_set_style_text_font(ico, &BRL_FONT_48, LV_STATE_DEFAULT);
         lv_obj_set_style_text_color(ico, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
-        lv_obj_align(ico, LV_ALIGN_CENTER, 0, -40);
+        lv_obj_align(ico, LV_ALIGN_LEFT_MID, 20, 0);
 
         lv_obj_t *lbl = lv_label_create(tile);
         lv_label_set_text(lbl, tr(tiles[i].label_key));
         brl_style_label(lbl, &BRL_FONT_24, BRL_CLR_TEXT);
-        lv_obj_align(lbl, LV_ALIGN_BOTTOM_MID, 0, -36);
+        lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 110, -14);
 
         lv_obj_t *sub = lv_label_create(tile);
         lv_label_set_text(sub, tr(tiles[i].sub_key));
         brl_style_label(sub, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
-        lv_obj_align(sub, LV_ALIGN_BOTTOM_MID, 0, -12);
+        lv_obj_align(sub, LV_ALIGN_LEFT_MID, 110, 14);
     }
 
     if (!is_rebuild) {
@@ -1505,26 +1512,30 @@ static lv_obj_t *make_setting_row(lv_obj_t *parent, int /*y*/, int h,
     brl_style_card(row);
     lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
+    // Cracked-display workaround (2026-04-18): labels go RIGHT, the
+    // interactive control container goes LEFT. The returned container
+    // (historically named "right") is now anchored to the row's left
+    // edge — name kept to avoid cascading renames at call sites.
     lv_obj_t *ico = lv_label_create(row);
     lv_label_set_text(ico, icon);
     brl_style_label(ico, &BRL_FONT_24, BRL_CLR_ACCENT);
-    lv_obj_align(ico, LV_ALIGN_LEFT_MID, 0, subtitle ? -8 : 0);
+    lv_obj_align(ico, LV_ALIGN_RIGHT_MID, 0, subtitle ? -8 : 0);
 
     lv_obj_t *tit = lv_label_create(row);
     lv_label_set_text(tit, title);
     brl_style_label(tit, &BRL_FONT_20, BRL_CLR_TEXT);
-    lv_obj_align(tit, LV_ALIGN_LEFT_MID, 36, subtitle ? -8 : 0);
+    lv_obj_align(tit, LV_ALIGN_RIGHT_MID, -36, subtitle ? -8 : 0);
 
     if (subtitle) {
         lv_obj_t *sub = lv_label_create(row);
         lv_label_set_text(sub, subtitle);
         brl_style_label(sub, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
-        lv_obj_align(sub, LV_ALIGN_LEFT_MID, 36, 12);
+        lv_obj_align(sub, LV_ALIGN_RIGHT_MID, -36, 12);
     }
 
     lv_obj_t *right = lv_obj_create(row);
     lv_obj_set_size(right, 420, h - 16);
-    lv_obj_align(right, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_align(right, LV_ALIGN_LEFT_MID, 0, 0);
     brl_style_transparent(right);
     lv_obj_remove_flag(right, LV_OBJ_FLAG_SCROLLABLE);
     return right;
@@ -2420,6 +2431,12 @@ static void open_preview_screen() {
 // ---------------------------------------------------------------------------
 static lv_obj_t *s_vset_quality_lbl = nullptr;
 
+// Maps user-visible dropdown index → internal resolution index.
+// 320x240 is whitelisted for the system preview but hidden from the
+// user-facing picker, so the UI index diverges from the internal index.
+static int  s_vset_vis_to_real[8] = {0};
+static int  s_vset_n_visible = 0;
+
 static void open_video_settings_screen() {
     lv_obj_t *scr = make_sub_screen("Video Einstellungen",
         [](lv_event_t* /*e*/){ open_settings_screen(); });
@@ -2440,27 +2457,41 @@ static void open_video_settings_screen() {
         int cur = video_get_resolution_index();
         if (cur < 0 || cur >= n) cur = (n > 0) ? n - 1 : 0;
 
-        if (n == 0) {
+        // Hide 320x240 from the picker — it's system-preview only.
+        s_vset_n_visible = 0;
+        for (int i = 0; i < n && s_vset_n_visible < MAX_RES; i++) {
+            if (resolutions[i].width == 320 && resolutions[i].height == 240) continue;
+            s_vset_vis_to_real[s_vset_n_visible++] = i;
+        }
+
+        if (s_vset_n_visible == 0) {
             lv_obj_t *lbl = lv_label_create(r);
             lv_label_set_text(lbl, "Keine Kamera");
             brl_style_label(lbl, &BRL_FONT_16, BRL_CLR_DANGER);
             lv_obj_align(lbl, LV_ALIGN_RIGHT_MID, 0, 0);
         } else {
-            // Build dropdown options
+            // Current real index → visible dropdown index
+            int vis_cur = 0;
+            for (int i = 0; i < s_vset_n_visible; i++) {
+                if (s_vset_vis_to_real[i] == cur) { vis_cur = i; break; }
+            }
+
+            // Build dropdown options (visible entries only)
             static char dd_opts[512];
             dd_opts[0] = '\0';
-            for (int i = 0; i < n; i++) {
+            for (int i = 0; i < s_vset_n_visible; i++) {
+                int ri = s_vset_vis_to_real[i];
                 char line[32];
                 snprintf(line, sizeof(line), "%dx%d @ %d",
-                         resolutions[i].width, resolutions[i].height,
-                         resolutions[i].fps);
+                         resolutions[ri].width, resolutions[ri].height,
+                         resolutions[ri].fps);
                 if (i > 0) strncat(dd_opts, "\n", sizeof(dd_opts) - strlen(dd_opts) - 1);
                 strncat(dd_opts, line, sizeof(dd_opts) - strlen(dd_opts) - 1);
             }
 
             lv_obj_t *dd = lv_dropdown_create(r);
             lv_dropdown_set_options(dd, dd_opts);
-            lv_dropdown_set_selected(dd, (uint32_t)cur);
+            lv_dropdown_set_selected(dd, (uint32_t)vis_cur);
             lv_obj_set_width(dd, 220);
             lv_obj_set_height(dd, 40);
             lv_obj_align(dd, LV_ALIGN_RIGHT_MID, 0, 0);
@@ -2484,7 +2515,9 @@ static void open_video_settings_screen() {
             lv_obj_add_event_cb(dd, [](lv_event_t *e) {
                 lv_obj_t *obj = (lv_obj_t*)lv_event_get_target(e);
                 uint32_t sel = lv_dropdown_get_selected(obj);
-                video_set_resolution((int)sel);
+                if ((int)sel < s_vset_n_visible) {
+                    video_set_resolution(s_vset_vis_to_real[sel]);
+                }
             }, LV_EVENT_VALUE_CHANGED, nullptr);
         }
     }
@@ -2546,6 +2579,54 @@ static void open_settings_screen() {
 
     const int RH = 56, RH2 = 68;
 
+    // Camera / Video — moved to top on 2026-04-18 (cracked-display
+    // workaround: lower rows hard to reach, user needs fast access to
+    // video settings to pick the right resolution).
+    {
+        lv_obj_t *r = make_setting_row(content, 0, RH2, LV_SYMBOL_IMAGE,
+                                        tr(TR_VIDEO_TITLE), tr(TR_VIDEO_SUB));
+        lv_obj_t *cam_status = lv_label_create(r);
+        VideoState vs = video_get_state();
+        if (vs == VIDEO_RECORDING) {
+            char rbuf[32];
+            snprintf(rbuf, sizeof(rbuf), "REC %lus", (unsigned long)video_get_rec_duration_s());
+            lv_label_set_text(cam_status, rbuf);
+            brl_style_label(cam_status, &BRL_FONT_16, BRL_CLR_DANGER);
+        } else if (video_camera_connected()) {
+            lv_label_set_text(cam_status, tr(TR_VIDEO_CONNECTED));
+            brl_style_label(cam_status, &BRL_FONT_16, lv_color_hex(0x00CC66));
+        } else {
+            lv_label_set_text(cam_status, tr(TR_VIDEO_NO_CAM));
+            brl_style_label(cam_status, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
+        }
+        lv_obj_set_width(cam_status, 140);
+        lv_obj_align(cam_status, LV_ALIGN_LEFT_MID, 0, 0);
+
+        if (vs == VIDEO_RECORDING) {
+            lv_obj_t *bstop = make_setting_btn(r, tr(TR_VIDEO_REC_STOP), BRL_CLR_DANGER, LV_ALIGN_RIGHT_MID);
+            lv_obj_add_event_cb(bstop, [](lv_event_t* /*e*/){
+                video_stop_recording();
+                open_settings_screen();
+            }, LV_EVENT_CLICKED, nullptr);
+        } else if (video_camera_connected()) {
+            lv_obj_t *brec = make_setting_btn(r, tr(TR_VIDEO_REC_START), BRL_CLR_DANGER, LV_ALIGN_RIGHT_MID, -310);
+            lv_obj_add_event_cb(brec, [](lv_event_t* /*e*/){
+                // Manual recording from settings — no session context:
+                // lap_hint=0 keeps the legacy REC_<ms>.avi naming.
+                video_start_recording(0);
+                open_settings_screen();
+            }, LV_EVENT_CLICKED, nullptr);
+            lv_obj_t *bprev = make_setting_btn(r, tr(TR_VIDEO_PREVIEW), BRL_CLR_ACCENT, LV_ALIGN_RIGHT_MID, -155);
+            lv_obj_add_event_cb(bprev, [](lv_event_t* /*e*/){
+                open_preview_screen();
+            }, LV_EVENT_CLICKED, nullptr);
+            lv_obj_t *bset = make_setting_btn(r, LV_SYMBOL_SETTINGS, BRL_CLR_SURFACE2, LV_ALIGN_RIGHT_MID);
+            lv_obj_set_width(bset, 140);
+            lv_obj_add_event_cb(bset, [](lv_event_t* /*e*/){
+                open_video_settings_screen();
+            }, LV_EVENT_CLICKED, nullptr);
+        }
+    }
     // Vehicle connection mode (OBD BLE / CAN direct)
     {
         lv_obj_t *r = make_setting_row(content, 0, RH2, LV_SYMBOL_DRIVE,
@@ -2705,52 +2786,6 @@ static void open_settings_screen() {
         lv_obj_t *bopen = make_setting_btn(r, tr(TR_CONFIGURE_BTN), BRL_CLR_ACCENT, LV_ALIGN_RIGHT_MID);
         lv_obj_add_event_cb(bopen, [](lv_event_t* /*e*/){ open_car_profiles_screen(); },
                             LV_EVENT_CLICKED, nullptr);
-    }
-    // Camera / Video
-    {
-        lv_obj_t *r = make_setting_row(content, 0, RH2, LV_SYMBOL_IMAGE,
-                                        tr(TR_VIDEO_TITLE), tr(TR_VIDEO_SUB));
-        lv_obj_t *cam_status = lv_label_create(r);
-        VideoState vs = video_get_state();
-        if (vs == VIDEO_RECORDING) {
-            char rbuf[32];
-            snprintf(rbuf, sizeof(rbuf), "REC %lus", (unsigned long)video_get_rec_duration_s());
-            lv_label_set_text(cam_status, rbuf);
-            brl_style_label(cam_status, &BRL_FONT_16, BRL_CLR_DANGER);
-        } else if (video_camera_connected()) {
-            lv_label_set_text(cam_status, tr(TR_VIDEO_CONNECTED));
-            brl_style_label(cam_status, &BRL_FONT_16, lv_color_hex(0x00CC66));
-        } else {
-            lv_label_set_text(cam_status, tr(TR_VIDEO_NO_CAM));
-            brl_style_label(cam_status, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
-        }
-        lv_obj_set_width(cam_status, 140);
-        lv_obj_align(cam_status, LV_ALIGN_LEFT_MID, 0, 0);
-
-        if (vs == VIDEO_RECORDING) {
-            lv_obj_t *bstop = make_setting_btn(r, tr(TR_VIDEO_REC_STOP), BRL_CLR_DANGER, LV_ALIGN_RIGHT_MID);
-            lv_obj_add_event_cb(bstop, [](lv_event_t* /*e*/){
-                video_stop_recording();
-                open_settings_screen();
-            }, LV_EVENT_CLICKED, nullptr);
-        } else if (video_camera_connected()) {
-            lv_obj_t *brec = make_setting_btn(r, tr(TR_VIDEO_REC_START), BRL_CLR_DANGER, LV_ALIGN_RIGHT_MID, -310);
-            lv_obj_add_event_cb(brec, [](lv_event_t* /*e*/){
-                // Manual recording from settings — no session context:
-                // lap_hint=0 keeps the legacy REC_<ms>.avi naming.
-                video_start_recording(0);
-                open_settings_screen();
-            }, LV_EVENT_CLICKED, nullptr);
-            lv_obj_t *bprev = make_setting_btn(r, tr(TR_VIDEO_PREVIEW), BRL_CLR_ACCENT, LV_ALIGN_RIGHT_MID, -155);
-            lv_obj_add_event_cb(bprev, [](lv_event_t* /*e*/){
-                open_preview_screen();
-            }, LV_EVENT_CLICKED, nullptr);
-            lv_obj_t *bset = make_setting_btn(r, LV_SYMBOL_SETTINGS, BRL_CLR_SURFACE2, LV_ALIGN_RIGHT_MID);
-            lv_obj_set_width(bset, 140);
-            lv_obj_add_event_cb(bset, [](lv_event_t* /*e*/){
-                open_video_settings_screen();
-            }, LV_EVENT_CLICKED, nullptr);
-        }
     }
     // Language
     {

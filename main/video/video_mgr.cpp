@@ -21,6 +21,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "freertos/ringbuf.h"
+#include "esp_heap_caps.h"
+#include "esp_timer.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -113,6 +116,97 @@ static TaskHandle_t s_encode_task   = nullptr;  // encode + SD write
 static volatile bool s_pipeline_run = false;
 static uint32_t s_frames_dropped = 0;
 
+// ── Passthrough async writer (2026-04-18) ──
+// Without decoupling, fwrite() in avi_writer_write_frame blocked the USB
+// stream_task for 3-30 ms per frame. With only N=2 ISO transfers in flight
+// (≈1 ms of USB buffering) the controller ran out of scheduled transfers
+// and lost microframes, capping fps far below what the camera emits.
+// Architecture: on_uvc_frame copies the MJPEG into a 2 MB PSRAM ring and
+// returns immediately. A dedicated writer task drains the ring onto the
+// SD card at its own pace. At 1080p/22 KB per frame the ring holds ~90
+// frames ≈3 s — large enough to absorb even pathological SD flush pauses.
+#define VIDEO_RING_SIZE          (2 * 1024 * 1024)
+static RingbufHandle_t  s_video_ring = nullptr;
+static TaskHandle_t     s_video_writer_task = nullptr;
+static volatile bool    s_video_writer_run = false;
+static uint32_t         s_video_ring_dropped = 0;
+
+// Per-frame scratch in DMA-capable internal RAM. The SDMMC driver needs
+// a DMA-capable source to write from; handing it a PSRAM pointer (where
+// the ring lives) made it call esp_dma_capable_malloc() per fwrite and
+// that allocation ran out when internal DMA was already tight, failing
+// every SD write. Copying each frame into this scratch first lets the
+// driver DMA straight out of it. The same pattern is used by the audio
+// writer (see audio_writer_task_fn above).
+// NOTE: The old per-frame PSRAM scratch lived here. Moved into
+// avi_writer.cpp where it's now a 48 KB internal-DMA chunk buffer
+// used with a chunked-copy fwrite. Keeping the source of fwrite in
+// internal DMA lets the SDMMC driver DMA straight out of it at full
+// bus speed instead of the slow per-4KB transient-copy fallback it
+// used for PSRAM sources. Writer task below passes the PSRAM ring
+// pointer directly to avi_writer_write_frame().
+
+static void video_writer_task_fn(void * /*arg*/)
+{
+    // Rolling stats for throughput diagnosis
+    uint32_t stats_frames = 0;
+    uint64_t stats_bytes = 0;
+    uint64_t stats_fwrite_us = 0;
+
+    while (s_video_writer_run) {
+        // Yield one tick per iteration so the IDLE1 task can run and
+        // reset the Core-1 task watchdog. Without this the writer
+        // (pri 5) plus LVGL (pri 3-4) kept Core 1 permanently busy,
+        // firing TWDT every 5 s. 1 ms per frame is ~3 % overhead at
+        // 30 fps — negligible compared to the ~30 ms fwrite time.
+        vTaskDelay(1);
+
+        size_t item_size = 0;
+        void *item = xRingbufferReceive(s_video_ring, &item_size,
+                                        pdMS_TO_TICKS(100));
+        if (!item) continue;
+        // Hand the PSRAM ring pointer straight to avi_writer — it has
+        // its own internal-DMA chunk buffer and stages the copy there
+        // so SDMMC can DMA at full bus speed.
+        if (s_avi_mux && xSemaphoreTake(s_avi_mux, portMAX_DELAY) == pdTRUE) {
+            if (avi_writer_is_open()) {
+                int64_t t0 = esp_timer_get_time();
+                bool ok = avi_writer_write_frame((const uint8_t *)item, (uint32_t)item_size);
+                uint64_t dt = (uint64_t)(esp_timer_get_time() - t0);
+                if (ok) {  // only count successful writes for throughput math
+                    stats_fwrite_us += dt;
+                    stats_bytes += item_size;
+                    stats_frames++;
+                    if (stats_frames >= 30) {
+                        uint64_t kbps = (stats_bytes * 1000) / (stats_fwrite_us ? stats_fwrite_us : 1);
+                        uint32_t avg_us = (uint32_t)(stats_fwrite_us / stats_frames);
+                        uint64_t memcpy_us = 0, fw_us = 0;
+                        uint32_t chunks = 0;
+                        avi_writer_diag_snapshot(&memcpy_us, &fw_us, &chunks);
+                        uint32_t avg_memcpy = chunks ? (uint32_t)(memcpy_us / chunks) : 0;
+                        uint32_t avg_fw     = chunks ? (uint32_t)(fw_us / chunks)     : 0;
+                        log_i("Writer: 30 ok frames, avg %u KB, avg fwrite %lu us, ~%llu KB/s "
+                              "| per-chunk: memcpy %lu us, f_write %lu us (%lu chunks)",
+                              (unsigned)(stats_bytes / stats_frames / 1024),
+                              (unsigned long)avg_us,
+                              (unsigned long long)kbps,
+                              (unsigned long)avg_memcpy,
+                              (unsigned long)avg_fw,
+                              (unsigned long)chunks);
+                        stats_frames = 0;
+                        stats_bytes = 0;
+                        stats_fwrite_us = 0;
+                    }
+                }
+            }
+            xSemaphoreGive(s_avi_mux);
+        }
+        vRingbufferReturnItem(s_video_ring, item);
+    }
+    s_video_writer_task = nullptr;
+    vTaskDelete(nullptr);
+}
+
 // Called from USB stream task — MUST be fast. No decode/SD here.
 static void on_uvc_frame(const uint8_t *data, uint32_t size)
 {
@@ -120,14 +214,14 @@ static void on_uvc_frame(const uint8_t *data, uint32_t size)
     if (size == 0) return;
 
     // ── PASSTHROUGH PATH (recording) ─────────────────────────────────
-    // Raw MJPEG frame straight to the AVI file. Skips the decode/overlay/
-    // encode pipeline entirely — the Android app renders the overlay.
+    // Push the MJPEG into the ring and return immediately. The writer
+    // task handles fwrite() + lap-split mutex behind the scenes. Never
+    // block the USB stream_task here — doing so drops microframes.
     if (s_passthrough && s_state == VIDEO_RECORDING) {
-        // Hold the AVI mutex for the duration of this write so a concurrent
-        // lap-split (close+open) never tears the file mid-chunk.
-        if (s_avi_mux && xSemaphoreTake(s_avi_mux, pdMS_TO_TICKS(50)) == pdTRUE) {
-            if (avi_writer_is_open()) avi_writer_write_frame(data, size);
-            xSemaphoreGive(s_avi_mux);
+        if (s_video_ring) {
+            if (xRingbufferSend(s_video_ring, data, size, 0) != pdTRUE) {
+                s_video_ring_dropped++;  // ring full — SD can't keep up
+            }
         }
         return;
     }
@@ -289,18 +383,15 @@ static void audio_writer_task_fn(void *arg)
 {
     (void)arg;
     static int16_t buf[AUDIO_WRITE_BYTES / 2];
-
     while (s_audio_writer_run) {
         size_t got = xStreamBufferReceive(s_audio_sb, buf,
                                           AUDIO_WRITE_BYTES, pdMS_TO_TICKS(200));
-        if (got > 0 && s_state == VIDEO_RECORDING) {
-            // sample_count = frames per channel = bytes / (channels × bytes_per_sample)
-            uint32_t frames = (uint32_t)(got / (mic_channels() * sizeof(int16_t)));
-            if (s_avi_mux && xSemaphoreTake(s_avi_mux, pdMS_TO_TICKS(500)) == pdTRUE) {
-                if (avi_writer_is_open()) avi_writer_write_audio(buf, frames);
-                xSemaphoreGive(s_avi_mux);
-            }
-        }
+        if (got == 0) continue;
+        if (s_state != VIDEO_RECORDING) continue;
+        uint32_t frames = (uint32_t)(got / (mic_channels() * sizeof(int16_t)));
+        if (!s_avi_mux || xSemaphoreTake(s_avi_mux, pdMS_TO_TICKS(500)) != pdTRUE) continue;
+        if (avi_writer_is_open()) avi_writer_write_audio(buf, frames);
+        xSemaphoreGive(s_avi_mux);
     }
     s_audio_writer_task = nullptr;
     vTaskDelete(nullptr);
@@ -310,8 +401,8 @@ static void audio_writer_task_fn(void *arg)
 static void on_mic_chunk(const int16_t *pcm, uint32_t samples)
 {
     if (!s_audio_sb) return;
-    size_t bytes = samples * sizeof(int16_t);
-    // Non-blocking send — if buffer is full (writer fell behind), drop.
+    // mic delivers STEREO interleaved 16-bit PCM: samples × channels × 2 B.
+    size_t bytes = samples * mic_channels() * sizeof(int16_t);
     xStreamBufferSend(s_audio_sb, pcm, bytes, 0);
 }
 
@@ -354,28 +445,22 @@ static void video_monitor_task(void *arg)
         bool rising       = in_lap_now && !s_was_in_lap;
         bool falling      = !in_lap_now && s_was_in_lap;
 
+        // Auto-arm DISABLED — added 2026-04-19 but regressed fps (camera
+        // Q-factor bumps during long idle stream). Users can still call
+        // video_arm() manually from UI if needed (e.g. before a hot lap).
+
         // ── Auto-start on rising edge of in_lap ──────────────────────
-        // Fires on EVERY new lap/run start:
-        //   • Circuit first lap: in_lap goes false→true at S/F.
-        //   • Circuit lap N→N+1: finish_lap+start_lap happen within one
-        //     logic_task tick, so the monitor samples in_lap as stably
-        //     true across consecutive 500 ms polls → no spurious edge.
-        //   • A-B run 1: false→true on S crossing.
-        //   • A-B run 2+: finish_lap() sets in_lap=false (and stops the
-        //     previous video directly); next S crossing goes false→true
-        //     again → rising edge → auto-start for the next run.
-        //
-        // If start_recording FAILS (audio/USB bringup glitch) or the
-        // camera isn't ready, do NOT consume the edge — `continue`
-        // skips the tracker update so the next tick retries. Otherwise
-        // a one-off failure silently loses the whole recording.
-        if (rising && s_auto_record && s_state == VIDEO_IDLE) {
+        // Accept both IDLE (fallback — warm-up delay in start_recording)
+        // and ARMED (fast path — instant switch to RECORDING).
+        if (rising && s_auto_record &&
+            (s_state == VIDEO_IDLE || s_state == VIDEO_ARMED)) {
             if (!camera_ready) {
                 continue;   // wait for camera, keep the edge armed
             }
             uint8_t lap_hint = g_state.timing.lap_number
                                ? g_state.timing.lap_number : 1;
-            log_i("Auto-start recording (in_lap rising, lap=%u)", lap_hint);
+            log_i("Auto-start recording (in_lap rising, lap=%u, from %s)",
+                  lap_hint, s_state == VIDEO_ARMED ? "ARMED" : "IDLE");
             if (!video_start_recording(lap_hint)) {
                 log_w("Auto-start failed — will retry next tick");
                 continue;   // keep s_was_in_lap=false for retry
@@ -428,11 +513,57 @@ void video_init(void)
     // Create /sdcard/videos directory
     sd_make_dir("/videos");
 
+    // ── DMA BUDGETING AT BOOT ──
+    // The internal-DMA reserve (CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL, now
+    // 128 KB) is fought over by USB, I2S mic, SDMMC and the AVI chunk buf.
+    // Fragmentation accumulates as the system runs — by record-start the
+    // largest contiguous block is typically <6 KB, which kills every one
+    // of these at their first allocation.
+    // Strategy: pre-allocate all persistent DMA blocks here, ORDERED from
+    // smallest to largest so each takes the minimum bite out of the
+    // still-contiguous pool. Once they're all in, nothing of this class
+    // is allocated at record time — start_recording just wires up handles.
+
+    // 1) USB ISO transfer buffers (2 × 7552 B ≈ 15 KB) via brl_uvc_init().
+    brl_uvc_init();
+
+    // 2) I2S mic DMA descriptors (~16 KB) via bsp_audio_init under mic_init.
+    //    Must happen at boot: attempting this after the pool has fragmented
+    //    returns ESP_ERR_NO_MEM and the BSP leaks the partially-init'd I2S
+    //    channel (i2s_del_channel: "channel can't be deleted unless it is
+    //    disabled"), bleeding ~16 KB per failed attempt and permanently
+    //    disabling audio for the session. Calling it while DMA is still
+    //    fresh sidesteps both problems. Failure here is non-fatal — audio
+    //    simply stays off for the session.
+    (void)mic_init();
+
+    // 3) AVI chunk buffer (16 KB, 128-byte aligned for SDMMC direct DMA).
+    avi_writer_preallocate();
+
     // Mutex protecting avi_writer state across USB, audio, and split tasks.
     if (!s_avi_mux) s_avi_mux = xSemaphoreCreateMutex();
 
-    // Initialize UVC camera subsystem
-    brl_uvc_init();
+    // Passthrough async-writer: 2 MB PSRAM ring + draining task. Created
+    // once and reused across all recordings so DMA fragmentation over
+    // time cannot starve a later allocation.
+    if (!s_video_ring) {
+        s_video_ring = xRingbufferCreateWithCaps(VIDEO_RING_SIZE,
+                                                  RINGBUF_TYPE_NOSPLIT,
+                                                  MALLOC_CAP_SPIRAM);
+        if (!s_video_ring) {
+            log_e("Video ring alloc failed — passthrough will block stream_task");
+        }
+    }
+    if (s_video_ring && !s_video_writer_task) {
+        s_video_writer_run = true;
+        // Core 1 at priority 3 (below LVGL pri 4 → UI stays smooth). pri 5
+        // (original) made LVGL lag visibly; pri 2 starved the writer
+        // (first fwrite 209 ms, ring dropped frames). pri 3 is the
+        // compromise. Stack in internal DRAM — PSRAM stack caused
+        // FreeRTOS/cache issues that manifested as DMA-pool exhaustion.
+        xTaskCreatePinnedToCore(video_writer_task_fn, "vid_writer",
+                                 4096, nullptr, 3, &s_video_writer_task, 1);
+    }
 
     // Start monitor task. Priority MUST match logic_task (1) — not higher.
     // At priority 2 the A-B pre-roll's video_start_recording() blocks
@@ -444,8 +575,62 @@ void video_init(void)
     log_i("Video manager initialized");
 }
 
+void video_arm(void)
+{
+    if (s_state == VIDEO_ARMED || s_state == VIDEO_RECORDING) {
+        return;  // already warm
+    }
+    if (!brl_uvc_connected()) {
+        log_w("video_arm: no camera connected");
+        return;
+    }
+    uint32_t t0 = millis();
+    log_i("video_arm: starting UVC + warmup");
+
+    // Pick default resolution if caller didn't set one yet.
+    if (s_n_resolutions == 0) {
+        s_n_resolutions = brl_uvc_get_resolutions(s_resolutions, UVC_MAX_RESOLUTIONS);
+    }
+    if (s_res_index < 0 || s_res_index >= s_n_resolutions) {
+        int best = 0;
+        uint32_t best_px = 0;
+        for (int i = 0; i < s_n_resolutions; i++) {
+            if (s_resolutions[i].width == 320 && s_resolutions[i].height == 240) continue;
+            uint32_t px = (uint32_t)s_resolutions[i].width *
+                          (uint32_t)s_resolutions[i].height;
+            if (px > best_px) { best_px = px; best = i; }
+        }
+        s_res_index = best_px > 0 ? best : 0;
+    }
+
+    brl_uvc_set_resolution(s_res_index);
+    if (!brl_uvc_start(on_uvc_frame)) {
+        log_e("video_arm: UVC start failed");
+        return;
+    }
+    // Warmup: on_uvc_frame discards frames while s_state != VIDEO_RECORDING.
+    // 1500 ms lets AE/AWB/MJPEG-bitrate converge so the first real
+    // recorded frame is already small (~8 KB).
+    vTaskDelay(pdMS_TO_TICKS(1500));
+    s_state = VIDEO_ARMED;
+    log_i("video_arm: ready after %lu ms — next record start is ~350 ms",
+          (unsigned long)(millis() - t0));
+}
+
+void video_disarm(void)
+{
+    if (s_state != VIDEO_ARMED) return;
+    log_i("video_disarm: stopping UVC");
+    brl_uvc_stop();
+    s_state = VIDEO_IDLE;
+}
+
 bool video_start_recording(uint8_t lap_hint)
 {
+    uint32_t t_start = millis();
+    #define TLOG(fmt, ...) log_i("[+%4lu ms] " fmt, (unsigned long)(millis() - t_start), ##__VA_ARGS__)
+    TLOG("video_start_recording: enter");
+
     if (s_state == VIDEO_RECORDING) {
         log_w("Already recording");
         return true;
@@ -519,13 +704,20 @@ bool video_start_recording(uint8_t lap_hint)
         }
     }
 
-    // ORDER MATTERS: Start UVC BEFORE mic_init. USB ISO transfers need
-    // ~30 KB DMA-internal; I2S mic init takes ~30+ KB of the same pool.
-    // If mic goes first, USB transfer_alloc fails and we get 0 frames.
-    brl_uvc_set_resolution(s_res_index);
-    if (!brl_uvc_start(on_uvc_frame)) {
-        log_e("UVC stream start failed");
-        return false;
+    // Camera bring-up: SKIP if already ARMED (video_arm() already brought
+    // UVC up — fast path for racing-style triggers that need sub-second
+    // start latency). Otherwise start UVC now.
+    if (s_state == VIDEO_ARMED) {
+        TLOG("already ARMED — skipping UVC bring-up");
+    } else {
+        TLOG("brl_uvc_start: calling");
+        brl_uvc_set_resolution(s_res_index);
+        if (!brl_uvc_start(on_uvc_frame)) {
+            TLOG("brl_uvc_start: FAILED");
+            log_e("UVC stream start failed");
+            return false;
+        }
+        TLOG("brl_uvc_start: OK");
     }
 
     // Now mic_init — audio rate/channels are compile-time constants, safe to
@@ -539,42 +731,55 @@ bool video_start_recording(uint8_t lap_hint)
     char path[80];
     char stem[64];
     build_rec_path(lap_hint, path, sizeof(path), stem, sizeof(stem));
+    TLOG("avi_writer_open: calling (f_expand 500 MB)");
     if (!avi_writer_open(path, res.width, res.height, res.fps,
                          aud_rate, aud_ch, 16)) {
+        TLOG("avi_writer_open: FAILED");
         log_e("Cannot open AVI file");
         brl_uvc_stop();
+        s_state = VIDEO_IDLE;  // camera stopped, not armed anymore
         return false;
     }
+    TLOG("avi_writer_open: OK");
     s_current_lap_no = lap_hint;
     strncpy(s_current_stem, stem, sizeof(s_current_stem) - 1);
     s_current_stem[sizeof(s_current_stem) - 1] = '\0';
 
-    // Start audio capture (via decoupled ring buffer)
+    // Start audio capture. Stream buffer is persistent (64 KB in PSRAM,
+    // lazily allocated on first start). audio_writer_task is created per
+    // recording (3 KB stack in internal DRAM); check return so silent
+    // failure on fragmented heap surfaces in the log.
     if (audio_ok) {
         if (!s_audio_sb) {
-            // Place the 64 KB stream buffer in PSRAM — internal DRAM is too tight
             s_audio_sb = xStreamBufferCreateWithCaps(AUDIO_SB_BYTES, 1, MALLOC_CAP_SPIRAM);
         }
         if (s_audio_sb) {
             xStreamBufferReset(s_audio_sb);
             s_audio_writer_run = true;
-            xTaskCreatePinnedToCore(audio_writer_task_fn, "aud_wr",
-                                    4096, nullptr, 3, &s_audio_writer_task, 0);
-            if (!mic_start(on_mic_chunk)) {
+            // 3 KB stack — same reasoning as mic_task: smaller was
+            // unstable, bigger fragments internal DRAM faster.
+            BaseType_t tc = xTaskCreatePinnedToCore(
+                audio_writer_task_fn, "aud_wr", 3072, nullptr, 3,
+                &s_audio_writer_task, 0);
+            if (tc != pdPASS) {
+                log_e("xTaskCreate(aud_wr) FAILED — recording without audio");
+                s_audio_writer_run = false;
+            } else if (!mic_start(on_mic_chunk)) {
                 log_w("Mic start failed — recording without audio");
                 s_audio_writer_run = false;
             }
-        } else {
-            log_w("Audio stream buffer alloc failed — no audio");
         }
     }
 
+    TLOG("all subsystems up, flipping state to RECORDING");
     s_rec_start_ms = millis();
     s_state = VIDEO_RECORDING;
     g_state.video_recording = true;
 
     log_i("Recording started: %dx%d @ %d fps → %s",
           res.width, res.height, res.fps, path);
+    TLOG("video_start_recording: done");
+    #undef TLOG
     return true;
 }
 
@@ -584,19 +789,40 @@ void video_stop_recording(void)
 
     brl_uvc_stop();
     mic_stop();
-    // Stop audio writer task and let it drain
     s_audio_writer_run = false;
     for (int i = 0; i < 50 && s_audio_writer_task; i++) vTaskDelay(pdMS_TO_TICKS(20));
     // Stop video pipeline tasks (decoder + encoder) — drain both
     s_pipeline_run = false;
     for (int i = 0; i < 50 && (s_pipeline_task || s_encode_task); i++)
         vTaskDelay(pdMS_TO_TICKS(20));
+    // Close the AVI FIRST (under mutex), THEN discard the ring. Previous
+    // design drained the ring into the still-open AVI, which took 3-4 s
+    // at SD speed and produced a confusing second "Writer: 30 ok frames"
+    // log line after the user already pressed Stop. The tail 0.3 s of
+    // footage we give up is negligible (the session dropped ~1000 frames
+    // from ring overflow anyway).
     uint32_t frames = avi_writer_frame_count();  // capture before close
     if (s_avi_mux) xSemaphoreTake(s_avi_mux, portMAX_DELAY);
     avi_writer_close();
     s_current_lap_no = 0;
     s_current_stem[0] = '\0';
     if (s_avi_mux) xSemaphoreGive(s_avi_mux);
+
+    // Now drain the ring quickly. Writer sees avi_writer_is_open()==false
+    // and just drops each item — no SD writes. Tight loop, done in <100 ms.
+    if (s_video_ring) {
+        size_t item_size;
+        while (true) {
+            void *item = xRingbufferReceive(s_video_ring, &item_size, 0);
+            if (!item) break;
+            vRingbufferReturnItem(s_video_ring, item);
+        }
+        if (s_video_ring_dropped > 0) {
+            log_w("Passthrough ring dropped %lu frames this session",
+                  (unsigned long)s_video_ring_dropped);
+            s_video_ring_dropped = 0;
+        }
+    }
 
     s_state = VIDEO_IDLE;
     g_state.video_recording = false;
@@ -794,3 +1020,42 @@ void video_set_passthrough(bool enabled)
 }
 
 bool video_get_passthrough(void) { return s_passthrough; }
+
+// ---------------------------------------------------------------------------
+// Diagnostic: benchmark SD throughput while USB-ISO traffic is active.
+// ---------------------------------------------------------------------------
+static void sd_under_load_cb(const uint8_t * /*data*/, uint32_t /*size*/) {
+    // No-op consumer. We don't care about frame data — we only need the
+    // USB host to be pumping ISO transfers so SDMMC contends with them.
+}
+
+static void sd_under_load_task(void * /*arg*/) {
+    log_i("[load-bench] waiting for camera...");
+    for (int i = 0; i < 100 && !brl_uvc_connected(); ++i) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (!brl_uvc_connected()) {
+        log_w("[load-bench] no camera after 10 s — skipping");
+        vTaskDelete(nullptr);
+        return;
+    }
+    log_i("[load-bench] starting UVC stream...");
+    if (!brl_uvc_start(sd_under_load_cb)) {
+        log_w("[load-bench] brl_uvc_start failed — skipping");
+        vTaskDelete(nullptr);
+        return;
+    }
+    // Let the stream stabilise (camera AE/AWB + first transfers in-flight)
+    vTaskDelay(pdMS_TO_TICKS(1500));
+    log_i("[load-bench] USB stream active — running SD benchmark NOW");
+    sd_mgr_benchmark();
+    log_i("[load-bench] benchmark done — stopping UVC");
+    brl_uvc_stop();
+    vTaskDelete(nullptr);
+}
+
+void video_run_sd_under_load_benchmark(void)
+{
+    xTaskCreatePinnedToCore(sd_under_load_task, "sd_load_bench",
+                            4096, nullptr, 3, nullptr, 0);
+}

@@ -35,6 +35,9 @@
         "projectId": "98d6755d-1caf-42dd-8d20-f587b08fbebd"
       }
     },
-    "owner": "bavarian-racelabs"
+    "owner": "bavarian-racelabs",
+    "plugins": [
+      "react-native-vlc-media-player"
+    ]
   }
 }

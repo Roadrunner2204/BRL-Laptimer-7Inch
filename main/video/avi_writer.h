@@ -24,6 +24,13 @@
 extern "C" {
 #endif
 
+/// Pre-allocate the internal-DMA chunk buffer used to stage writes out
+/// of PSRAM into SD. Call this at boot (from video_init) — internal DMA
+/// is tight once USB host / I2S mic have taken their shares, so lazy
+/// alloc at record-start usually fails. Returns true on success.
+/// Safe to call multiple times (no-op if already allocated).
+bool avi_writer_preallocate(void);
+
 /// Open a new AVI file.
 /// audio_rate: PCM sample rate in Hz, or 0 to record video-only.
 /// audio_channels: 1 or 2. bits_per_sample: 16 (currently only supported value).
@@ -43,6 +50,11 @@ bool avi_writer_close(void);
 bool     avi_writer_is_open(void);
 uint32_t avi_writer_frame_count(void);
 uint32_t avi_writer_file_size(void);
+
+/// Diagnostic: reports and resets accumulated memcpy + fwrite time since
+/// last call, plus chunk count. Used by video_mgr to split the "fwrite"
+/// stat into PSRAM-memcpy vs. actual SDMMC time.
+void     avi_writer_diag_snapshot(uint64_t *memcpy_us, uint64_t *fwrite_us, uint32_t *chunks);
 
 #ifdef __cplusplus
 }
