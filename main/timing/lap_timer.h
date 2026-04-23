@@ -33,6 +33,20 @@ void lap_timer_poll(void);              // call after every gps_poll()
 void lap_timer_reset_session(void);     // clear all laps, keep track
 void lap_timer_set_ref_lap(uint8_t lap_idx);
 
+// Reference loaded from a SAVED session file (different from the live one).
+// The lap's track_points are copied into an internal PSRAM buffer so the
+// reference survives even if the source session file is later deleted.
+// Returns false on failure (file missing, lap has no GPS points, etc.).
+bool lap_timer_set_ref_from_saved(const char *session_id,
+                                  uint8_t lap_idx_in_file);
+
+// If an external (saved-session) reference is currently active, writes its
+// session id into sid_out and its in-file lap index into lap_idx_out, and
+// returns true. Returns false when the active reference is from the current
+// session (or no reference is set).
+bool lap_timer_get_external_ref(char *sid_out, size_t sid_size,
+                                uint8_t *lap_idx_out);
+
 // Internal: called by storage module after saving
 void lap_timer_mark_saved(uint8_t lap_idx);
 

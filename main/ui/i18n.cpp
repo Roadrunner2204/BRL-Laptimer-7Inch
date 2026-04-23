@@ -152,6 +152,8 @@ static const char* const s_str[2][TR_COUNT] = {
     /* TR_USE_DEFAULT    */ "Standard verwenden",
     /* TR_DELTA_SCALE    */ "Delta-Skala",
     /* TR_INTAKE         */ "ANSAUGTEMP",
+    /* TR_SESSION_LAPS_TITLE */ "Session-Runden",
+    /* TR_LAP_NO_GPS     */ "keine GPS-Daten",
 },
 // ── English ─────────────────────────────────────────────────────────────────
 {
@@ -297,6 +299,8 @@ static const char* const s_str[2][TR_COUNT] = {
     /* TR_USE_DEFAULT    */ "Use default",
     /* TR_DELTA_SCALE    */ "Delta Scale",
     /* TR_INTAKE         */ "INTAKE TEMP",
+    /* TR_SESSION_LAPS_TITLE */ "Session Laps",
+    /* TR_LAP_NO_GPS     */ "no GPS data",
 },
 };
 

@@ -167,6 +167,9 @@ enum TrKey : uint8_t {
     TR_DELTA_SCALE,
     // OBD -- intake air temp
     TR_INTAKE,
+    // Saved-session detail (pick reference lap from history)
+    TR_SESSION_LAPS_TITLE,
+    TR_LAP_NO_GPS,
     TR_COUNT
 };
 

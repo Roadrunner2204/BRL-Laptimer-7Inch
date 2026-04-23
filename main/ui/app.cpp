@@ -141,6 +141,8 @@ static lv_obj_t   *s_tracks_search_kb   = nullptr;  // reset on each rebuild
 static void open_tracks_screen();
 static void open_track_creator(lv_obj_t *parent_scroll, int edit_idx = -1);
 static void open_history_screen();
+static void open_session_detail_screen(const char *session_id,
+                                       const char *session_name);
 static void open_settings_screen();
 
 // ============================================================================
@@ -1288,6 +1290,15 @@ static void open_history_screen() {
     // ── Current session ───────────────────────────────────────────────────
     hist_section_header(content, tr(TR_HIST_CURRENT));
 
+    // If the live reference currently points at a lap from a SAVED session
+    // (manual pick from the detail screen, or the auto-loaded all-time best),
+    // we must NOT highlight any current-session lap as "✓ REF".
+    char ext_ref_sid[20] = {};
+    uint8_t ext_ref_lap = 0;
+    bool ext_ref_active = lap_timer_get_external_ref(ext_ref_sid,
+                                                     sizeof(ext_ref_sid),
+                                                     &ext_ref_lap);
+
     LapSession &sess = g_state.session;
     if (sess.lap_count == 0) {
         lv_obj_t *ph = lv_label_create(content);
@@ -1322,10 +1333,10 @@ static void open_history_screen() {
             lv_obj_t *ref_btn = lv_button_create(row);
             lv_obj_set_size(ref_btn, 130, 34);
             lv_obj_align(ref_btn, LV_ALIGN_RIGHT_MID, 0, 0);
-            brl_style_btn(ref_btn,
-                i == (int)sess.ref_lap_idx ? BRL_CLR_ACCENT : BRL_CLR_SURFACE2);
+            bool is_cur_ref = !ext_ref_active && i == (int)sess.ref_lap_idx;
+            brl_style_btn(ref_btn, is_cur_ref ? BRL_CLR_ACCENT : BRL_CLR_SURFACE2);
             lv_obj_t *rl2 = lv_label_create(ref_btn);
-            lv_label_set_text(rl2, i == (int)sess.ref_lap_idx ? tr(TR_IS_REF) : tr(TR_SET_REF));
+            lv_label_set_text(rl2, is_cur_ref ? tr(TR_IS_REF) : tr(TR_SET_REF));
             brl_style_label(rl2, &BRL_FONT_14, BRL_CLR_TEXT);
             lv_obj_center(rl2);
             lv_obj_set_user_data(ref_btn, (void*)(intptr_t)i);
@@ -1430,6 +1441,18 @@ static void open_history_screen() {
             brl_style_card(row);
             lv_obj_set_style_radius(row, 0, LV_STATE_DEFAULT); // PERF: flat for scroll
             lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+            // Whole row is tappable → opens the lap-detail screen where the
+            // user can pick a lap as live-delta reference. The delete button
+            // below has its bubble disabled so that only the delete fires
+            // when its button is tapped.
+            lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_user_data(row, (void*)(intptr_t)i);
+            lv_obj_add_event_cb(row, [](lv_event_t *e){
+                int idx = (int)(intptr_t)lv_obj_get_user_data(
+                    (lv_obj_t*)lv_event_get_current_target(e));
+                open_session_detail_screen(s_summaries[idx].id,
+                                           s_summaries[idx].name);
+            }, LV_EVENT_CLICKED, nullptr);
 
             // Session name (top) + track as subtitle
             lv_obj_t *name_lbl = lv_label_create(row);
@@ -1460,10 +1483,13 @@ static void open_history_screen() {
             brl_style_label(info_lbl, &BRL_FONT_14, BRL_CLR_ACCENT);
             lv_obj_align(info_lbl, LV_ALIGN_RIGHT_MID, -60, 0);
 
-            // Delete button
+            // Delete button — must NOT bubble to the row handler, otherwise
+            // tapping delete would both delete and try to open the (now
+            // deleted) session's detail screen.
             lv_obj_t *del_btn = lv_button_create(row);
             lv_obj_set_size(del_btn, 48, 40);
             lv_obj_align(del_btn, LV_ALIGN_RIGHT_MID, 0, 0);
+            lv_obj_remove_flag(del_btn, LV_OBJ_FLAG_EVENT_BUBBLE);
             lv_obj_set_style_bg_color(del_btn, lv_color_hex(0x5A1A1A), LV_STATE_DEFAULT);
             lv_obj_set_style_bg_color(del_btn, BRL_CLR_DANGER, LV_STATE_PRESSED);
             lv_obj_set_style_border_width(del_btn, 0, LV_STATE_DEFAULT);
@@ -1487,6 +1513,126 @@ static void open_history_screen() {
             lv_label_set_text(ph, tr(TR_HIST_NO_SAVED));
             brl_style_label(ph, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
         }
+    }
+
+    sub_screen_load(scr);
+}
+
+// ---------------------------------------------------------------------------
+// Session-detail screen: lists the laps of a saved session and lets the user
+// pick one as the live-delta reference. Reachable by tapping a row in the
+// "Saved sessions" list on the history screen.
+// ---------------------------------------------------------------------------
+static char s_sd_session_id[20];
+static char s_sd_session_name[64];
+
+static void cb_back_to_history(lv_event_t * /*e*/) { open_history_screen(); }
+
+static void open_session_detail_screen(const char *session_id,
+                                       const char *session_name)
+{
+    // Snapshot args into file-static storage — the open() callback for the
+    // Set-ref buttons rebuilds the screen and needs them to survive the
+    // original caller's stack frame.
+    strncpy(s_sd_session_id, session_id ? session_id : "",
+            sizeof(s_sd_session_id) - 1);
+    s_sd_session_id[sizeof(s_sd_session_id) - 1] = '\0';
+    strncpy(s_sd_session_name, session_name ? session_name : "",
+            sizeof(s_sd_session_name) - 1);
+    s_sd_session_name[sizeof(s_sd_session_name) - 1] = '\0';
+
+    lv_obj_t *scr = make_sub_screen(tr(TR_SESSION_LAPS_TITLE),
+                                    cb_back_to_history);
+    lv_obj_t *content = build_content_area(scr, true);
+    lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(content, 4, LV_STATE_DEFAULT);
+
+    // Session name as first line (so the user still sees which session they
+    // opened even after the generic title).
+    lv_obj_t *name_lbl = lv_label_create(content);
+    lv_label_set_text(name_lbl, s_sd_session_name);
+    brl_style_label(name_lbl, &BRL_FONT_16, BRL_CLR_ACCENT);
+
+    static SessionLapInfo s_laps[MAX_LAPS_PER_SESSION];
+    int n = session_store_list_laps(s_sd_session_id, s_laps,
+                                    MAX_LAPS_PER_SESSION);
+
+    if (n == 0) {
+        lv_obj_t *ph = lv_label_create(content);
+        lv_label_set_text(ph, tr(TR_NO_LAPS));
+        brl_style_label(ph, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+        sub_screen_load(scr);
+        return;
+    }
+
+    // Is the currently-active live reference a lap FROM THIS session?
+    char cur_ext_sid[20] = {};
+    uint8_t cur_ext_lap = 255;
+    bool ext_active = lap_timer_get_external_ref(cur_ext_sid,
+                                                 sizeof(cur_ext_sid),
+                                                 &cur_ext_lap);
+    bool this_session_has_ref = ext_active &&
+                                strcmp(cur_ext_sid, s_sd_session_id) == 0;
+
+    // Find fastest lap in this session (for the "* BEST" badge). point_count
+    // filter matches the "is it usable as reference" criterion below.
+    int best_idx = -1;
+    uint32_t best_ms = 0;
+    for (int i = 0; i < n; i++) {
+        if (s_laps[i].total_ms == 0) continue;
+        if (s_laps[i].point_count == 0) continue;
+        if (best_idx < 0 || s_laps[i].total_ms < best_ms) {
+            best_idx = i;
+            best_ms  = s_laps[i].total_ms;
+        }
+    }
+
+    for (int i = 0; i < n; i++) {
+        lv_obj_t *row = lv_obj_create(content);
+        lv_obj_set_width(row, LV_PCT(100));
+        lv_obj_set_height(row, 52);
+        brl_style_card(row);
+        lv_obj_set_style_radius(row, 0, LV_STATE_DEFAULT);
+        lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+        char lt_buf[16]; fmt_laptime(lt_buf, sizeof(lt_buf), s_laps[i].total_ms);
+        char lab[64];
+        snprintf(lab, sizeof(lab), "%s %u    %s%s",
+                 tr(TR_LAP), (unsigned)s_laps[i].lap_num, lt_buf,
+                 (i == best_idx) ? "  * BEST" : "");
+
+        lv_obj_t *lbl = lv_label_create(row);
+        lv_label_set_text(lbl, lab);
+        brl_style_label(lbl, &BRL_FONT_16,
+                        (i == best_idx) ? BRL_CLR_ACCENT : BRL_CLR_TEXT);
+        lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
+
+        if (s_laps[i].point_count == 0) {
+            // No GPS data → cannot be used as live-delta reference. Show a
+            // muted note instead of a button so the user understands why.
+            lv_obj_t *no_gps = lv_label_create(row);
+            lv_label_set_text(no_gps, tr(TR_LAP_NO_GPS));
+            brl_style_label(no_gps, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+            lv_obj_align(no_gps, LV_ALIGN_RIGHT_MID, 0, 0);
+            continue;
+        }
+
+        lv_obj_t *ref_btn = lv_button_create(row);
+        lv_obj_set_size(ref_btn, 130, 34);
+        lv_obj_align(ref_btn, LV_ALIGN_RIGHT_MID, 0, 0);
+        bool is_ref = this_session_has_ref && cur_ext_lap == (uint8_t)i;
+        brl_style_btn(ref_btn, is_ref ? BRL_CLR_ACCENT : BRL_CLR_SURFACE2);
+        lv_obj_t *rlbl = lv_label_create(ref_btn);
+        lv_label_set_text(rlbl, is_ref ? tr(TR_IS_REF) : tr(TR_SET_REF));
+        brl_style_label(rlbl, &BRL_FONT_14, BRL_CLR_TEXT);
+        lv_obj_center(rlbl);
+        lv_obj_set_user_data(ref_btn, (void*)(intptr_t)i);
+        lv_obj_add_event_cb(ref_btn, [](lv_event_t *e){
+            lv_obj_t *btn = (lv_obj_t*)lv_event_get_current_target(e);
+            int idx = (int)(intptr_t)lv_obj_get_user_data(btn);
+            lap_timer_set_ref_from_saved(s_sd_session_id, (uint8_t)idx);
+            open_session_detail_screen(s_sd_session_id, s_sd_session_name);
+        }, LV_EVENT_CLICKED, nullptr);
     }
 
     sub_screen_load(scr);

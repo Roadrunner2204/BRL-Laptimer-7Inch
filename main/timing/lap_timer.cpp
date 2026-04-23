@@ -12,7 +12,9 @@
 #include "../storage/track_best.h"
 #include "../data/track_db.h"
 #include "../compat.h"
+#include "esp_heap_caps.h"
 #include <math.h>
+#include <string.h>
 
 static const char *TAG = "lap_timer";
 
@@ -67,6 +69,85 @@ static uint32_t s_last_point_ms = 0;
 // PSRAM buffer for current lap
 static TrackPoint *s_cur_buf   = nullptr;
 static uint16_t    s_cur_count = 0;
+
+// ---------------------------------------------------------------------------
+// Reference-lap source tracking
+//
+//   NONE            no reference — live delta shows nothing
+//   AUTO_ALLTIME    auto-loaded all-time best from a saved session on this
+//                   track (fallback when the user hasn't picked anything).
+//                   A new best in the current session still auto-upgrades
+//                   to AUTO_CURRENT.
+//   AUTO_CURRENT    current session's best lap, picked automatically when
+//                   a faster lap completes.
+//   MANUAL_CURRENT  user pressed "Set ref" on a lap in the current session.
+//                   finish_lap() does NOT auto-override this on new best.
+//   MANUAL_SAVED    user picked a lap from a saved session in the history
+//                   screen. finish_lap() does NOT auto-override.
+// ---------------------------------------------------------------------------
+enum RefSource : uint8_t {
+    REF_SRC_NONE = 0,
+    REF_SRC_AUTO_ALLTIME,
+    REF_SRC_AUTO_CURRENT,
+    REF_SRC_MANUAL_CURRENT,
+    REF_SRC_MANUAL_SAVED,
+};
+static RefSource s_ref_src = REF_SRC_NONE;
+
+// External reference storage — used when ref comes from a saved session
+// file. The RecordedLap keeps pointers into s_ext_ref_points which is
+// PSRAM-allocated once (lazy), sized to hold the downsampled track_points
+// of any realistic lap (~90 pts per lap × 5× downsample guard = 2000 pts).
+#define EXT_REF_POINTS_CAP 2000
+static RecordedLap  s_ext_ref           = {};
+static TrackPoint  *s_ext_ref_points    = nullptr;
+static char         s_ext_ref_sid[20]   = {};
+static uint8_t      s_ext_ref_lap_idx   = 0;
+
+static bool ensure_ext_ref_buffer() {
+    if (s_ext_ref_points) return true;
+    s_ext_ref_points = (TrackPoint *)heap_caps_malloc(
+        EXT_REF_POINTS_CAP * sizeof(TrackPoint), MALLOC_CAP_SPIRAM);
+    if (!s_ext_ref_points) {
+        log_e("external ref: PSRAM alloc failed (%u bytes)",
+              (unsigned)(EXT_REF_POINTS_CAP * sizeof(TrackPoint)));
+        return false;
+    }
+    return true;
+}
+
+// Try to populate s_ext_ref from a saved session. Returns true on success.
+static bool load_external_ref(const char *session_id, uint8_t lap_idx_in_file) {
+    if (!ensure_ext_ref_buffer()) return false;
+    if (!session_store_load_lap(session_id, lap_idx_in_file,
+                                &s_ext_ref, s_ext_ref_points,
+                                EXT_REF_POINTS_CAP)) {
+        return false;
+    }
+    strncpy(s_ext_ref_sid, session_id, sizeof(s_ext_ref_sid) - 1);
+    s_ext_ref_sid[sizeof(s_ext_ref_sid) - 1] = '\0';
+    s_ext_ref_lap_idx = lap_idx_in_file;
+    return true;
+}
+
+// Scan saved sessions for the fastest lap on the currently active track and
+// install it as the live reference (AUTO_ALLTIME source). No-op when no
+// track is set or no usable saved lap exists — callers then leave the
+// reference in whatever state they put it.
+static void try_autoload_alltime_best_for_current_track() {
+    const TrackDef *td = track_get(s_track_idx);
+    if (!td) return;
+    char best_sid[20];
+    uint8_t best_lap;
+    uint32_t best_ms = 0;
+    if (!session_store_find_track_best(td->name, best_sid, sizeof(best_sid),
+                                       &best_lap, &best_ms)) return;
+    if (!load_external_ref(best_sid, best_lap)) return;
+    live_delta_set_ref(&s_ext_ref);
+    s_ref_src = REF_SRC_AUTO_ALLTIME;
+    log_i("Auto-reference: track '%s' all-time best = %lu ms (session %s lap %u)",
+          td->name, (unsigned long)best_ms, best_sid, (unsigned)(best_lap + 1));
+}
 
 // ---------------------------------------------------------------------------
 // Helpers: flat-earth projection (good to ~10 km accuracy)
@@ -163,8 +244,16 @@ static void finish_lap(uint32_t cross_ms) {
     if (!sess.laps[sess.best_lap_idx].valid ||
         lap_total_ms < sess.laps[sess.best_lap_idx].total_ms) {
         sess.best_lap_idx = sess.lap_count;
-        sess.ref_lap_idx  = sess.lap_count;
-        live_delta_set_ref(&rl);
+        // Only auto-promote the new best as live reference when the current
+        // reference wasn't chosen by the user. MANUAL_CURRENT / MANUAL_SAVED
+        // survive — the user picked them on purpose.
+        if (s_ref_src == REF_SRC_NONE ||
+            s_ref_src == REF_SRC_AUTO_ALLTIME ||
+            s_ref_src == REF_SRC_AUTO_CURRENT) {
+            sess.ref_lap_idx = sess.lap_count;
+            live_delta_set_ref(&rl);
+            s_ref_src = REF_SRC_AUTO_CURRENT;
+        }
     }
 
     log_i("Lap %d: %lu ms (%u pts)",
@@ -301,6 +390,19 @@ void lap_timer_set_track(int track_idx) {
     track_best_load(td->name, &tb);
     g_chasing_record = (s_is_circuit && tb.valid);
 
+    // Auto-select the all-time fastest saved lap on this track as the live
+    // reference, UNLESS the user already picked one manually. This way the
+    // delta bar has something to compare against even in the very first lap
+    // of a new session.
+    if (s_ref_src != REF_SRC_MANUAL_CURRENT &&
+        s_ref_src != REF_SRC_MANUAL_SAVED) {
+        // Reset first so a failed auto-load leaves us in a clean NONE state.
+        live_delta_reset();
+        s_ref_src = REF_SRC_NONE;
+        s_ext_ref_sid[0] = '\0';
+        try_autoload_alltime_best_for_current_track();
+    }
+
     log_i("Track set: %s (%s), %u sectors",
           td->name, s_is_circuit ? "circuit" : "A-B", s_sector_count);
     log_i("  SF line : (%.6f, %.6f) -> (%.6f, %.6f)",
@@ -337,6 +439,19 @@ void lap_timer_reset_session() {
     s_cur_count  = 0;
     s_prev_valid = false;
 
+    // If the previous reference pointed into the just-wiped session laps,
+    // drop it. External references (saved-session pick or auto all-time
+    // best) live in s_ext_ref and stay valid across sessions.
+    if (s_ref_src == REF_SRC_AUTO_CURRENT ||
+        s_ref_src == REF_SRC_MANUAL_CURRENT) {
+        live_delta_reset();
+        s_ref_src = REF_SRC_NONE;
+        // User rule: "no ref selected -> use all-time best". A session reset
+        // is exactly that state; try to re-install the all-time best as the
+        // fallback so lap 1 of the new session already has a target.
+        try_autoload_alltime_best_for_current_track();
+    }
+
     log_i("Session reset");
 }
 
@@ -345,7 +460,38 @@ void lap_timer_set_ref_lap(uint8_t lap_idx) {
     if (lap_idx >= sess.lap_count) return;
     sess.ref_lap_idx = lap_idx;
     live_delta_set_ref(&sess.laps[lap_idx]);
-    log_i("Reference lap set to %d", lap_idx + 1);
+    s_ref_src = REF_SRC_MANUAL_CURRENT;
+    s_ext_ref_sid[0] = '\0';
+    log_i("Reference lap set to current session lap %d", lap_idx + 1);
+}
+
+bool lap_timer_set_ref_from_saved(const char *session_id,
+                                  uint8_t lap_idx_in_file) {
+    if (!session_id || session_id[0] == '\0') return false;
+    if (!load_external_ref(session_id, lap_idx_in_file)) {
+        log_w("ref_from_saved: load failed (%s lap %u)",
+              session_id, (unsigned)(lap_idx_in_file + 1));
+        return false;
+    }
+    live_delta_set_ref(&s_ext_ref);
+    s_ref_src = REF_SRC_MANUAL_SAVED;
+    log_i("Reference lap set from saved session %s lap %u (%u pts)",
+          session_id, (unsigned)(lap_idx_in_file + 1),
+          (unsigned)s_ext_ref.point_count);
+    return true;
+}
+
+bool lap_timer_get_external_ref(char *sid_out, size_t sid_size,
+                                uint8_t *lap_idx_out) {
+    if (s_ref_src != REF_SRC_MANUAL_SAVED &&
+        s_ref_src != REF_SRC_AUTO_ALLTIME) return false;
+    if (s_ext_ref_sid[0] == '\0') return false;
+    if (sid_out && sid_size > 0) {
+        strncpy(sid_out, s_ext_ref_sid, sid_size - 1);
+        sid_out[sid_size - 1] = '\0';
+    }
+    if (lap_idx_out) *lap_idx_out = s_ext_ref_lap_idx;
+    return true;
 }
 
 void lap_timer_poll() {

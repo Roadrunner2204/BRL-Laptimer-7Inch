@@ -353,6 +353,228 @@ bool session_store_delete_session(const char *session_id)
 }
 
 // ---------------------------------------------------------------------------
+// Shared helper: read a saved session file into PSRAM and parse as cJSON.
+// Caller must cJSON_Delete() the returned doc AND heap_caps_free() *buf_out.
+// Returns nullptr on failure (and frees the buffer internally if needed).
+// ---------------------------------------------------------------------------
+static cJSON *load_session_json(const char *session_id, char **buf_out)
+{
+    *buf_out = nullptr;
+    if (!g_state.sd_available || !session_id || session_id[0] == '\0') return nullptr;
+
+    char fpath[64];
+    snprintf(fpath, sizeof(fpath), "/sessions/%s.json", session_id);
+
+    const size_t WORK_BUF_SIZE = 64 * 1024;
+    char *buf = (char *)heap_caps_malloc(WORK_BUF_SIZE, MALLOC_CAP_SPIRAM);
+    if (!buf) { log_e("load_session_json: PSRAM alloc failed"); return nullptr; }
+
+    if (!sd_read_file(fpath, buf, WORK_BUF_SIZE)) {
+        log_w("load_session_json: read %s failed", fpath);
+        heap_caps_free(buf);
+        return nullptr;
+    }
+    if (strlen(buf) >= WORK_BUF_SIZE - 1) {
+        log_e("load_session_json: %s > %u bytes (truncated)", fpath, (unsigned)WORK_BUF_SIZE);
+        heap_caps_free(buf);
+        return nullptr;
+    }
+
+    cJSON *doc = cJSON_Parse(buf);
+    if (!doc) {
+        log_e("load_session_json: cJSON_Parse failed for %s", fpath);
+        heap_caps_free(buf);
+        return nullptr;
+    }
+    *buf_out = buf;
+    return doc;
+}
+
+// ---------------------------------------------------------------------------
+// session_store_list_laps
+// ---------------------------------------------------------------------------
+int session_store_list_laps(const char *session_id,
+                            SessionLapInfo *out, int max_count)
+{
+    if (!out || max_count <= 0) return 0;
+
+    char *buf = nullptr;
+    cJSON *doc = load_session_json(session_id, &buf);
+    if (!doc) return 0;
+
+    int n = 0;
+    cJSON *j_laps = cJSON_GetObjectItem(doc, "laps");
+    if (cJSON_IsArray(j_laps)) {
+        cJSON *lap;
+        cJSON_ArrayForEach(lap, j_laps) {
+            if (n >= max_count) break;
+            SessionLapInfo &info = out[n];
+            memset(&info, 0, sizeof(info));
+
+            cJSON *j = cJSON_GetObjectItem(lap, "lap");
+            info.lap_num = cJSON_IsNumber(j) ? (uint8_t)j->valuedouble : (uint8_t)(n + 1);
+
+            j = cJSON_GetObjectItem(lap, "total_ms");
+            info.total_ms = cJSON_IsNumber(j) ? (uint32_t)j->valuedouble : 0;
+
+            j = cJSON_GetObjectItem(lap, "sectors");
+            if (cJSON_IsArray(j)) {
+                int sn = cJSON_GetArraySize(j);
+                if (sn > MAX_SECTORS) sn = MAX_SECTORS;
+                for (int s = 0; s < sn; s++) {
+                    cJSON *v = cJSON_GetArrayItem(j, s);
+                    if (cJSON_IsNumber(v)) info.sector_ms[s] = (uint32_t)v->valuedouble;
+                }
+                info.sectors_used = (sn > 0) ? (uint8_t)(sn - 1) : 0;
+            }
+
+            j = cJSON_GetObjectItem(lap, "track_points");
+            if (cJSON_IsArray(j)) info.point_count = (uint16_t)cJSON_GetArraySize(j);
+
+            n++;
+        }
+    }
+
+    cJSON_Delete(doc);
+    heap_caps_free(buf);
+    return n;
+}
+
+// ---------------------------------------------------------------------------
+// session_store_load_lap
+// ---------------------------------------------------------------------------
+bool session_store_load_lap(const char *session_id,
+                            uint8_t lap_idx_in_file,
+                            RecordedLap *out_lap,
+                            TrackPoint *points_buf,
+                            uint16_t points_cap)
+{
+    if (!out_lap || !points_buf || points_cap == 0) return false;
+    memset(out_lap, 0, sizeof(*out_lap));
+
+    char *buf = nullptr;
+    cJSON *doc = load_session_json(session_id, &buf);
+    if (!doc) return false;
+
+    bool ok = false;
+    cJSON *j_laps = cJSON_GetObjectItem(doc, "laps");
+    if (cJSON_IsArray(j_laps) && lap_idx_in_file < (uint8_t)cJSON_GetArraySize(j_laps)) {
+        cJSON *lap = cJSON_GetArrayItem(j_laps, lap_idx_in_file);
+
+        cJSON *j = cJSON_GetObjectItem(lap, "total_ms");
+        out_lap->total_ms = cJSON_IsNumber(j) ? (uint32_t)j->valuedouble : 0;
+
+        j = cJSON_GetObjectItem(lap, "sectors");
+        if (cJSON_IsArray(j)) {
+            int sn = cJSON_GetArraySize(j);
+            if (sn > MAX_SECTORS) sn = MAX_SECTORS;
+            for (int s = 0; s < sn; s++) {
+                cJSON *v = cJSON_GetArrayItem(j, s);
+                if (cJSON_IsNumber(v)) out_lap->sector_ms[s] = (uint32_t)v->valuedouble;
+            }
+            out_lap->sectors_used = (sn > 0) ? (uint8_t)(sn - 1) : 0;
+        }
+
+        j = cJSON_GetObjectItem(lap, "track_points");
+        if (cJSON_IsArray(j)) {
+            int pn = cJSON_GetArraySize(j);
+            if (pn > points_cap) pn = points_cap;
+            uint16_t kept = 0;
+            for (int p = 0; p < pn; p++) {
+                cJSON *pt = cJSON_GetArrayItem(j, p);
+                if (!cJSON_IsArray(pt) || cJSON_GetArraySize(pt) < 3) continue;
+                points_buf[kept].lat    = cJSON_GetArrayItem(pt, 0)->valuedouble;
+                points_buf[kept].lon    = cJSON_GetArrayItem(pt, 1)->valuedouble;
+                points_buf[kept].lap_ms = (uint32_t)cJSON_GetArrayItem(pt, 2)->valuedouble;
+                kept++;
+            }
+            out_lap->points      = points_buf;
+            out_lap->point_count = kept;
+            out_lap->valid       = (kept > 0);
+            ok = (kept > 0);
+        }
+    }
+
+    cJSON_Delete(doc);
+    heap_caps_free(buf);
+    return ok;
+}
+
+// ---------------------------------------------------------------------------
+// session_store_find_track_best
+// ---------------------------------------------------------------------------
+bool session_store_find_track_best(const char *track_name,
+                                   char *out_session_id, size_t id_size,
+                                   uint8_t *out_lap_idx,
+                                   uint32_t *out_total_ms)
+{
+    if (!track_name || track_name[0] == '\0' || !out_session_id || id_size == 0 ||
+        !out_lap_idx || !g_state.sd_available) return false;
+
+    DIR *dir = opendir("/sdcard/sessions");
+    if (!dir) return false;
+
+    const size_t WORK_BUF_SIZE = 64 * 1024;
+    char *buf = (char *)heap_caps_malloc(WORK_BUF_SIZE, MALLOC_CAP_SPIRAM);
+    if (!buf) { closedir(dir); return false; }
+
+    bool found = false;
+    uint32_t best_ms = 0;
+    out_session_id[0] = '\0';
+
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL) {
+        size_t nlen = strlen(ent->d_name);
+        if (nlen < 6) continue;
+        if (strcmp(ent->d_name + nlen - 5, ".json") != 0) continue;
+
+        char fpath[64];
+        snprintf(fpath, sizeof(fpath), "/sessions/%s", ent->d_name);
+        if (!sd_read_file(fpath, buf, WORK_BUF_SIZE)) continue;
+        if (strlen(buf) >= WORK_BUF_SIZE - 1) continue;
+
+        cJSON *doc = cJSON_Parse(buf);
+        if (!doc) continue;
+
+        // Track filter
+        cJSON *j_track = cJSON_GetObjectItem(doc, "track");
+        if (!cJSON_IsString(j_track) || strcmp(j_track->valuestring, track_name) != 0) {
+            cJSON_Delete(doc); continue;
+        }
+
+        cJSON *j_laps = cJSON_GetObjectItem(doc, "laps");
+        if (!cJSON_IsArray(j_laps)) { cJSON_Delete(doc); continue; }
+
+        int lap_i = 0;
+        cJSON *lap;
+        cJSON_ArrayForEach(lap, j_laps) {
+            cJSON *j_ms  = cJSON_GetObjectItem(lap, "total_ms");
+            cJSON *j_pts = cJSON_GetObjectItem(lap, "track_points");
+            if (cJSON_IsNumber(j_ms) && cJSON_IsArray(j_pts) &&
+                cJSON_GetArraySize(j_pts) > 0) {
+                uint32_t t = (uint32_t)j_ms->valuedouble;
+                if (t > 0 && (!found || t < best_ms)) {
+                    best_ms = t;
+                    *out_lap_idx = (uint8_t)lap_i;
+                    size_t id_len = nlen - 5;
+                    if (id_len >= id_size) id_len = id_size - 1;
+                    memcpy(out_session_id, ent->d_name, id_len);
+                    out_session_id[id_len] = '\0';
+                    found = true;
+                }
+            }
+            lap_i++;
+        }
+        cJSON_Delete(doc);
+    }
+
+    heap_caps_free(buf);
+    closedir(dir);
+    if (found && out_total_ms) *out_total_ms = best_ms;
+    return found;
+}
+
+// ---------------------------------------------------------------------------
 // session_store_list
 // ---------------------------------------------------------------------------
 int session_store_list(char ids[][20], int max_count)
