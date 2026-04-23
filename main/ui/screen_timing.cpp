@@ -25,7 +25,6 @@
 #include "../obd/obd_bt.h"
 #include "../wifi/wifi_mgr.h"
 #include "../storage/session_store.h"
-#include "../video/video_mgr.h"
 #include "compat.h"
 static const char *TAG = "screen_timing";
 
@@ -658,13 +657,11 @@ lv_obj_t *timing_screen_build() {
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, cb_back, LV_EVENT_CLICKED, nullptr);
 
-    // GPS satellites — moved right (2026-04-18 cracked-display workaround,
-    // rec button needs the near-left slot so it's inside the working
-    // top-left triangle; see project_cracked_display_ui_workaround).
+    // GPS satellites — left of track name, right of back button
     tw.sb_gps_lbl = lv_label_create(sb);
     lv_label_set_text(tw.sb_gps_lbl, LV_SYMBOL_GPS " 0");
     brl_style_label(tw.sb_gps_lbl, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
-    lv_obj_set_pos(tw.sb_gps_lbl, 240, 12);
+    lv_obj_set_pos(tw.sb_gps_lbl, 100, 12);
 
     // Track name — centered
     tw.track_name_lbl = lv_label_create(sb);
@@ -673,38 +670,7 @@ lv_obj_t *timing_screen_build() {
     brl_style_label(tw.track_name_lbl, &BRL_FONT_16, BRL_CLR_TEXT);
     lv_obj_align(tw.track_name_lbl, LV_ALIGN_CENTER, 0, 0);
 
-    // Manual record toggle — right of track name, left of OBD.
-    // Click starts/stops recording. Label text + colour is updated by the
-    // shared sb.rec refresh in app.cpp (which reads video_get_state() +
-    // video_camera_connected() every refresh) so the button reflects
-    // state changes from auto-start + grace-period auto-stop too.
-    // Position moved from x=750 to x=100 on 2026-04-18 — cracked-display
-    // workaround (diagonal crack bottom-left→top-right, dead zone is the
-    // bottom-right triangle; x=750 sits too close to the crack). The
-    // button is still a single toggle: same position for start and stop,
-    // only the label/colour swap via sb.rec refresh in app.cpp.
-    tw.rec_btn = lv_button_create(sb);
-    lv_obj_set_size(tw.rec_btn, 130, 30);
-    lv_obj_set_pos(tw.rec_btn, 100, 5);
-    brl_style_btn(tw.rec_btn, BRL_CLR_SURFACE2);
-    tw.rec_lbl = lv_label_create(tw.rec_btn);
-    lv_label_set_text(tw.rec_lbl, LV_SYMBOL_IMAGE " CAM");
-    brl_style_label(tw.rec_lbl, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
-    lv_obj_center(tw.rec_lbl);
-    lv_obj_add_event_cb(tw.rec_btn, [](lv_event_t * /*e*/) {
-        if (!video_camera_connected()) return;
-        if (video_get_state() == VIDEO_RECORDING) {
-            video_stop_recording();
-        } else {
-            // Hint with the current lap number so manual start during a
-            // session produces <session_id>_lap<N>.avi. Zero = no session
-            // context → keeps legacy REC_<ms>.avi behaviour.
-            uint8_t hint = (g_state.session.session_id[0] &&
-                            g_state.timing.lap_number)
-                           ? (uint8_t)g_state.timing.lap_number : 0;
-            video_start_recording(hint);
-        }
-    }, LV_EVENT_CLICKED, nullptr);
+    // (Manual record toggle removed 2026-04-21 — camera module deleted)
 
     // OBD — right side
     tw.sb_obd_lbl = lv_label_create(sb);

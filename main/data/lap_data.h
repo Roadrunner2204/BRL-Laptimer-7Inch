@@ -126,8 +126,6 @@ typedef struct {
 
     VehicleConnMode veh_conn_mode;  // OBD BLE or direct CAN
     bool           obd_connected;
-    bool           camera_connected;
-    bool           video_recording;
     uint8_t        language;   // 0 = DE, 1 = EN
     uint8_t        units;      // 0 = metric, 1 = imperial
     int            active_track_idx;  // -1 = none selected

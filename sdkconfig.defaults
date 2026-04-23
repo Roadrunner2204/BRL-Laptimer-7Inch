@@ -137,6 +137,9 @@ CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 # Prior value (98304 / 96 KB) left every SD write failing with
 # "dma_utils: esp_dma_capable_malloc: Not enough heap memory" once mic
 # and SDMMC tried to claim their share.
+# 2026-04-20 tried 196608 (192 KB) to give chunk=32 KB + pkts=16 room —
+# BLE vhci_drv malloc failed immediately at boot because the non-DMA
+# internal-RAM pool shrank below NimBLE's needs. Stay at 128 KB.
 # MUST delete sdkconfig + build/ before rebuild, or run "idf.py fullclean".
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=131072
 

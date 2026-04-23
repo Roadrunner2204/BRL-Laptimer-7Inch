@@ -40,8 +40,6 @@
 #include "data/lap_data.h"
 #include "data/car_profile.h"
 #include "can/can_bus.h"
-#include "video/video_mgr.h"
-#include "video/video_pipeline.h"
 
 static const char *TAG = "brl-laptimer";
 
@@ -94,12 +92,6 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     g_state_mutex = xSemaphoreCreateMutex();
-
-    /* ── JPEG HW codec early-init (BEFORE display + USB) ──
-     * HW codec needed for camera preview (HW JPEG decode → RGB565).
-     * Must init before display BSP (DMA fragmentation) and USB ISO.
-     * Passthrough recording skips codec, but preview always needs it. */
-    video_pipeline_early_init();
 
     /* ── Display via BSP (MIPI DSI + EK79007 + GT911 touch) ────── */
     bsp_display_cfg_t cfg = {
@@ -178,10 +170,6 @@ void app_main(void)
     ESP_LOGI(TAG, "wifi_set_mode(BRL_WIFI_AP)");
     wifi_set_mode(BRL_WIFI_AP);
 
-    /* ── Video recording (USB camera, JPEG pipeline, AVI) ───── */
-    ESP_LOGI(TAG, "video_init");
-    video_init();
-
     /* ── OBD / CAN vehicle data ──────────────────────────────── */
     ESP_LOGI(TAG, "obd_bt_init");
     obd_bt_init();
@@ -211,13 +199,6 @@ void app_main(void)
     );
 
     ESP_LOGI(TAG, "Setup complete — logic on Core 0, LVGL on Core 1 (BSP)");
-
-    /* Diagnostic: one-shot SD benchmark while USB-ISO stream is active.
-     * Kept for on-demand re-testing. Disabled by default — triggers
-     * 30 s Task-WDT on CPU 0 because SDMMC DMA-descriptor allocs stall
-     * under USB-ISO load. Already proved USB<->SD contention (0.32 MB/s
-     * vs 9.29 MB/s idle). Re-enable only when explicitly re-measuring. */
-    // video_run_sd_under_load_benchmark();
 
     /* Note: Unlike Arduino loop(), the BSP's esp_lvgl_port handles the
      * LVGL timer in its own task. app_main() can return here. The logic

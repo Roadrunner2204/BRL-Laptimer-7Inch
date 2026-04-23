@@ -119,7 +119,7 @@ void session_store_begin(const char *track_name, const char *session_name)
 // ---------------------------------------------------------------------------
 // session_store_save_lap
 // ---------------------------------------------------------------------------
-void session_store_save_lap(uint8_t lap_idx, const char *video_stem)
+void session_store_save_lap(uint8_t lap_idx)
 {
     if (!g_state.sd_available) { log_w("save_lap %d: SD unavailable", lap_idx + 1); return; }
 
@@ -214,11 +214,6 @@ void session_store_save_lap(uint8_t lap_idx, const char *video_stem)
             cJSON_AddItemToArray(pts, pt);
         }
         cJSON_AddItemToObject(lap_obj, "track_points", pts);
-    }
-
-    // Video file stem — app retrieves the lap video via GET /video/<stem>
-    if (video_stem && video_stem[0]) {
-        cJSON_AddStringToObject(lap_obj, "video", video_stem);
     }
 
     cJSON_AddItemToArray(laps, lap_obj);

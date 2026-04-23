@@ -14,11 +14,8 @@ extern "C" {
 
 void session_store_make_default_name(char *buf, size_t len);
 void session_store_begin(const char *track_name, const char *session_name);
-/// Save lap into session JSON. `video_stem` is the basename (without .avi) of
-/// the video file that covers this lap, or NULL / "" when no video was
-/// recorded. When set, it is written into the lap entry as "video" so the
-/// Android app can issue GET /video/<stem> for that specific lap.
-void session_store_save_lap(uint8_t lap_idx, const char *video_stem);
+/// Save lap into session JSON.
+void session_store_save_lap(uint8_t lap_idx);
 int  session_store_list(char ids[][20], int max_count);
 
 typedef struct {
