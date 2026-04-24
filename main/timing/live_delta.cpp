@@ -40,8 +40,8 @@ void live_delta_reset() {
     g_state.timing.live_delta_ms = 0;
 }
 
-void live_delta_update(double lat, double lon, uint32_t elapsed_ms,
-                       const RecordedLap *ref_lap) {
+void live_delta_update(double lat, double lon, uint32_t elapsed_ms) {
+    const RecordedLap *ref_lap = s_ref;
     if (!ref_lap || !ref_lap->valid || !ref_lap->points ||
         ref_lap->point_count == 0) return;
 

@@ -517,13 +517,11 @@ void lap_timer_poll() {
                                          now_ms - lt.lap_start_ms };
             s_last_point_ms = now_ms;
 
-            // Update live delta
-            LapSession &sess = g_state.session;
-            if (sess.laps[sess.ref_lap_idx].valid) {
-                live_delta_update(cur_lat, cur_lon,
-                                  now_ms - lt.lap_start_ms,
-                                  &sess.laps[sess.ref_lap_idx]);
-            }
+            // Update live delta — reference lap is whatever was last set
+            // via live_delta_set_ref (current session pick, saved-session
+            // pick, or auto-loaded all-time best). live_delta_update is a
+            // no-op internally when no reference is active.
+            live_delta_update(cur_lat, cur_lon, now_ms - lt.lap_start_ms);
         }
     }
 

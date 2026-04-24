@@ -20,8 +20,10 @@ extern "C" {
 #endif
 
 void live_delta_set_ref(const RecordedLap *ref_lap);
-void live_delta_update(double lat, double lon, uint32_t elapsed_ms,
-                       const RecordedLap *ref_lap);
+// Update live-delta for current GPS position + elapsed time.
+// Uses whatever reference lap was most recently passed to live_delta_set_ref
+// (no-op when nothing is set or the reference has no points).
+void live_delta_update(double lat, double lon, uint32_t elapsed_ms);
 void live_delta_reset(void);
 
 #ifdef __cplusplus
