@@ -64,6 +64,14 @@ bool session_store_find_track_best(const char *track_name,
                                    char *out_session_id, size_t id_size,
                                    uint8_t *out_lap_idx,
                                    uint32_t *out_total_ms);
+
+/// Scan all saved sessions for the track and find the fastest time PER SECTOR
+/// index across all laps. Writes one entry per sector into out_ms[] (length
+/// >= max_sectors). Slots for which no data exists are written as 0.
+/// Returns the number of sector slots populated with a non-zero value.
+int  session_store_find_track_sector_bests(const char *track_name,
+                                           uint32_t *out_ms,
+                                           uint8_t max_sectors);
 void session_store_load_user_tracks(void);
 bool session_store_save_user_track(const TrackDef *td);
 bool session_store_delete_user_track(int u_slot);

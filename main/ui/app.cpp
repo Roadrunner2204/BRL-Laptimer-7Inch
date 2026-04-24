@@ -2936,14 +2936,42 @@ void timer_live_update(lv_timer_t * /*t*/) {
                     fmt_sector_time(t, sizeof(t), ms);
                     snprintf(b, len, "S%u %s", (unsigned)n, t);
                 };
-                // Pick reference sector time (if any) + purple-mode flag.
-                // Purple: current session has NOT yet beaten the stored
-                // all-time best — driver is still chasing the record.
-                extern bool g_chasing_record;
-                uint32_t ref_ms = 0;
-                if (sess.lap_count > 0 && sess.ref_lap_idx < sess.lap_count) {
-                    ref_ms = sess.laps[sess.ref_lap_idx].sector_ms[si];
-                }
+
+                // --- F1-style sector coloring --------------------------------
+                // Purple : new all-time best (beats the scan-loaded record)
+                // Green  : new personal best this session for this sector
+                //          (or the lap that currently HOLDS the session best)
+                // Red    : slower than the session best
+                // Blue   : sector is currently running (set below as ACCENT)
+                //
+                // best_in_session(si, excl): min sector_ms[si] over
+                //   completed laps whose index != excl. excl=-1 = no exclusion.
+                // Excluding the lap being displayed lets us answer "was this
+                // faster than everything before it" rather than tautologically
+                // matching itself.
+                auto best_in_session = [&](int excl) -> uint32_t {
+                    uint32_t best = 0;
+                    for (uint8_t L = 0; L < sess.lap_count; L++) {
+                        if ((int)L == excl) continue;
+                        if (!sess.laps[L].valid) continue;
+                        uint32_t t = sess.laps[L].sector_ms[si];
+                        if (t > 0 && (best == 0 || t < best)) best = t;
+                    }
+                    return best;  // 0 = no data
+                };
+                uint32_t alltime_best = lap_timer_alltime_sector_best((uint8_t)si);
+
+                auto color_for = [&](uint32_t T, uint32_t session_best_prev) -> lv_color_t {
+                    if (T == 0) return BRL_CLR_TEXT;
+                    if (alltime_best > 0 && T < alltime_best)
+                        return BRL_CLR_PURPLE;
+                    if (session_best_prev == 0 || T < session_best_prev)
+                        return BRL_CLR_OK;      // green
+                    if (T == session_best_prev)
+                        return BRL_CLR_OK;      // matching session best → green
+                    return BRL_CLR_DANGER;      // red
+                };
+
                 lv_color_t clr = BRL_CLR_TEXT;
 
                 if (lt.in_lap) {
@@ -2951,42 +2979,33 @@ void timer_live_update(lv_timer_t * /*t*/) {
                     uint8_t cs      = lt.current_sector;
                     uint32_t run_ms = now_ms - lt.sector_start_ms;
                     if ((int)cs > si) {
-                        // Completed sector — color vs reference
-                        sec_fmt(buf, sizeof(buf), si+1, s_ms[si]);
-                        if (ref_ms > 0) {
-                            bool faster = s_ms[si] < ref_ms;
-                            if (g_chasing_record) {
-                                clr = faster ? BRL_CLR_PURPLE : BRL_CLR_PURPLE_DIM;
-                            } else {
-                                clr = faster ? BRL_CLR_OK : BRL_CLR_DANGER;
-                            }
-                        } else {
-                            clr = BRL_CLR_TEXT;
-                        }
+                        sec_fmt(buf, sizeof(buf), si + 1, s_ms[si]);
+                        // This sector just completed on the CURRENT lap.
+                        // Session best "before this sector" = best over
+                        // completed laps (current lap not yet in sess.laps).
+                        clr = color_for(s_ms[si], best_in_session(-1));
                     } else if ((int)cs == si) {
-                        // Currently running sector — show elapsed in accent
                         fmt_sector_time(buf, sizeof(buf), run_ms);
-                        clr = BRL_CLR_ACCENT;
+                        clr = BRL_CLR_ACCENT;   // running = blue
                     } else {
                         strncpy(buf, "---", sizeof(buf));
                         clr = BRL_CLR_TEXT_DIM;
                     }
                 } else if (sess.lap_count > 0) {
-                    // Between laps — show last lap's sector, colored vs ref
-                    const RecordedLap &last = sess.laps[sess.lap_count - 1];
-                    uint32_t s = last.sector_ms[si];
+                    // Between laps — show last completed lap's sector.
+                    // Exclude it from the "session best prev" so the very
+                    // lap that SET the session best still colors green.
+                    int last_idx = sess.lap_count - 1;
+                    uint32_t s = sess.laps[last_idx].sector_ms[si];
                     if (s > 0) {
-                        sec_fmt(buf, sizeof(buf), si+1, s);
-                        if (ref_ms > 0 && sess.ref_lap_idx != sess.lap_count - 1) {
-                            bool faster = s < ref_ms;
-                            if (g_chasing_record) {
-                                clr = faster ? BRL_CLR_PURPLE : BRL_CLR_PURPLE_DIM;
-                            } else {
-                                clr = faster ? BRL_CLR_OK : BRL_CLR_DANGER;
-                            }
-                        }
-                    } else strncpy(buf, "---", sizeof(buf));
-                } else strncpy(buf, "---", sizeof(buf));
+                        sec_fmt(buf, sizeof(buf), si + 1, s);
+                        clr = color_for(s, best_in_session(last_idx));
+                    } else {
+                        strncpy(buf, "---", sizeof(buf));
+                    }
+                } else {
+                    strncpy(buf, "---", sizeof(buf));
+                }
                 lv_obj_set_style_text_color(lbl, clr, 0);
                 lbl_set(lbl, buf);
                 return;

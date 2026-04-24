@@ -104,6 +104,16 @@ static TrackPoint  *s_ext_ref_points    = nullptr;
 static char         s_ext_ref_sid[20]   = {};
 static uint8_t      s_ext_ref_lap_idx   = 0;
 
+// All-time best per sector for the currently active track. 0 = no data.
+// Loaded at track-select; NOT updated mid-session (new records that happen
+// during the running session are detected by comparing against this snapshot).
+static uint32_t     s_alltime_sector_best[MAX_SECTORS] = {};
+
+uint32_t lap_timer_alltime_sector_best(uint8_t si) {
+    if (si >= MAX_SECTORS) return 0;
+    return s_alltime_sector_best[si];
+}
+
 static bool ensure_ext_ref_buffer() {
     if (s_ext_ref_points) return true;
     s_ext_ref_points = (TrackPoint *)heap_caps_malloc(
@@ -401,6 +411,18 @@ void lap_timer_set_track(int track_idx) {
         s_ref_src = REF_SRC_NONE;
         s_ext_ref_sid[0] = '\0';
         try_autoload_alltime_best_for_current_track();
+    }
+
+    // All-time best PER SECTOR (for F1-style purple sector coloring). These
+    // are independent of the live-delta reference: the purple signal fires
+    // whenever the driver beats the stored best for that sector index, even
+    // if their current reference lap had a slower one.
+    for (uint8_t i = 0; i < MAX_SECTORS; i++) s_alltime_sector_best[i] = 0;
+    int n_best = session_store_find_track_sector_bests(
+        td->name, s_alltime_sector_best, MAX_SECTORS);
+    if (n_best > 0) {
+        log_i("All-time sector bests loaded for '%s': %d sectors populated",
+              td->name, n_best);
     }
 
     log_i("Track set: %s (%s), %u sectors",

@@ -47,6 +47,12 @@ bool lap_timer_set_ref_from_saved(const char *session_id,
 bool lap_timer_get_external_ref(char *sid_out, size_t sid_size,
                                 uint8_t *lap_idx_out);
 
+// All-time best sector time (in ms) for sector index `si` on the currently
+// active track, loaded at track-select from /sessions/*.json. Returns 0 when
+// no saved lap has a value for that sector. Used for F1-style purple coloring
+// ("this sector is a new all-time record").
+uint32_t lap_timer_alltime_sector_best(uint8_t si);
+
 // Internal: called by storage module after saving
 void lap_timer_mark_saved(uint8_t lap_idx);
 

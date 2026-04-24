@@ -575,6 +575,77 @@ bool session_store_find_track_best(const char *track_name,
 }
 
 // ---------------------------------------------------------------------------
+// session_store_find_track_sector_bests
+//
+// Scans all saved sessions for the given track and collects the fastest time
+// per sector index. Used for F1-style sector coloring (purple = all-time best).
+// ---------------------------------------------------------------------------
+int session_store_find_track_sector_bests(const char *track_name,
+                                          uint32_t *out_ms,
+                                          uint8_t max_sectors)
+{
+    if (!track_name || track_name[0] == '\0' || !out_ms || max_sectors == 0 ||
+        !g_state.sd_available) return 0;
+
+    for (uint8_t i = 0; i < max_sectors; i++) out_ms[i] = 0;
+
+    DIR *dir = opendir("/sdcard/sessions");
+    if (!dir) return 0;
+
+    const size_t WORK_BUF_SIZE = 64 * 1024;
+    char *buf = (char *)heap_caps_malloc(WORK_BUF_SIZE, MALLOC_CAP_SPIRAM);
+    if (!buf) { closedir(dir); return 0; }
+
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL) {
+        size_t nlen = strlen(ent->d_name);
+        if (nlen < 6) continue;
+        if (strcmp(ent->d_name + nlen - 5, ".json") != 0) continue;
+
+        char fpath[64];
+        snprintf(fpath, sizeof(fpath), "/sessions/%s", ent->d_name);
+        if (!sd_read_file(fpath, buf, WORK_BUF_SIZE)) continue;
+        if (strlen(buf) >= WORK_BUF_SIZE - 1) continue;
+
+        cJSON *doc = cJSON_Parse(buf);
+        if (!doc) continue;
+
+        cJSON *j_track = cJSON_GetObjectItem(doc, "track");
+        if (!cJSON_IsString(j_track) ||
+            strcmp(j_track->valuestring, track_name) != 0) {
+            cJSON_Delete(doc); continue;
+        }
+
+        cJSON *j_laps = cJSON_GetObjectItem(doc, "laps");
+        if (!cJSON_IsArray(j_laps)) { cJSON_Delete(doc); continue; }
+
+        cJSON *lap;
+        cJSON_ArrayForEach(lap, j_laps) {
+            cJSON *j_secs = cJSON_GetObjectItem(lap, "sectors");
+            if (!cJSON_IsArray(j_secs)) continue;
+            int n = cJSON_GetArraySize(j_secs);
+            if (n > (int)max_sectors) n = (int)max_sectors;
+            for (int si = 0; si < n; si++) {
+                cJSON *v = cJSON_GetArrayItem(j_secs, si);
+                if (!cJSON_IsNumber(v)) continue;
+                uint32_t t = (uint32_t)v->valuedouble;
+                if (t > 0 && (out_ms[si] == 0 || t < out_ms[si])) {
+                    out_ms[si] = t;
+                }
+            }
+        }
+        cJSON_Delete(doc);
+    }
+
+    heap_caps_free(buf);
+    closedir(dir);
+
+    int populated = 0;
+    for (uint8_t i = 0; i < max_sectors; i++) if (out_ms[i] > 0) populated++;
+    return populated;
+}
+
+// ---------------------------------------------------------------------------
 // session_store_list
 // ---------------------------------------------------------------------------
 int session_store_list(char ids[][20], int max_count)

@@ -45,7 +45,22 @@ void live_delta_update(double lat, double lon, uint32_t elapsed_ms) {
     if (!ref_lap || !ref_lap->valid || !ref_lap->points ||
         ref_lap->point_count == 0) return;
 
+    // Freeze the delta once the driver has gone beyond the reference lap's
+    // recorded length. Without this the cursor sticks at the last ref point
+    // and (elapsed - last_point.lap_ms) just keeps growing linearly, which
+    // looks exactly like a stopwatch ticking up on the delta display. Once
+    // the next S/F crossing rewinds the cursor, the value snaps back —
+    // producing the oscillation the user reported.
+    uint32_t ref_total_ms = ref_lap->points[ref_lap->point_count - 1].lap_ms;
+    if (ref_total_ms > 0 && elapsed_ms > ref_total_ms + 1000) {
+        // Driver is more than 1 s past the end of the reference lap —
+        // further comparison is meaningless. Keep the last computed delta
+        // on screen until the new lap starts.
+        return;
+    }
+
     uint16_t &cursor = g_state.timing.ref_point_idx;
+    if (cursor >= ref_lap->point_count) cursor = ref_lap->point_count - 1;
 
     // Search bidirectionally around cursor to handle GPS jitter
     int start = (int)cursor - (SEARCH_WINDOW / 4);  // look back ~1.5s
