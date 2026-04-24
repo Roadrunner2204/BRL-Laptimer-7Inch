@@ -790,14 +790,45 @@ class App(tk.Tk):
     def _build_brl_tab(self):
         p = self.tab_brl
         tk.Label(p,
-                 text="Waehle links eine .TRX oder .TRI Datei, fuelle die "
-                      "Fahrzeugdaten aus und erstelle daraus ein "
-                      "verschluesseltes .brl Profil.\nEine ausgewaehlte .brl "
-                      "Datei befuellt das Formular automatisch.",
+                 text="Waehle links eine .TRX/.TRI/.brl als Quelle und "
+                      "fuelle die Fahrzeugdaten aus. Eine ausgewaehlte "
+                      ".brl Datei befuellt das Formular automatisch.\n"
+                      "Zum Kombinieren mehrerer Quellen (z.B. OBD2 11-Bit + "
+                      "OBD 29-Bit Extended) auf 'Alle Dateien zusammenfuehren' "
+                      "schalten.",
                  bg=COL_BG, fg=COL_GRAY,
                  font=("Helvetica", 10),
                  anchor="w", justify="left", wraplength=720
-                 ).pack(fill="x", padx=14, pady=(14, 8))
+                 ).pack(fill="x", padx=14, pady=(14, 6))
+
+        # -- Quelle (Einzel-Datei / Merge) -----------------------------------
+        src_frame = tk.LabelFrame(p, text="  QUELLE  ",
+                                  bg=COL_PANEL, fg=COL_BLUE,
+                                  font=("Helvetica", 9, "bold"),
+                                  bd=1, relief="flat",
+                                  highlightbackground=COL_BORDER,
+                                  highlightthickness=1)
+        src_frame.pack(fill="x", padx=14, pady=(0, 8))
+        self.var_src_mode = tk.StringVar(value="single")
+        tk.Radiobutton(src_frame,
+                       text="Nur ausgewaehlte Datei",
+                       variable=self.var_src_mode, value="single",
+                       command=self._update_brl_src_label,
+                       bg=COL_PANEL, fg=COL_GRAY, selectcolor=COL_BG,
+                       activebackground=COL_PANEL, activeforeground=COL_WHITE,
+                       font=("Helvetica", 10)).pack(anchor="w", padx=12, pady=(6, 0))
+        tk.Radiobutton(src_frame,
+                       text="Alle geladenen Dateien zusammenfuehren "
+                            "(OBD2 + OBD29 etc.)",
+                       variable=self.var_src_mode, value="merge",
+                       command=self._update_brl_src_label,
+                       bg=COL_PANEL, fg=COL_GRAY, selectcolor=COL_BG,
+                       activebackground=COL_PANEL, activeforeground=COL_WHITE,
+                       font=("Helvetica", 10)).pack(anchor="w", padx=12, pady=(0, 6))
+        self.lbl_brl_src = tk.Label(src_frame, text="",
+                                    bg=COL_PANEL, fg=COL_AMBER,
+                                    font=("Helvetica", 9), anchor="w")
+        self.lbl_brl_src.pack(fill="x", padx=12, pady=(0, 8))
 
         form = tk.Frame(p, bg=COL_BG)
         form.pack(fill="x", padx=14, pady=(0, 6))
@@ -955,8 +986,12 @@ class App(tk.Tk):
                 "", "end", iid=str(i),
                 text=lf.path.name,
                 values=(badge, count))
-        self.lbl_count.config(text=f"{len(self._files)} Datei(en)")
+        total = sum(lf.active_sensor_count() for lf in self._files
+                    if not lf.error)
+        self.lbl_count.config(
+            text=f"{len(self._files)} Datei(en), {total} Sensoren gesamt")
         self._refresh_preview()
+        self._update_brl_src_label()
 
     # -- Selection handlers -------------------------------------------------
 
@@ -986,6 +1021,7 @@ class App(tk.Tk):
         if lf and not self.var_brl_out.get():
             self.var_brl_out.set(str(lf.path.with_suffix(".brl")))
         self._refresh_preview()
+        self._update_brl_src_label()
 
     def _on_select_sensor(self, _evt=None):
         lf = self._selected_file()
@@ -1147,17 +1183,91 @@ class App(tk.Tk):
 
     # -- BRL create ----------------------------------------------------------
 
+    def _update_brl_src_label(self):
+        """Zeigt im BRL-Tab an, aus welchen Sensoren gleich gebaut wird."""
+        if not hasattr(self, "lbl_brl_src"):
+            return  # BRL-Tab noch nicht gebaut
+        mode = self.var_src_mode.get()
+        if mode == "merge":
+            sensors, dups = self._collect_merge_sensors()
+            msg = f">>>  {len(sensors)} Sensoren aus {len([lf for lf in self._files if not lf.error])} Dateien"
+            if dups > 0:
+                msg += f"  ({dups} Duplikate uebersprungen)"
+            self.lbl_brl_src.config(text=msg)
+        else:
+            lf = self._selected_file()
+            if not lf or lf.error:
+                self.lbl_brl_src.config(text=">>>  keine Quelldatei ausgewaehlt")
+            else:
+                self.lbl_brl_src.config(
+                    text=f">>>  {lf.active_sensor_count()} Sensoren aus "
+                         f"{lf.path.name} ({lf.kind})")
+
+    def _collect_merge_sensors(self) -> tuple[list[dict], int]:
+        """
+        Vereint Sensoren aus ALLEN geladenen (nicht fehlerhaften) Dateien.
+        Dedup anhand des Sensor-Namens (case-insensitiv, whitespace-getrimmt)
+        - das erste Vorkommen gewinnt. So wird z.B. "RPM" nur einmal drin sein,
+        egal ob es aus der OBD2- oder der OBD29-Datei kommt. Leere / "empty"
+        Slots werden uebersprungen. Slots werden neu durchnummeriert 0..N-1.
+
+        Rueckgabe: (sensor_list, anzahl_duplikate_verworfen)
+        """
+        seen: set[str] = set()
+        merged: list[dict] = []
+        dups = 0
+        for lf in self._files:
+            if lf.error:
+                continue
+            for s in lf.sensors:
+                if s.get("_empty") or s.get("_leer"):
+                    continue
+                name = str(s.get("name", "")).strip().lower()
+                if not name:
+                    # Unbenannte Slots nicht dedupen (koennten echte,
+                    # aber noch unbenannte Sensoren sein) — trotzdem mit
+                    # eindeutigem Fallback-Key ablegen.
+                    name = f"_unnamed_{len(merged)}"
+                if name in seen:
+                    dups += 1
+                    continue
+                seen.add(name)
+                merged.append(dict(s))   # copy so we can rewrite _slot
+        # Slots neu durchnummerieren
+        for i, s in enumerate(merged):
+            s["_slot"] = i
+        return merged, dups
+
     def _do_create_brl(self):
-        lf = self._selected_file()
-        if not lf:
-            messagebox.showwarning("Keine Auswahl",
-                                   "Bitte in der Liste links eine Quelldatei "
-                                   "(.TRX/.TRI/.brl) auswaehlen.")
-            return
-        if lf.error:
-            messagebox.showerror("Datei-Fehler",
-                                 f"Datei konnte nicht geladen werden:\n{lf.error}")
-            return
+        mode = self.var_src_mode.get()
+
+        if mode == "merge":
+            sensors, dups = self._collect_merge_sensors()
+            if not sensors:
+                messagebox.showwarning(
+                    "Keine Sensoren",
+                    "Keine aktiven Sensoren in den geladenen Dateien.")
+                return
+            src_desc = (f"{len(sensors)} Sensoren aus "
+                        f"{len([lf for lf in self._files if not lf.error])} Dateien"
+                        + (f" ({dups} Duplikate verworfen)" if dups else ""))
+        else:
+            lf = self._selected_file()
+            if not lf:
+                messagebox.showwarning(
+                    "Keine Auswahl",
+                    "Bitte in der Liste links eine Quelldatei "
+                    "(.TRX/.TRI/.brl) auswaehlen oder auf 'Alle Dateien "
+                    "zusammenfuehren' umschalten.")
+                return
+            if lf.error:
+                messagebox.showerror(
+                    "Datei-Fehler",
+                    f"Datei konnte nicht geladen werden:\n{lf.error}")
+                return
+            sensors = lf.sensors
+            src_desc = f"{lf.active_sensor_count()} Sensoren aus {lf.path.name}"
+
         if not self.var_engine.get().strip():
             messagebox.showwarning("Motor fehlt",
                                    "Bitte Motorcode eingeben (z.B. N47D20).")
@@ -1183,17 +1293,15 @@ class App(tk.Tk):
         }
         self.btn_brl_create.config(state="disabled", text="Erstelle...")
         threading.Thread(target=self._run_create_brl,
-                         args=(lf, vehicle, Path(out)),
+                         args=(sensors, vehicle, Path(out), src_desc),
                          daemon=True).start()
 
-    def _run_create_brl(self, lf, vehicle, out_path):
+    def _run_create_brl(self, sensors, vehicle, out_path, src_desc):
         try:
-            data = create_brl(vehicle, lf.sensors)
+            data = create_brl(vehicle, sensors)
             out_path.write_bytes(data)
-            active = sum(1 for s in lf.sensors
-                         if not s.get("_empty") and not s.get("_leer"))
             self.after(0, self._brl_done, True,
-                       f"{active} Sensoren  ->  {out_path.name} "
+                       f"{src_desc}  ->  {out_path.name} "
                        f"({len(data) / 1024:.1f} KB)",
                        str(out_path))
         except Exception as e:
@@ -1218,28 +1326,35 @@ class App(tk.Tk):
 # ===========================================================================
 
 def _open_file(path: str):
+    # Immer fire-and-forget: subprocess.run() wartet auf Prozess-Ende und
+    # blockiert damit den Tkinter-Mainloop, was die GUI einfriert. Popen
+    # (ohne .wait()) loest das.
     import platform
     try:
         if platform.system() == "Windows":
             os.startfile(path)  # type: ignore[attr-defined]
         elif platform.system() == "Darwin":
-            subprocess.run(["open", path])
+            subprocess.Popen(["open", path])
         else:
-            subprocess.run(["xdg-open", path])
+            subprocess.Popen(["xdg-open", path])
     except Exception:
         pass
 
 
 def _open_folder(file_path: str):
+    # Dasselbe Problem wie in _open_file: subprocess.run blockiert, bis
+    # Explorer / open / xdg-open zurueckkehren. Auf Windows haengt sich
+    # 'explorer /select,…' nach dem Export manchmal an die Tool-UI, GUI
+    # friert ein. Popen laeuft asynchron, Tool bleibt reaktiv.
     import platform
     try:
         p = Path(file_path)
         if platform.system() == "Windows":
-            subprocess.run(["explorer", "/select,", str(p)])
+            subprocess.Popen(["explorer", "/select,", str(p)])
         elif platform.system() == "Darwin":
-            subprocess.run(["open", "-R", str(p)])
+            subprocess.Popen(["open", "-R", str(p)])
         else:
-            subprocess.run(["xdg-open", str(p.parent)])
+            subprocess.Popen(["xdg-open", str(p.parent)])
     except Exception:
         pass
 
