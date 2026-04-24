@@ -39,6 +39,10 @@ __NEEDS_ONBOARD
 # Editor
 /.vscode/
 
+# Python bytecode (from tools/)
+__pycache__/
+*.pyc
+
 # Scratch / personal notes
 Scratchpad.md
 Daily Notes/
