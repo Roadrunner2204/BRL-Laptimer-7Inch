@@ -87,17 +87,20 @@ jobs:
           path: dist/*-Setup-v${{ steps.ver.outputs.version }}.exe
           if-no-files-found: error
 
-      # Einzelne portable .exe (onefile-Build) — wird separat vom Installer
-      # hochgeladen, damit es weiterhin einen Null-Install-Download gibt.
+      # Portable onefile .exe — NUR wenn kein Installer konfiguriert ist.
+      # (Sobald ein Tool seinen eigenen Inno-Setup-Installer hat, wollen wir
+      # nicht parallel die portable .exe weiter ausliefern — User soll genau
+      # einen klaren Weg haben zur Installation via Setup + Deinstallation
+      # ueber "Apps & Features".)
       - name: Upload portable onefile EXE
-        if: matrix.onefile == true
+        if: matrix.iss == '' && matrix.onefile == true
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}-v${{ steps.ver.outputs.version }}-portable
           path: dist/${{ matrix.name }}.exe
           if-no-files-found: error
 
-      # onedir-Build ohne Installer — ganzer Ordner wird als ZIP artefakt
+      # onedir-Build ohne Installer — ganzer Ordner als ZIP artefakt
       - name: Upload portable onedir EXE folder
         if: matrix.iss == '' && matrix.onefile != true
         uses: actions/upload-artifact@v4
