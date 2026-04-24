@@ -54,6 +54,12 @@ extern CarProfile g_car_profile;
 // Load a .brl profile from SD card. Returns true on success.
 bool car_profile_load(const char *filename);
 
+// Load a .brl profile into a caller-supplied CarProfile struct instead of
+// overwriting g_car_profile. Used e.g. by the OBD BLE module to load
+// /cars/OBD.brl as an OBD2 fallback when the main vehicle profile doesn't
+// have OBD2 sensors. Returns true on success.
+bool car_profile_load_into(const char *filename, CarProfile *dst);
+
 // List available .brl profiles on SD. Returns count.
 // filenames[i] will contain just the filename (e.g. "N47F.brl")
 int  car_profile_list(char filenames[][CAR_NAME_LEN], int max_count);

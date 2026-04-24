@@ -141,12 +141,13 @@ static void parse_sensors(cJSON *arr, CarProfile *p)
 }
 
 // ---------------------------------------------------------------------------
-// car_profile_load -- read & decrypt .brl from SD
+// car_profile_load_into -- read & decrypt .brl from SD into provided struct
 // ---------------------------------------------------------------------------
-bool car_profile_load(const char *filename)
+bool car_profile_load_into(const char *filename, CarProfile *dst)
 {
-    g_car_profile.loaded = false;
-    memset(&g_car_profile, 0, sizeof(g_car_profile));
+    if (!dst) return false;
+    dst->loaded = false;
+    memset(dst, 0, sizeof(*dst));
 
     if (!sd_mgr_available()) {
         log_e("SD not available");
@@ -263,7 +264,7 @@ bool car_profile_load(const char *filename)
 
     // Extract vehicle info
     cJSON *j;
-    CarProfile *p = &g_car_profile;
+    CarProfile *p = dst;
 
     j = cJSON_GetObjectItem(doc, "engine");
     if (cJSON_IsString(j)) strncpy(p->engine, j->valuestring, CAR_ENGINE_LEN - 1);
@@ -300,6 +301,14 @@ bool car_profile_load(const char *filename)
           p->can_bus, p->bitrate);
 
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// car_profile_load -- thin wrapper that loads into the global g_car_profile
+// ---------------------------------------------------------------------------
+bool car_profile_load(const char *filename)
+{
+    return car_profile_load_into(filename, &g_car_profile);
 }
 
 // ---------------------------------------------------------------------------

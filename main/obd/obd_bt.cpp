@@ -23,6 +23,7 @@
 
 #include "obd_bt.h"
 #include "../data/lap_data.h"
+#include "../data/car_profile.h"
 #include "compat.h"
 
 #include <string.h>
@@ -104,16 +105,107 @@ static volatile bool s_rx_ready    = false;
 // NimBLE host sync flag
 static volatile bool s_ble_synced  = false;
 
+// ---------------------------------------------------------------------------
 // PID round-robin
-static const uint8_t PID_LIST[] = {
+//
+// Default list (used when no car profile is loaded). Mode 01 PIDs decoded
+// with the hardcoded formulas in apply_default_pid() below.
+static const uint8_t DEFAULT_PIDS[] = {
     0x0C,  // RPM          (2 B) -> (256A + B) / 4
     0x11,  // Throttle     (1 B) -> A * 100 / 255
     0x0B,  // MAP kPa      (1 B) -> A
     0x05,  // Coolant C    (1 B) -> A - 40
     0x0F,  // Intake C     (1 B) -> A - 40
 };
-static const uint8_t PID_COUNT = sizeof(PID_LIST);
-static uint8_t s_pid_idx = 0;
+
+// Active PID entry. When sensor != nullptr, the response is decoded with
+// the profile's scale/offset/start/len instead of the built-in formulas.
+struct ActivePid {
+    uint8_t          pid;
+    const CarSensor *sensor;
+};
+#define MAX_ACTIVE_PIDS  32    // cap how many PIDs we actually round-robin
+static ActivePid s_pids[MAX_ACTIVE_PIDS];
+static uint8_t   s_pid_count = 0;
+static uint8_t   s_pid_idx   = 0;
+
+// Secondary profile loaded from /cars/OBD.brl. Only populated when the main
+// car profile doesn't contain OBD2 (proto=7DF) sensors, so that users with
+// a PT-CAN hardwire profile still get OBD2 data via the BLE adapter.
+static CarProfile s_obd_profile_fallback = {};
+static bool       s_obd_profile_tried    = false;
+
+static int count_obd2_sensors(const CarProfile *p)
+{
+    if (!p || !p->loaded) return 0;
+    int n = 0;
+    for (int i = 0; i < p->sensor_count; i++) {
+        if (p->sensors[i].proto == 7) n++;
+    }
+    return n;
+}
+
+static void append_obd2_sensors(const CarProfile *p)
+{
+    if (!p || !p->loaded) return;
+    for (int i = 0; i < p->sensor_count; i++) {
+        const CarSensor *s = &p->sensors[i];
+        if (s->proto != 7) continue;
+        if (s_pid_count >= MAX_ACTIVE_PIDS) break;
+        s_pids[s_pid_count].pid    = (uint8_t)(s->can_id & 0xFF);
+        s_pids[s_pid_count].sensor = s;
+        s_pid_count++;
+    }
+}
+
+// Build the active PID list. The BRL OBD BLE Adapter speaks OBD2 Mode 01
+// and only that, so the data source is always /cars/OBD.brl — NOT the
+// currently-active vehicle profile (which lives alongside for CAN-Direct
+// hardwire use and display labelling).
+//
+// Order of preference:
+//   1. /cars/OBD.brl from SD card (loaded lazily on first use).
+//   2. Built-in DEFAULT_PIDS (RPM / TPS / MAP / Coolant / Intake) as a
+//      last resort if OBD.brl isn't on the card.
+//
+// "OBD2 sensor" inside OBD.brl means CAN-Checked proto field "7DF"
+// (atoi() gives 7). Each sensor's low can_id byte is taken as the Mode-01
+// PID. Non-OBD2 protocols (PT-CAN broadcast=0, BMW UDS=1, 29-bit extended
+// etc.) in OBD.brl are skipped because the adapter firmware only handles
+// Mode 01.
+static void rebuild_pid_list(void)
+{
+    s_pid_count = 0;
+    s_pid_idx   = 0;
+
+    // Load /cars/OBD.brl lazily — once per session. If the user adds or
+    // replaces OBD.brl, a reboot (or a physical BLE reconnect, which forces
+    // the tried-flag below back to false in future) picks it up.
+    if (!s_obd_profile_tried) {
+        s_obd_profile_tried = true;
+        if (car_profile_load_into("OBD.brl", &s_obd_profile_fallback)) {
+            ESP_LOGI(TAG, "Loaded /cars/OBD.brl: %d sensors (%d OBD2-flagged)",
+                     s_obd_profile_fallback.sensor_count,
+                     count_obd2_sensors(&s_obd_profile_fallback));
+        } else {
+            ESP_LOGW(TAG, "/cars/OBD.brl not found — using built-in 5-PID fallback");
+        }
+    }
+
+    if (count_obd2_sensors(&s_obd_profile_fallback) > 0) {
+        append_obd2_sensors(&s_obd_profile_fallback);
+        ESP_LOGI(TAG, "OBD.brl: %d OBD2 PIDs active for BLE adapter", s_pid_count);
+        return;
+    }
+
+    // Last resort — hardcoded defaults (RPM/TPS/MAP/Coolant/Intake)
+    for (uint8_t p : DEFAULT_PIDS) {
+        s_pids[s_pid_count].pid    = p;
+        s_pids[s_pid_count].sensor = nullptr;
+        s_pid_count++;
+    }
+    ESP_LOGI(TAG, "Using %d built-in OBD2 PIDs (no OBD.brl on SD)", s_pid_count);
+}
 
 // ---------------------------------------------------------------------------
 // Forward declarations
@@ -122,10 +214,69 @@ static int  gap_event_cb(struct ble_gap_event *event, void *arg);
 static void start_scan(void);
 
 // ---------------------------------------------------------------------------
-// Parse response and update g_state.obd
+// Route a decoded sensor value into g_state.obd by sensor name.
+//
+// Only names that map to a g_state.obd field are routed — other values are
+// currently dropped because there's no generic slot for them. Extending this
+// (arbitrary sensor -> arbitrary dashboard slot) is separate work.
 // ---------------------------------------------------------------------------
-static void apply_pid(uint8_t pid, const uint8_t *d, uint8_t len)
+static void route_sensor(const char *name, float value)
 {
+    ObdData &obd = g_state.obd;
+    if      (strcmp(name, "RPM") == 0)      obd.rpm           = value;
+    else if (strcmp(name, "TPS") == 0)      obd.throttle_pct  = value;
+    else if (strcmp(name, "Throttle") == 0) obd.throttle_pct  = value;
+    else if (strcmp(name, "Boost") == 0)    obd.boost_kpa     = value;
+    else if (strcmp(name, "MAP") == 0)      obd.boost_kpa     = value;
+    else if (strcmp(name, "Lambda") == 0)   obd.lambda        = value;
+    else if (strcmp(name, "WaterT") == 0)   obd.coolant_temp_c= value;
+    else if (strcmp(name, "CoolantT") == 0) obd.coolant_temp_c= value;
+    else if (strcmp(name, "Coolant") == 0)  obd.coolant_temp_c= value;
+    else if (strcmp(name, "IntakeT") == 0)  obd.intake_temp_c = value;
+    else if (strcmp(name, "IAT") == 0)      obd.intake_temp_c = value;
+    else if (strcmp(name, "Brake") == 0)    obd.brake_pct     = value;
+    else if (strcmp(name, "Steering") == 0) obd.steering_angle= value;
+    // Unknown names are intentionally silent — not a bug.
+}
+
+// ---------------------------------------------------------------------------
+// Decode response via profile sensor (scale/offset/start/len from the .brl).
+// Used when a car profile is active and the PID belongs to it.
+// ---------------------------------------------------------------------------
+static void apply_profile_sensor(const CarSensor *s,
+                                 const uint8_t *d, uint8_t len)
+{
+    if (!s || s->start >= len) return;
+    int32_t raw = 0;
+    if (s->len == 2 && s->start + 1 < len) {
+        // Big-endian (Motorola byte order, what OBD2 returns)
+        raw = ((int32_t)d[s->start] << 8) | d[s->start + 1];
+    } else {
+        raw = d[s->start];
+    }
+    if (!s->is_unsigned) {
+        if (s->len == 2 && raw > 32767) raw -= 65536;
+        else if (s->len == 1 && raw > 127) raw -= 256;
+    }
+    float value = (float)raw * s->scale + s->offset;
+    if (value < s->min_val) value = s->min_val;
+    if (value > s->max_val) value = s->max_val;
+    route_sensor(s->name, value);
+}
+
+// ---------------------------------------------------------------------------
+// Parse response and update g_state.obd.
+//
+// If the current PID came from a car profile entry, decode via the profile's
+// scale/offset. Otherwise use the built-in formulas for the 5 default PIDs.
+// ---------------------------------------------------------------------------
+static void apply_pid(uint8_t pid, const CarSensor *sensor,
+                      const uint8_t *d, uint8_t len)
+{
+    if (sensor) {
+        apply_profile_sensor(sensor, d, len);
+        return;
+    }
     ObdData &obd = g_state.obd;
     switch (pid) {
         case 0x0C: if (len >= 2) obd.rpm           = ((d[0] * 256u) + d[1]) / 4.0f; break;
@@ -186,11 +337,13 @@ static int on_subscribe_cb(uint16_t conn_handle,
         ESP_LOGI(TAG, "Subscribed to RESP notifications");
         g_state.obd.connected = true;
         g_state.obd_connected = true;
-        s_pid_idx = 0;
+        // Rebuild the PID list from the currently loaded car profile; falls
+        // back to the 5 default PIDs if no profile (or no OBD2 sensors).
+        rebuild_pid_list();
         s_state   = OBD_CONNECTED;
         ESP_LOGI(TAG, "Connected to BRL OBD Adapter");
         // Send first PID request
-        send_pid_request(PID_LIST[s_pid_idx]);
+        if (s_pid_count > 0) send_pid_request(s_pids[s_pid_idx].pid);
     } else {
         ESP_LOGE(TAG, "Subscribe failed: status=%d", error->status);
         do_disconnect();
@@ -594,7 +747,7 @@ void obd_bt_poll(void)
                 s_retry_ts = now;
                 break;
             }
-            send_pid_request(PID_LIST[s_pid_idx]);
+            if (s_pid_count > 0) send_pid_request(s_pids[s_pid_idx].pid);
             break;
 
         case OBD_REQUESTING:
@@ -608,14 +761,18 @@ void obd_bt_poll(void)
                 // Response: [CMD=0x01] [STATUS] [data bytes...]
                 if (s_rx_len >= 2 &&
                     s_rx_buf[0] == CMD_READ_PID &&
-                    s_rx_buf[1] == STATUS_OK) {
-                    apply_pid(PID_LIST[s_pid_idx], s_rx_buf + 2, s_rx_len - 2);
+                    s_rx_buf[1] == STATUS_OK && s_pid_count > 0) {
+                    apply_pid(s_pids[s_pid_idx].pid,
+                              s_pids[s_pid_idx].sensor,
+                              s_rx_buf + 2, s_rx_len - 2);
                 }
-                s_pid_idx = (s_pid_idx + 1) % PID_COUNT;
+                if (s_pid_count > 0)
+                    s_pid_idx = (s_pid_idx + 1) % s_pid_count;
                 s_state   = OBD_CONNECTED;
             } else if (now - s_req_ts > REQ_TIMEOUT_MS) {
                 // No response -- skip this PID, move on
-                s_pid_idx = (s_pid_idx + 1) % PID_COUNT;
+                if (s_pid_count > 0)
+                    s_pid_idx = (s_pid_idx + 1) % s_pid_count;
                 s_state   = OBD_CONNECTED;
             }
             break;
