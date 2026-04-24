@@ -1,18 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
 #
-# PyInstaller Spec fuer BRL Can Data Tool (vereintes TRX/TRI/BRL Werkzeug)
+# PyInstaller Spec fuer BRL Can Data Tool — ONEFILE Build
 #
-# Bauen (vom Repo-Root):
+# Ergebnis: dist/BRL-Can-Data-Tool.exe  (eine einzelne portable Datei)
+#
+# Lokaler Build:
 #   pip install pyinstaller pycryptodome openpyxl
 #   pyinstaller tools/brl_can_data_tool.spec
 #
-# Ausgabe: dist/BRL-Can-Data-Tool/BRL-Can-Data-Tool.exe
+# In GitHub Actions laeuft derselbe Aufruf (.github/workflows/build-installers.yml).
 
 from pathlib import Path
 
 src = str(Path(SPECPATH) / 'brl_can_data_tool.py')
 
-# logo.png mitnehmen falls vorhanden (Tool sucht es via _MEIPASS)
+# logo.png mitbuendeln, falls vorhanden (Tool sucht es via sys._MEIPASS)
 datas = []
 logo = Path(SPECPATH) / 'logo.png'
 if logo.exists():
@@ -44,30 +46,25 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
+# ── Onefile ──────────────────────────────────────────────────────────────────
+# Kein COLLECT-Block: a.binaries + a.datas werden direkt in die .exe gepackt.
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
     name='BRL-Can-Data-Tool',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=False,
+    upx_exclude=[],
+    runtime_tmpdir=None,
+    console=False,                # kein Konsolenfenster beim Start
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-)
-
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=False,
-    upx_exclude=[],
-    name='BRL-Can-Data-Tool',
 )

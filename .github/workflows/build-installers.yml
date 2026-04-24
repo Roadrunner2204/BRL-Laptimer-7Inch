@@ -1,8 +1,8 @@
 name: Build Windows installers
 
 # Trigger:
-#   - Tag push "v*"        → baut alle Tools + hängt sie an ein Release
-#   - Manual dispatch      → baut alle Tools, lädt nur Artefakte hoch
+#   - Tag push "v*"     → baut alle Tools + haengt sie an ein Release
+#   - Manual dispatch   → baut alle Tools, laedt nur Artefakte hoch
 on:
   push:
     tags:
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version für die Installer (z.B. 1.0.0)"
+        description: "Version fuer die Artefakte (z.B. 1.0.0)"
         required: true
         default: "1.0.0"
 
@@ -21,18 +21,18 @@ jobs:
     strategy:
       matrix:
         include:
-          - name: BDB-Track-Konverter
-            spec: tools/bdb_format_gui.spec
-            iss:  installer/bdb_setup.iss
-            pkgs: "pycryptodome"
-          - name: BRL-Format-Tool
-            spec: tools/brl_format_gui.spec
-            iss:  installer/brl_setup.iss
-            pkgs: "pycryptodome"
-          - name: TRX-Excel-Konverter
-            spec: tools/trx_to_excel_gui.spec
-            iss:  ""
-            pkgs: "pycryptodome openpyxl"
+          # Vereintes TRX/TRI/BRL Werkzeug — eine einzelne portable .exe
+          - name:    BRL-Can-Data-Tool
+            spec:    tools/brl_can_data_tool.spec
+            pkgs:    "pycryptodome openpyxl"
+            iss:     ""
+            onefile: true
+          # BDB Track-Konverter (onedir-Build, optional mit Inno-Setup Installer)
+          - name:    BDB-Track-Konverter
+            spec:    tools/bdb_format_gui.spec
+            pkgs:    "pycryptodome"
+            iss:     installer/bdb_setup.iss
+            onefile: false
       fail-fast: false
 
     steps:
@@ -85,12 +85,23 @@ jobs:
           path: dist/*-Setup-v${{ steps.ver.outputs.version }}.exe
           if-no-files-found: error
 
-      - name: Upload portable EXE artifact (no-installer tools)
-        if: matrix.iss == ''
+      # Einzelne portable .exe (onefile-Build) — wird direkt ins Release gehaengt
+      - name: Upload portable onefile EXE
+        if: matrix.iss == '' && matrix.onefile == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}-v${{ steps.ver.outputs.version }}
+          path: dist/${{ matrix.name }}.exe
+          if-no-files-found: error
+
+      # onedir-Build ohne Installer — ganzer Ordner wird als ZIP artefakt
+      - name: Upload portable onedir EXE folder
+        if: matrix.iss == '' && matrix.onefile != true
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}-v${{ steps.ver.outputs.version }}-portable
           path: dist/${{ matrix.name }}/**
+          if-no-files-found: error
 
   release:
     needs: build
