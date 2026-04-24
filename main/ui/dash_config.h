@@ -42,6 +42,7 @@ typedef struct {
     uint8_t z2[Z2_SLOTS];
     uint8_t z3[Z3_SLOTS];
     uint8_t veh_conn_mode;   // 0 = OBD BLE, 1 = CAN direct
+    uint8_t show_obd;        // 0 = hide zone-3 engine-data widgets, 1 = show
 } DashConfig;
 
 extern DashConfig g_dash_cfg;

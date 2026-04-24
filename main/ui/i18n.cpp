@@ -154,6 +154,8 @@ static const char* const s_str[2][TR_COUNT] = {
     /* TR_INTAKE         */ "ANSAUGTEMP",
     /* TR_SESSION_LAPS_TITLE */ "Session-Runden",
     /* TR_LAP_NO_GPS     */ "keine GPS-Daten",
+    /* TR_SHOW_OBD       */ "Motor-Daten",
+    /* TR_SHOW_OBD_SUB   */ "RPM, Ladedruck, Lambda …",
 },
 // ── English ─────────────────────────────────────────────────────────────────
 {
@@ -301,6 +303,8 @@ static const char* const s_str[2][TR_COUNT] = {
     /* TR_INTAKE         */ "INTAKE TEMP",
     /* TR_SESSION_LAPS_TITLE */ "Session Laps",
     /* TR_LAP_NO_GPS     */ "no GPS data",
+    /* TR_SHOW_OBD       */ "Engine Data",
+    /* TR_SHOW_OBD_SUB   */ "RPM, boost, lambda …",
 },
 };
 

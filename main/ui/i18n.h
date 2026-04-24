@@ -170,6 +170,9 @@ enum TrKey : uint8_t {
     // Saved-session detail (pick reference lap from history)
     TR_SESSION_LAPS_TITLE,
     TR_LAP_NO_GPS,
+    // Engine-data visibility toggle
+    TR_SHOW_OBD,
+    TR_SHOW_OBD_SUB,
     TR_COUNT
 };
 

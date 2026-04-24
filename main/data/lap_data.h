@@ -147,6 +147,28 @@ static inline void fmt_laptime(char *buf, size_t len, uint32_t ms) {
 }
 
 // ---------------------------------------------------------------------------
+// Utility: format a sector time.
+//   < 60 s  -> "SS.cc"
+//   >= 60 s -> "M:SS.cc"   (so a 72 s sector reads as "1:12.xx", not "72.xx")
+// ---------------------------------------------------------------------------
+static inline void fmt_sector_time(char *buf, size_t len, uint32_t ms) {
+    uint32_t hundredths = (ms % 1000) / 10;
+    if (ms >= 60000) {
+        uint32_t minutes = ms / 60000;
+        uint32_t seconds = (ms % 60000) / 1000;
+        snprintf(buf, len, "%lu:%02lu.%02lu",
+                 (unsigned long)minutes,
+                 (unsigned long)seconds,
+                 (unsigned long)hundredths);
+    } else {
+        uint32_t seconds = ms / 1000;
+        snprintf(buf, len, "%lu.%02lu",
+                 (unsigned long)seconds,
+                 (unsigned long)hundredths);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Utility: format delta as "+S.mmm" or "-S.mmm"
 // ---------------------------------------------------------------------------
 static inline void fmt_delta(char *buf, size_t len, int32_t delta_ms) {

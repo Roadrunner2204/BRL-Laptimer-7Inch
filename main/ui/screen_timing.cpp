@@ -792,11 +792,15 @@ lv_obj_t *timing_screen_build() {
     }, LV_EVENT_CLICKED, nullptr);
 
     // ── Content zones ─────────────────────────────────────────────────────
-    // Z1 shorter for racing fonts, Z2+Z3 taller for better readability
+    // Z1 shorter for racing fonts, Z2+Z3 taller for better readability.
+    // When engine-data (Zone 3) is toggled off in settings, its row and gap
+    // are skipped and Zone 1 grows to fill the freed space.
+    const bool show_z3 = (g_dash_cfg.show_obd != 0);
     const int avail_h = BRL_SCREEN_H - cy_start - 8;
-    const int h3 = 90;
+    const int h3 = show_z3 ? 90 : 0;
     const int h2 = 110;
-    const int h1 = avail_h - h2 - h3 - 12;   // 12 = 2×6 px gaps
+    const int gaps = show_z3 ? 12 : 6;   // 2×6 with z3, 1×6 without
+    const int h1 = avail_h - h2 - h3 - gaps;
 
     int cy = cy_start;
 
@@ -829,7 +833,10 @@ lv_obj_t *timing_screen_build() {
     }
 
     // ── Zone 3 ────────────────────────────────────────────────────────────
-    {
+    // Engine-data row — built only when show_obd is enabled. When disabled,
+    // tw.z3_val[*] stays nullptr and update_slot() becomes a no-op for those
+    // slots (it early-returns on null label).
+    if (show_z3) {
         lv_obj_t *row = mk_row(scr, cy, h3);
         const int ow = (BRL_SCREEN_W - 16 - (Z3_SLOTS - 1) * 4) / Z3_SLOTS;
         const int oh = h3 - 10;

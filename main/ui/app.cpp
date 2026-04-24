@@ -2691,6 +2691,27 @@ static void open_settings_screen() {
                               g_state.units == 0 ? "km/h" : "mph");
         }, LV_EVENT_CLICKED, nullptr);
     }
+    // Engine data (Zone 3) visibility
+    {
+        lv_obj_t *r = make_setting_row(content, 0, RH2, LV_SYMBOL_EYE_OPEN,
+                                        tr(TR_SHOW_OBD), tr(TR_SHOW_OBD_SUB));
+        lv_obj_t *btn = make_setting_btn(r,
+            g_dash_cfg.show_obd ? tr(TR_WIFI_AP_ON) : tr(TR_WIFI_AP_OFF),
+            g_dash_cfg.show_obd ? BRL_CLR_ACCENT : BRL_CLR_SURFACE2,
+            LV_ALIGN_RIGHT_MID);
+        lv_obj_add_event_cb(btn, [](lv_event_t *e){
+            g_dash_cfg.show_obd = g_dash_cfg.show_obd ? 0 : 1;
+            dash_config_save();
+            lv_obj_t *b = (lv_obj_t*)lv_event_get_current_target(e);
+            lv_label_set_text(lv_obj_get_child(b, 0),
+                g_dash_cfg.show_obd ? tr(TR_WIFI_AP_ON) : tr(TR_WIFI_AP_OFF));
+            lv_obj_set_style_bg_color(b,
+                g_dash_cfg.show_obd ? BRL_CLR_ACCENT : BRL_CLR_SURFACE2,
+                LV_STATE_DEFAULT);
+            // Rebuild timing screen so Zone 3 appears/disappears on next visit.
+            timing_screen_rebuild();
+        }, LV_EVENT_CLICKED, nullptr);
+    }
     // Storage (SD card / Festplatte)
     {
         lv_obj_t *r = make_setting_row(content, 0, RH, LV_SYMBOL_SAVE,
@@ -2911,8 +2932,9 @@ void timer_live_update(lv_timer_t * /*t*/) {
                 int si = fid - FIELD_SECTOR1;  // 0-based sector index
                 uint32_t now_ms = millis();
                 auto sec_fmt = [](char *b, size_t len, uint8_t n, uint32_t ms) {
-                    snprintf(b, len, "S%u %u.%02u", (unsigned)n,
-                             (unsigned)(ms / 1000), (unsigned)((ms % 1000) / 10));
+                    char t[16];
+                    fmt_sector_time(t, sizeof(t), ms);
+                    snprintf(b, len, "S%u %s", (unsigned)n, t);
                 };
                 // Pick reference sector time (if any) + purple-mode flag.
                 // Purple: current session has NOT yet beaten the stored
@@ -2943,9 +2965,7 @@ void timer_live_update(lv_timer_t * /*t*/) {
                         }
                     } else if ((int)cs == si) {
                         // Currently running sector — show elapsed in accent
-                        snprintf(buf, sizeof(buf), "%u.%02u",
-                                 (unsigned)(run_ms/1000),
-                                 (unsigned)((run_ms%1000)/10));
+                        fmt_sector_time(buf, sizeof(buf), run_ms);
                         clr = BRL_CLR_ACCENT;
                     } else {
                         strncpy(buf, "---", sizeof(buf));
