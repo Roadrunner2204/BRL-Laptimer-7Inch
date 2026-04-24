@@ -21,13 +21,15 @@ jobs:
     strategy:
       matrix:
         include:
-          # Vereintes TRX/TRI/BRL Werkzeug — eine einzelne portable .exe
+          # Vereintes TRX/TRI/BRL Werkzeug — wird doppelt ausgeliefert:
+          # eine portable onefile .exe UND ein Inno-Setup Installer der
+          # in "Programme entfernen" registriert + sauber deinstallierbar ist.
           - name:    BRL-Can-Data-Tool
             spec:    tools/brl_can_data_tool.spec
             pkgs:    "pycryptodome openpyxl"
-            iss:     ""
+            iss:     installer/brl_can_data_tool_setup.iss
             onefile: true
-          # BDB Track-Konverter (onedir-Build, optional mit Inno-Setup Installer)
+          # BDB Track-Konverter (onedir-Build + Inno-Setup Installer)
           - name:    BDB-Track-Konverter
             spec:    tools/bdb_format_gui.spec
             pkgs:    "pycryptodome"
@@ -85,12 +87,13 @@ jobs:
           path: dist/*-Setup-v${{ steps.ver.outputs.version }}.exe
           if-no-files-found: error
 
-      # Einzelne portable .exe (onefile-Build) — wird direkt ins Release gehaengt
+      # Einzelne portable .exe (onefile-Build) — wird separat vom Installer
+      # hochgeladen, damit es weiterhin einen Null-Install-Download gibt.
       - name: Upload portable onefile EXE
-        if: matrix.iss == '' && matrix.onefile == true
+        if: matrix.onefile == true
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.name }}-v${{ steps.ver.outputs.version }}
+          name: ${{ matrix.name }}-v${{ steps.ver.outputs.version }}-portable
           path: dist/${{ matrix.name }}.exe
           if-no-files-found: error
 
