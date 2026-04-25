@@ -40,6 +40,8 @@
 #include "data/lap_data.h"
 #include "data/car_profile.h"
 #include "can/can_bus.h"
+#include "sensors/analog_in.h"
+#include "esp_timer.h"
 
 static const char *TAG = "brl-laptimer";
 
@@ -55,6 +57,7 @@ extern void lv_my_setup(void);
 static void logic_task(void *param)
 {
     (void)param;
+    uint32_t last_analog_ms = 0;
     for (;;) {
         xSemaphoreTake(g_state_mutex, portMAX_DELAY);
         gps_poll();
@@ -68,6 +71,13 @@ static void logic_task(void *param)
             obd_bt_poll();
         wifi_mgr_poll();
         data_server_poll();
+
+        /* Analog inputs sampled at ~10 Hz — no need to read 200x/s */
+        uint32_t now = esp_timer_get_time() / 1000;
+        if (now - last_analog_ms >= 100) {
+            last_analog_ms = now;
+            analog_in_poll();
+        }
 
         vTaskDelay(pdMS_TO_TICKS(5));
     }
@@ -160,6 +170,11 @@ void app_main(void)
     /* ── Lap timer ───────────────────────────────────────────── */
     ESP_LOGI(TAG, "lap_timer_init");
     lap_timer_init();
+
+    /* ── Analog inputs (ADC1 channels 4..7 on GPIO 20/21/22/23) ─ */
+    ESP_LOGI(TAG, "analog_in_init");
+    analog_in_init();
+    analog_in_load_config();
 
     /* ── WiFi (ESP32-C6 co-processor via SDIO / esp_hosted) ─── */
     ESP_LOGI(TAG, "wifi_mgr_init");

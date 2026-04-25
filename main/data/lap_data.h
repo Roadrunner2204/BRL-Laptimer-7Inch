@@ -112,6 +112,17 @@ typedef enum {
 } VehicleConnMode;
 
 // ---------------------------------------------------------------------------
+// Analog inputs (4 ADC1 channels on free header GPIOs 20/21/22/23)
+// ---------------------------------------------------------------------------
+#define ANALOG_CHANNELS  4
+
+typedef struct {
+    int32_t  raw_mv;       // raw ADC reading in millivolts (0..3300)
+    float    value;        // calibrated value = raw_mv * scale + offset
+    bool     valid;        // false until first successful read
+} AnalogChannel;
+
+// ---------------------------------------------------------------------------
 // Application state (single global instance)
 // ---------------------------------------------------------------------------
 typedef struct {
@@ -119,6 +130,7 @@ typedef struct {
     ObdData    obd;
     LapSession session;
     LiveTiming timing;
+    AnalogChannel analog[ANALOG_CHANNELS];
 
     WifiMode       wifi_mode;
     char           wifi_ssid[32];
