@@ -3235,6 +3235,20 @@ void timer_live_update(lv_timer_t * /*t*/) {
             case FIELD_STEERING:
                 snprintf(buf, sizeof(buf), "%+.0f°", obd.steering_angle);
                 break;
+            // Analog inputs — value already calibrated by analog_in_poll()
+            case FIELD_AN1:
+            case FIELD_AN2:
+            case FIELD_AN3:
+            case FIELD_AN4: {
+                int an = fid - FIELD_AN1;
+                const AnalogChannel &a = g_state.analog[an];
+                if (!a.valid) {
+                    strncpy(buf, "---", sizeof(buf));
+                } else {
+                    snprintf(buf, sizeof(buf), "%.2f", a.value);
+                }
+                break;
+            }
             default:
                 return;
         }

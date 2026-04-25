@@ -24,6 +24,7 @@
 #include "../timing/lap_timer.h"
 #include "../obd/obd_bt.h"
 #include "../wifi/wifi_mgr.h"
+#include "../sensors/analog_in.h"
 #include "../storage/session_store.h"
 #include "compat.h"
 static const char *TAG = "screen_timing";
@@ -108,6 +109,11 @@ static const char *field_title(uint8_t f) {
         case FIELD_COOLANT:   return tr(TR_COOLANT);
         case FIELD_INTAKE:    return tr(TR_INTAKE);
         case FIELD_STEERING:  return tr(TR_STEERING);
+        // Analog inputs — title comes from the user-set channel name
+        case FIELD_AN1:       return g_analog_cfg[0].name;
+        case FIELD_AN2:       return g_analog_cfg[1].name;
+        case FIELD_AN3:       return g_analog_cfg[2].name;
+        case FIELD_AN4:       return g_analog_cfg[3].name;
         default:              return "---";
     }
 }
@@ -302,10 +308,12 @@ static const uint8_t LAPTIME_FIELDS[] = {
     FIELD_LAP_NR, FIELD_SECTOR1, FIELD_SECTOR2, FIELD_SECTOR3,
     FIELD_MAP, FIELD_NONE,
 };
-// OBD field list (Zone 3)
+// OBD field list (Zone 3) — also picker source for analog inputs since
+// they live in the same dashboard zone.
 static const uint8_t OBD_FIELDS[] = {
     FIELD_RPM, FIELD_THROTTLE, FIELD_BOOST, FIELD_COOLANT,
     FIELD_INTAKE, FIELD_LAMBDA, FIELD_BRAKE, FIELD_STEERING,
+    FIELD_AN1, FIELD_AN2, FIELD_AN3, FIELD_AN4,
     FIELD_NONE,
 };
 

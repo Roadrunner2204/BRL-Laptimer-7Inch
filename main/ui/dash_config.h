@@ -25,9 +25,17 @@ typedef enum : uint8_t {
     FIELD_LAMBDA    = 37,
     FIELD_BRAKE     = 38,
     FIELD_STEERING  = 39,
+    // Analog inputs (Zone 3, alongside OBD). One per ADC1 channel on
+    // GPIO 20/21/22/23. Value comes from g_state.analog[i].value (already
+    // scale+offset+clamp applied by analog_in_poll).
+    FIELD_AN1       = 64,
+    FIELD_AN2       = 65,
+    FIELD_AN3       = 66,
+    FIELD_AN4       = 67,
 } FieldId;
 
-inline bool field_is_obd(uint8_t f) { return f >= 32; }
+inline bool field_is_obd(uint8_t f) { return f >= 32 && f < 64; }
+inline bool field_is_analog(uint8_t f) { return f >= 64 && f < 68; }
 
 // Slot counts per zone
 #define Z1_SLOTS  5   // Zone 1: slots 0-1 wide, 2-4 narrow
