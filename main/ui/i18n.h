@@ -186,6 +186,19 @@ enum TrKey : uint8_t {
     TR_ANALOG_DISABLED,
     TR_SAVE,
     TR_CANCEL,
+    // Custom CAN channel editor
+    TR_CAN_CH_TITLE,
+    TR_CAN_CH_SUB,
+    TR_CAN_CH_ADD,
+    TR_CAN_CH_EDIT,
+    TR_CAN_CH_DELETE,
+    TR_CAN_PROTO,
+    TR_CAN_ID,
+    TR_CAN_START,
+    TR_CAN_LEN,
+    TR_CAN_UNSIGNED,
+    TR_CAN_NO_PROFILE,
+    TR_CAN_SAVE_FAIL,
     TR_COUNT
 };
 

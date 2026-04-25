@@ -13,12 +13,14 @@
 #include "mbedtls/aes.h"
 #include "esp_crc.h"
 #include "esp_crt_bundle.h"
+#include "esp_random.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 
 #include <string.h>
 #include <stdlib.h>
 #include <dirent.h>
+#include <sys/stat.h>
 
 static const char *TAG = "car_profile";
 
@@ -309,6 +311,174 @@ bool car_profile_load_into(const char *filename, CarProfile *dst)
 bool car_profile_load(const char *filename)
 {
     return car_profile_load_into(filename, &g_car_profile);
+}
+
+// ---------------------------------------------------------------------------
+// AES-256-CBC encrypt + PKCS7 pad (mbedtls). Returns ciphertext length
+// (= padded length, multiple of 16). Caller must allocate ct_buf with at
+// least pt_len + 16 bytes.
+// ---------------------------------------------------------------------------
+static int aes_encrypt_cbc(const uint8_t *key, const uint8_t *iv_in,
+                           const uint8_t *pt, size_t pt_len, uint8_t *ct_buf)
+{
+    size_t pad = 16 - (pt_len % 16);
+    size_t total = pt_len + pad;
+
+    // Build padded plaintext in-place at ct_buf (input/output ok with mbedtls)
+    memcpy(ct_buf, pt, pt_len);
+    memset(ct_buf + pt_len, (int)pad, pad);
+
+    uint8_t iv[16];
+    memcpy(iv, iv_in, 16);
+
+    mbedtls_aes_context ctx;
+    mbedtls_aes_init(&ctx);
+    if (mbedtls_aes_setkey_enc(&ctx, key, 256) != 0) {
+        mbedtls_aes_free(&ctx);
+        return -1;
+    }
+    int ret = mbedtls_aes_crypt_cbc(&ctx, MBEDTLS_AES_ENCRYPT, total,
+                                    iv, ct_buf, ct_buf);
+    mbedtls_aes_free(&ctx);
+    return (ret == 0) ? (int)total : -1;
+}
+
+// ---------------------------------------------------------------------------
+// car_profile_save -- serialise g_car_profile back to /cars/<filename>
+// ---------------------------------------------------------------------------
+bool car_profile_save(const char *filename)
+{
+    if (!filename || !*filename) return false;
+    if (!sd_mgr_available()) {
+        log_e("SD not available");
+        return false;
+    }
+
+    // Build JSON
+    cJSON *doc = cJSON_CreateObject();
+    if (!doc) return false;
+
+    cJSON_AddNumberToObject(doc, "v",         1);
+    cJSON_AddStringToObject(doc, "make",      g_car_profile.make);
+    cJSON_AddStringToObject(doc, "model",     g_car_profile.model);
+    cJSON_AddStringToObject(doc, "engine",    g_car_profile.engine);
+    cJSON_AddStringToObject(doc, "name",      g_car_profile.name);
+    cJSON_AddNumberToObject(doc, "year_from", g_car_profile.year_from);
+    cJSON_AddNumberToObject(doc, "year_to",   g_car_profile.year_to);
+    cJSON_AddStringToObject(doc, "can",       g_car_profile.can_bus);
+    cJSON_AddNumberToObject(doc, "bitrate",   g_car_profile.bitrate);
+
+    cJSON *jsens = cJSON_CreateArray();
+    char numbuf[24];
+    for (int i = 0; i < g_car_profile.sensor_count; i++) {
+        const CarSensor *s = &g_car_profile.sensors[i];
+        cJSON *o = cJSON_CreateObject();
+
+        // Stored as STRINGS to match the parser (atoi/strtoul/atof on read)
+        snprintf(numbuf, sizeof(numbuf), "%u", (unsigned)s->proto);
+        cJSON_AddStringToObject(o, "proto", numbuf);
+        snprintf(numbuf, sizeof(numbuf), "%lX", (unsigned long)s->can_id);
+        cJSON_AddStringToObject(o, "can_id", numbuf);
+        cJSON_AddStringToObject(o, "fmt", "0");
+        snprintf(numbuf, sizeof(numbuf), "%u", (unsigned)s->start);
+        cJSON_AddStringToObject(o, "start", numbuf);
+        snprintf(numbuf, sizeof(numbuf), "%u", (unsigned)s->len);
+        cJSON_AddStringToObject(o, "len", numbuf);
+        snprintf(numbuf, sizeof(numbuf), "%u", (unsigned)s->is_unsigned);
+        cJSON_AddStringToObject(o, "unsigned", numbuf);
+        cJSON_AddStringToObject(o, "shift",    "0");
+        cJSON_AddStringToObject(o, "mask",     "0");
+        cJSON_AddStringToObject(o, "decimals", "2");
+        cJSON_AddStringToObject(o, "name",     s->name);
+        snprintf(numbuf, sizeof(numbuf), "%g", (double)s->scale);
+        cJSON_AddStringToObject(o, "scale", numbuf);
+        snprintf(numbuf, sizeof(numbuf), "%g", (double)s->offset);
+        cJSON_AddStringToObject(o, "offset", numbuf);
+        cJSON_AddStringToObject(o, "mapper_type", "0");
+        cJSON_AddStringToObject(o, "mapper1",     "");
+        cJSON_AddStringToObject(o, "mapper2",     "");
+        cJSON_AddStringToObject(o, "mapper3",     "");
+        cJSON_AddStringToObject(o, "mapper4",     "");
+        cJSON_AddStringToObject(o, "ain",         "0");
+        snprintf(numbuf, sizeof(numbuf), "%g", (double)s->min_val);
+        cJSON_AddStringToObject(o, "min", numbuf);
+        snprintf(numbuf, sizeof(numbuf), "%g", (double)s->max_val);
+        cJSON_AddStringToObject(o, "max", numbuf);
+        cJSON_AddStringToObject(o, "ref_sensor", "255");
+        cJSON_AddStringToObject(o, "ref_val",    "0");
+        cJSON_AddStringToObject(o, "unused1",    "0");
+        cJSON_AddStringToObject(o, "popup",      "0");
+        cJSON_AddStringToObject(o, "unused2",    "0");
+        snprintf(numbuf, sizeof(numbuf), "%u", (unsigned)s->type);
+        cJSON_AddStringToObject(o, "type", numbuf);
+        cJSON_AddNumberToObject(o, "slot", s->slot);
+
+        cJSON_AddItemToArray(jsens, o);
+    }
+    cJSON_AddItemToObject(doc, "sensors", jsens);
+
+    char *json_str = cJSON_PrintUnformatted(doc);
+    cJSON_Delete(doc);
+    if (!json_str) return false;
+    size_t json_len = strlen(json_str);
+
+    // Encrypt
+    uint8_t iv[16];
+    for (int i = 0; i < 16; i++) iv[i] = (uint8_t)(esp_random() & 0xFF);
+
+    size_t ct_cap = json_len + 16;
+    uint8_t *ct = (uint8_t*)malloc(ct_cap);
+    if (!ct) { free(json_str); return false; }
+
+    int ct_len = aes_encrypt_cbc(BRL_AES_KEY, iv, (const uint8_t*)json_str,
+                                  json_len, ct);
+    free(json_str);
+    if (ct_len <= 0) {
+        log_e("AES encrypt failed");
+        free(ct);
+        return false;
+    }
+
+    uint32_t crc = esp_crc32_le(0, ct, (size_t)ct_len);
+
+    // Build output buffer: 32-byte header + ciphertext
+    size_t total = BRL_HEADER_SIZE + (size_t)ct_len;
+    uint8_t *out = (uint8_t*)malloc(total);
+    if (!out) { free(ct); return false; }
+
+    memcpy(out + 0, BRL_MAGIC, 4);
+    out[4] = 1; out[5] = 0; out[6] = 0; out[7] = 0;       // version + reserved
+    memcpy(out + 8, iv, 16);
+    uint32_t pl = (uint32_t)ct_len;
+    memcpy(out + 24, &pl, 4);                              // payload size LE
+    memcpy(out + 28, &crc, 4);                             // CRC LE
+    memcpy(out + BRL_HEADER_SIZE, ct, (size_t)ct_len);
+    free(ct);
+
+    // Write to SD
+    char full_path[96];
+    snprintf(full_path, sizeof(full_path), "/sdcard/cars/%s", filename);
+    // Ensure the cars/ dir exists; mkdir is a no-op if already there.
+    mkdir("/sdcard/cars", 0777);
+
+    FILE *f = fopen(full_path, "wb");
+    if (!f) {
+        log_e("Cannot open %s for write", full_path);
+        free(out);
+        return false;
+    }
+    size_t wrote = fwrite(out, 1, total, f);
+    fclose(f);
+    free(out);
+
+    if (wrote != total) {
+        log_e("Short write to %s: %u/%u", full_path,
+              (unsigned)wrote, (unsigned)total);
+        return false;
+    }
+    log_i("Saved car profile %s (%u sensors, %u bytes)",
+          filename, g_car_profile.sensor_count, (unsigned)total);
+    return true;
 }
 
 // ---------------------------------------------------------------------------

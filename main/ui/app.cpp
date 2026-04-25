@@ -146,6 +146,8 @@ static void open_session_detail_screen(const char *session_id,
                                        const char *session_name);
 static void open_settings_screen();
 static void open_analog_screen();
+static void open_can_channels_screen();
+static void open_can_channel_edit(int slot_idx);  // -1 = new sensor
 
 // ============================================================================
 // SECTION 1 — SHARED HELPERS
@@ -2403,6 +2405,379 @@ static void open_analog_screen() {
 }
 
 // ============================================================================
+// CUSTOM CAN CHANNEL EDITOR  (RaceCapture-style: list + per-sensor editor)
+// ============================================================================
+//
+// Two screens:
+//   open_can_channels_screen()  — scrollable list of every sensor in the
+//     active car profile. "+ Neuer Kanal" opens an empty editor; tapping a
+//     row opens the editor pre-filled.
+//   open_can_channel_edit(idx)  — form with name, CAN-ID (hex), proto,
+//     start byte, length, unsigned flag, scale, offset, min, max. Save
+//     writes back into g_car_profile and persists the active .brl on SD
+//     via car_profile_save(). Delete drops the sensor + saves. Cancel
+//     returns without writing.
+//
+// Active profile filename is read once from NVS via car_profile_get_active().
+// ============================================================================
+
+static int           s_ce_edit_idx     = -1;     // -1 = new sensor mode
+static lv_obj_t     *s_ce_kb           = nullptr;
+static lv_obj_t     *s_ce_ta_name      = nullptr;
+static lv_obj_t     *s_ce_ta_canid     = nullptr;
+static lv_obj_t     *s_ce_dd_proto     = nullptr;
+static lv_obj_t     *s_ce_ta_start     = nullptr;
+static lv_obj_t     *s_ce_ta_len       = nullptr;
+static lv_obj_t     *s_ce_sw_unsigned  = nullptr;
+static lv_obj_t     *s_ce_ta_scale     = nullptr;
+static lv_obj_t     *s_ce_ta_offset    = nullptr;
+static lv_obj_t     *s_ce_ta_min       = nullptr;
+static lv_obj_t     *s_ce_ta_max       = nullptr;
+
+static const uint8_t CAN_PROTO_VALUES[] = { 0, 7, 1 };
+static const char *  CAN_PROTO_LABELS  = "PT-CAN Broadcast\nOBD2 (7DF)\nBMW UDS";
+
+static void ce_clear_state(void) {
+    s_ce_kb = s_ce_ta_name = s_ce_ta_canid = s_ce_dd_proto = nullptr;
+    s_ce_ta_start = s_ce_ta_len = s_ce_sw_unsigned = nullptr;
+    s_ce_ta_scale = s_ce_ta_offset = s_ce_ta_min = s_ce_ta_max = nullptr;
+}
+
+static void ce_ta_focus_cb(lv_event_t *e) {
+    lv_obj_t *ta = (lv_obj_t*)lv_event_get_target(e);
+    if (!s_ce_kb || !ta) return;
+    bool numeric = lv_obj_get_user_data(ta) != nullptr;
+    lv_keyboard_set_mode(s_ce_kb,
+                         numeric ? LV_KEYBOARD_MODE_NUMBER
+                                 : LV_KEYBOARD_MODE_TEXT_LOWER);
+    lv_keyboard_set_textarea(s_ce_kb, ta);
+    lv_obj_remove_flag(s_ce_kb, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void ce_kb_done_cb(lv_event_t *e) {
+    lv_event_code_t c = lv_event_get_code(e);
+    if ((c == LV_EVENT_READY || c == LV_EVENT_CANCEL) && s_ce_kb)
+        lv_obj_add_flag(s_ce_kb, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void ce_show_save_fail(void) {
+    lv_obj_t *s = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(s, 600, 100);
+    lv_obj_center(s);
+    brl_style_card(s);
+    lv_obj_set_style_bg_color(s, BRL_CLR_DANGER, LV_STATE_DEFAULT);
+    lv_obj_t *l = lv_label_create(s);
+    lv_label_set_text(l, tr(TR_CAN_SAVE_FAIL));
+    brl_style_label(l, &BRL_FONT_20, BRL_CLR_TEXT);
+    lv_obj_center(l);
+    lv_timer_t *t = lv_timer_create([](lv_timer_t *t){
+        lv_obj_t *o = (lv_obj_t*)lv_timer_get_user_data(t);
+        if (o) lv_obj_delete(o);
+        lv_timer_delete(t);
+    }, 2000, nullptr);
+    lv_timer_set_user_data(t, s);
+}
+
+static bool ce_persist_active_profile(void) {
+    char fn[CAR_NAME_LEN];
+    car_profile_get_active(fn, sizeof(fn));
+    if (!fn[0]) return false;
+    return car_profile_save(fn);
+}
+
+// --- Editor save callback ---------------------------------------------------
+static void ce_save_cb(lv_event_t * /*e*/) {
+    int idx = s_ce_edit_idx;
+    if (idx < 0) {
+        if (g_car_profile.sensor_count >= CAR_MAX_SENSORS) {
+            ce_show_save_fail();
+            return;
+        }
+        idx = g_car_profile.sensor_count++;
+        memset(&g_car_profile.sensors[idx], 0, sizeof(CarSensor));
+        g_car_profile.sensors[idx].slot = (uint8_t)idx;
+    }
+    CarSensor *s = &g_car_profile.sensors[idx];
+
+    // Name
+    if (s_ce_ta_name) {
+        const char *n = lv_textarea_get_text(s_ce_ta_name);
+        strncpy(s->name, n, CAR_NAME_LEN - 1);
+        s->name[CAR_NAME_LEN - 1] = '\0';
+    }
+    // CAN ID (hex)
+    if (s_ce_ta_canid) {
+        s->can_id = (uint32_t)strtoul(lv_textarea_get_text(s_ce_ta_canid),
+                                       nullptr, 16);
+    }
+    // Proto
+    if (s_ce_dd_proto) {
+        uint32_t sel = lv_dropdown_get_selected(s_ce_dd_proto);
+        if (sel < sizeof(CAN_PROTO_VALUES)) s->proto = CAN_PROTO_VALUES[sel];
+    }
+    // Start, len, unsigned
+    if (s_ce_ta_start)
+        s->start = (uint8_t)atoi(lv_textarea_get_text(s_ce_ta_start));
+    if (s_ce_ta_len)
+        s->len = (uint8_t)atoi(lv_textarea_get_text(s_ce_ta_len));
+    if (s_ce_sw_unsigned)
+        s->is_unsigned = lv_obj_has_state(s_ce_sw_unsigned, LV_STATE_CHECKED);
+    if (s_ce_ta_scale)
+        s->scale = (float)atof(lv_textarea_get_text(s_ce_ta_scale));
+    if (s_ce_ta_offset)
+        s->offset = (float)atof(lv_textarea_get_text(s_ce_ta_offset));
+    if (s_ce_ta_min)
+        s->min_val = (float)atof(lv_textarea_get_text(s_ce_ta_min));
+    if (s_ce_ta_max)
+        s->max_val = (float)atof(lv_textarea_get_text(s_ce_ta_max));
+
+    if (!ce_persist_active_profile()) {
+        ce_show_save_fail();
+        return;
+    }
+    ce_clear_state();
+    open_can_channels_screen();
+}
+
+// --- Delete callback (in editor) -------------------------------------------
+static void ce_delete_cb(lv_event_t * /*e*/) {
+    int idx = s_ce_edit_idx;
+    if (idx >= 0 && idx < g_car_profile.sensor_count) {
+        // Compact the array
+        for (int j = idx; j < g_car_profile.sensor_count - 1; j++) {
+            g_car_profile.sensors[j] = g_car_profile.sensors[j + 1];
+        }
+        g_car_profile.sensor_count--;
+        ce_persist_active_profile();
+    }
+    ce_clear_state();
+    open_can_channels_screen();
+}
+
+static void ce_back_to_list_cb(lv_event_t * /*e*/) {
+    ce_clear_state();
+    open_can_channels_screen();
+}
+
+// --- Editor screen ----------------------------------------------------------
+static void open_can_channel_edit(int slot_idx) {
+    s_ce_edit_idx = slot_idx;
+    bool is_new = (slot_idx < 0);
+    CarSensor blank = {};
+    const CarSensor *s = is_new ? &blank : &g_car_profile.sensors[slot_idx];
+
+    lv_obj_t *action_btn = nullptr;
+    lv_obj_t *scr = make_sub_screen(tr(TR_CAN_CH_EDIT), ce_back_to_list_cb,
+                                    &action_btn, tr(TR_SAVE));
+    if (action_btn)
+        lv_obj_add_event_cb(action_btn, ce_save_cb, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *content = build_content_area(scr, true);
+    lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(content, 4, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_bottom(content, 220, LV_STATE_DEFAULT);
+
+    char buf[24];
+
+    auto mk_field = [&](lv_obj_t *parent, const char *label, int x, int y,
+                        int w, const char *initial, bool numeric) -> lv_obj_t* {
+        lv_obj_t *l = lv_label_create(parent);
+        lv_label_set_text(l, label);
+        brl_style_label(l, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+        lv_obj_set_pos(l, x, y);
+
+        lv_obj_t *ta = lv_textarea_create(parent);
+        lv_obj_set_size(ta, w, 36);
+        lv_obj_set_pos(ta, x, y + 22);
+        lv_textarea_set_one_line(ta, true);
+        lv_textarea_set_text(ta, initial);
+        lv_textarea_set_max_length(ta, 24);
+        lv_obj_set_user_data(ta, numeric ? (void*)1 : nullptr);
+        lv_obj_set_style_text_font(ta, &BRL_FONT_16, LV_STATE_DEFAULT);
+        lv_obj_set_style_pad_all(ta, 6, LV_STATE_DEFAULT);
+        lv_obj_add_event_cb(ta, ce_ta_focus_cb, LV_EVENT_FOCUSED, nullptr);
+        return ta;
+    };
+
+    // Card 1: identity
+    lv_obj_t *c1 = lv_obj_create(content);
+    lv_obj_set_width(c1, LV_PCT(100));
+    lv_obj_set_height(c1, 150);
+    brl_style_card(c1);
+    lv_obj_remove_flag(c1, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_ce_ta_name = mk_field(c1, tr(TR_ANALOG_NAME), 8, 8, 360,
+                             s->name, false);
+    snprintf(buf, sizeof(buf), "%lX", (unsigned long)s->can_id);
+    s_ce_ta_canid = mk_field(c1, tr(TR_CAN_ID), 380, 8, 230, buf, true);
+
+    // Proto dropdown (positioned next to name)
+    lv_obj_t *p_lbl = lv_label_create(c1);
+    lv_label_set_text(p_lbl, tr(TR_CAN_PROTO));
+    brl_style_label(p_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+    lv_obj_set_pos(p_lbl, 8, 80);
+
+    s_ce_dd_proto = lv_dropdown_create(c1);
+    lv_dropdown_set_options(s_ce_dd_proto, CAN_PROTO_LABELS);
+    lv_obj_set_size(s_ce_dd_proto, 360, 38);
+    lv_obj_set_pos(s_ce_dd_proto, 8, 102);
+    uint32_t sel = 0;
+    for (uint32_t k = 0; k < sizeof(CAN_PROTO_VALUES); k++)
+        if (CAN_PROTO_VALUES[k] == s->proto) sel = k;
+    lv_dropdown_set_selected(s_ce_dd_proto, sel);
+
+    // Card 2: bit/byte layout
+    lv_obj_t *c2 = lv_obj_create(content);
+    lv_obj_set_width(c2, LV_PCT(100));
+    lv_obj_set_height(c2, 90);
+    brl_style_card(c2);
+    lv_obj_remove_flag(c2, LV_OBJ_FLAG_SCROLLABLE);
+
+    snprintf(buf, sizeof(buf), "%u", (unsigned)s->start);
+    s_ce_ta_start = mk_field(c2, tr(TR_CAN_START), 8, 8, 110, buf, true);
+    snprintf(buf, sizeof(buf), "%u", (unsigned)(s->len ? s->len : 1));
+    s_ce_ta_len = mk_field(c2, tr(TR_CAN_LEN),   140, 8, 110, buf, true);
+
+    lv_obj_t *u_lbl = lv_label_create(c2);
+    lv_label_set_text(u_lbl, tr(TR_CAN_UNSIGNED));
+    brl_style_label(u_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+    lv_obj_set_pos(u_lbl, 280, 8);
+    s_ce_sw_unsigned = lv_switch_create(c2);
+    lv_obj_set_size(s_ce_sw_unsigned, 60, 32);
+    lv_obj_set_pos(s_ce_sw_unsigned, 280, 30);
+    if (s->is_unsigned) lv_obj_add_state(s_ce_sw_unsigned, LV_STATE_CHECKED);
+
+    // Card 3: scaling
+    lv_obj_t *c3 = lv_obj_create(content);
+    lv_obj_set_width(c3, LV_PCT(100));
+    lv_obj_set_height(c3, 90);
+    brl_style_card(c3);
+    lv_obj_remove_flag(c3, LV_OBJ_FLAG_SCROLLABLE);
+
+    snprintf(buf, sizeof(buf), "%g", (double)(s->scale ? s->scale : 1.0f));
+    s_ce_ta_scale = mk_field(c3, tr(TR_ANALOG_SCALE),  8,  8, 220, buf, true);
+    snprintf(buf, sizeof(buf), "%g", (double)s->offset);
+    s_ce_ta_offset = mk_field(c3, tr(TR_ANALOG_OFFSET), 250, 8, 220, buf, true);
+
+    // Card 4: range + delete
+    lv_obj_t *c4 = lv_obj_create(content);
+    lv_obj_set_width(c4, LV_PCT(100));
+    lv_obj_set_height(c4, 90);
+    brl_style_card(c4);
+    lv_obj_remove_flag(c4, LV_OBJ_FLAG_SCROLLABLE);
+
+    snprintf(buf, sizeof(buf), "%g", (double)s->min_val);
+    s_ce_ta_min = mk_field(c4, tr(TR_ANALOG_MIN),  8,  8, 180, buf, true);
+    snprintf(buf, sizeof(buf), "%g", (double)s->max_val);
+    s_ce_ta_max = mk_field(c4, tr(TR_ANALOG_MAX), 200, 8, 180, buf, true);
+
+    if (!is_new) {
+        lv_obj_t *del_btn = lv_button_create(c4);
+        lv_obj_set_size(del_btn, 160, 44);
+        lv_obj_align(del_btn, LV_ALIGN_RIGHT_MID, -8, 0);
+        lv_obj_set_style_bg_color(del_btn, BRL_CLR_DANGER, LV_STATE_DEFAULT);
+        lv_obj_set_style_radius(del_btn, 6, LV_STATE_DEFAULT);
+        lv_obj_set_style_border_width(del_btn, 0, LV_STATE_DEFAULT);
+        lv_obj_t *del_lbl = lv_label_create(del_btn);
+        lv_label_set_text(del_lbl, LV_SYMBOL_TRASH "  Löschen");
+        brl_style_label(del_lbl, &BRL_FONT_16, BRL_CLR_TEXT);
+        lv_obj_center(del_lbl);
+        lv_obj_add_event_cb(del_btn, ce_delete_cb, LV_EVENT_CLICKED, nullptr);
+    }
+
+    // Shared keyboard
+    s_ce_kb = lv_keyboard_create(scr);
+    lv_obj_set_size(s_ce_kb, BRL_SCREEN_W, 200);
+    lv_obj_align(s_ce_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_add_flag(s_ce_kb, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(s_ce_kb, ce_kb_done_cb, LV_EVENT_READY,  nullptr);
+    lv_obj_add_event_cb(s_ce_kb, ce_kb_done_cb, LV_EVENT_CANCEL, nullptr);
+
+    sub_screen_load(scr);
+}
+
+// --- List screen ------------------------------------------------------------
+static void open_can_channels_screen() {
+    ce_clear_state();
+    s_ce_edit_idx = -1;
+
+    lv_obj_t *scr = make_sub_screen(tr(TR_CAN_CH_TITLE),
+                                    [](lv_event_t * /*e*/){ open_settings_screen(); });
+    lv_obj_t *content = build_content_area(scr, true);
+    lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(content, 4, LV_STATE_DEFAULT);
+
+    if (!g_car_profile.loaded) {
+        lv_obj_t *ph = lv_label_create(content);
+        lv_label_set_text(ph, tr(TR_CAN_NO_PROFILE));
+        brl_style_label(ph, &BRL_FONT_16, BRL_CLR_DANGER);
+        sub_screen_load(scr);
+        return;
+    }
+
+    // Header info: which profile
+    char hdr[64];
+    snprintf(hdr, sizeof(hdr), "%s %s — %d Sensoren",
+             g_car_profile.make, g_car_profile.engine,
+             g_car_profile.sensor_count);
+    lv_obj_t *info = lv_label_create(content);
+    lv_label_set_text(info, hdr);
+    brl_style_label(info, &BRL_FONT_16, BRL_CLR_ACCENT);
+
+    // Add-button
+    lv_obj_t *add_btn = lv_button_create(content);
+    lv_obj_set_width(add_btn, LV_PCT(100));
+    lv_obj_set_height(add_btn, 50);
+    lv_obj_set_style_bg_color(add_btn, BRL_CLR_ACCENT, LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(add_btn, 6, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(add_btn, 0, LV_STATE_DEFAULT);
+    lv_obj_t *add_lbl = lv_label_create(add_btn);
+    lv_label_set_text(add_lbl, tr(TR_CAN_CH_ADD));
+    brl_style_label(add_lbl, &BRL_FONT_20, BRL_CLR_TEXT);
+    lv_obj_center(add_lbl);
+    lv_obj_add_event_cb(add_btn, [](lv_event_t * /*e*/){
+        open_can_channel_edit(-1);
+    }, LV_EVENT_CLICKED, nullptr);
+
+    // Sensor rows
+    for (int i = 0; i < g_car_profile.sensor_count; i++) {
+        const CarSensor *s = &g_car_profile.sensors[i];
+        lv_obj_t *row = lv_obj_create(content);
+        lv_obj_set_width(row, LV_PCT(100));
+        lv_obj_set_height(row, 56);
+        brl_style_card(row);
+        lv_obj_set_style_radius(row, 0, LV_STATE_DEFAULT);
+        lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_user_data(row, (void*)(intptr_t)i);
+        lv_obj_add_event_cb(row, [](lv_event_t *e){
+            int idx = (int)(intptr_t)lv_obj_get_user_data(
+                (lv_obj_t*)lv_event_get_current_target(e));
+            open_can_channel_edit(idx);
+        }, LV_EVENT_CLICKED, nullptr);
+
+        char rowtxt[96];
+        const char *proto_name =
+            (s->proto == 7) ? "OBD2" :
+            (s->proto == 1) ? "UDS"  : "PT-CAN";
+        snprintf(rowtxt, sizeof(rowtxt), "%-15s  %s ID:%lX  start:%u len:%u",
+                 s->name, proto_name, (unsigned long)s->can_id,
+                 (unsigned)s->start, (unsigned)s->len);
+        lv_obj_t *l = lv_label_create(row);
+        lv_label_set_text(l, rowtxt);
+        brl_style_label(l, &BRL_FONT_16, BRL_CLR_TEXT);
+        lv_obj_align(l, LV_ALIGN_LEFT_MID, 8, 0);
+
+        lv_obj_t *arr = lv_label_create(row);
+        lv_label_set_text(arr, LV_SYMBOL_RIGHT);
+        brl_style_label(arr, &BRL_FONT_20, BRL_CLR_TEXT_DIM);
+        lv_obj_align(arr, LV_ALIGN_RIGHT_MID, -8, 0);
+    }
+
+    sub_screen_load(scr);
+}
+
+// ============================================================================
 // CAR PROFILE MANAGER SCREEN
 // ============================================================================
 static void open_car_profiles_screen();
@@ -2888,6 +3263,16 @@ static void open_settings_screen() {
                                          BRL_CLR_SURFACE2, LV_ALIGN_RIGHT_MID);
         lv_obj_add_event_cb(btn, [](lv_event_t * /*e*/) {
             open_analog_screen();
+        }, LV_EVENT_CLICKED, nullptr);
+    }
+    // Custom CAN channel editor (RaceCapture-style)
+    {
+        lv_obj_t *r = make_setting_row(content, 0, RH2, LV_SYMBOL_LIST,
+                                        tr(TR_CAN_CH_TITLE), tr(TR_CAN_CH_SUB));
+        lv_obj_t *btn = make_setting_btn(r, tr(TR_CONFIGURE_BTN),
+                                         BRL_CLR_SURFACE2, LV_ALIGN_RIGHT_MID);
+        lv_obj_add_event_cb(btn, [](lv_event_t * /*e*/) {
+            open_can_channels_screen();
         }, LV_EVENT_CLICKED, nullptr);
     }
     // Engine data (Zone 3) visibility

@@ -60,6 +60,15 @@ bool car_profile_load(const char *filename);
 // have OBD2 sensors. Returns true on success.
 bool car_profile_load_into(const char *filename, CarProfile *dst);
 
+// Serialize the current g_car_profile back to /cars/<filename> as an
+// AES-256-CBC encrypted .brl. Used by the on-display sensor editor.
+// NOTE: Only the fields kept in CarSensor (proto, can_id, fmt=0, start,
+// len, unsigned, scale, offset, name, min, max, type, slot) are
+// preserved on round-trip; advanced TRX fields like decimals, mapper
+// curves, ref-sensor and popup are written as defaults if the source
+// .brl contained them. For full fidelity, edit on the PC tool.
+bool car_profile_save(const char *filename);
+
 // List available .brl profiles on SD. Returns count.
 // filenames[i] will contain just the filename (e.g. "N47F.brl")
 int  car_profile_list(char filenames[][CAR_NAME_LEN], int max_count);
