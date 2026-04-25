@@ -28,6 +28,7 @@ static const char *TAG = "app";
 #include "driver/gpio.h"
 #include "../wifi/wifi_mgr.h"
 #include "../storage/session_store.h"
+#include "../sensors/analog_in.h"
 #include "../storage/sd_mgr.h"
 #include "../storage/track_update.h"
 #include "../data/car_profile.h"
@@ -144,6 +145,7 @@ static void open_history_screen();
 static void open_session_detail_screen(const char *session_id,
                                        const char *session_name);
 static void open_settings_screen();
+static void open_analog_screen();
 
 // ============================================================================
 // SECTION 1 — SHARED HELPERS
@@ -2214,6 +2216,193 @@ static void open_gps_info_screen() {
 }
 
 // ============================================================================
+// ANALOG INPUT CALIBRATION SCREEN  (AN1..AN4 on GPIO 20/21/22/23)
+// ============================================================================
+//
+// One scrollable card per channel with:
+//   - live mV + scaled value (refreshed by a 100 ms lv_timer)
+//   - enabled switch (top-right)
+//   - text inputs for name + scale + offset + min + max (numeric ones use
+//     the LVGL number-mode keyboard; the name field uses the text keyboard)
+//   - a single shared on-screen keyboard at the bottom of the screen
+//
+// The "Speichern" action button in the sub-header reads all 24 fields back
+// into g_analog_cfg and calls analog_in_save_config() (NVS commit), then
+// returns to the settings screen.
+// ============================================================================
+static lv_obj_t   *s_an_kb           = nullptr;
+static lv_obj_t   *s_an_ta_name[ANALOG_CHANNELS]   = {};
+static lv_obj_t   *s_an_ta_scale[ANALOG_CHANNELS]  = {};
+static lv_obj_t   *s_an_ta_offset[ANALOG_CHANNELS] = {};
+static lv_obj_t   *s_an_ta_min[ANALOG_CHANNELS]    = {};
+static lv_obj_t   *s_an_ta_max[ANALOG_CHANNELS]    = {};
+static lv_obj_t   *s_an_sw[ANALOG_CHANNELS]        = {};
+static lv_obj_t   *s_an_live[ANALOG_CHANNELS]      = {};
+static lv_timer_t *s_an_refresh_timer              = nullptr;
+
+static void an_clear_state(void) {
+    if (s_an_refresh_timer) {
+        lv_timer_delete(s_an_refresh_timer);
+        s_an_refresh_timer = nullptr;
+    }
+    s_an_kb = nullptr;
+    for (int i = 0; i < ANALOG_CHANNELS; i++) {
+        s_an_ta_name[i] = s_an_ta_scale[i] = s_an_ta_offset[i] = nullptr;
+        s_an_ta_min[i] = s_an_ta_max[i] = s_an_sw[i] = s_an_live[i] = nullptr;
+    }
+}
+
+static void an_ta_focus_cb(lv_event_t *e) {
+    lv_obj_t *ta = (lv_obj_t*)lv_event_get_target(e);
+    if (!s_an_kb || !ta) return;
+    bool numeric = lv_obj_get_user_data(ta) != nullptr;
+    lv_keyboard_set_mode(s_an_kb,
+                         numeric ? LV_KEYBOARD_MODE_NUMBER
+                                 : LV_KEYBOARD_MODE_TEXT_LOWER);
+    lv_keyboard_set_textarea(s_an_kb, ta);
+    lv_obj_remove_flag(s_an_kb, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void an_kb_done_cb(lv_event_t *e) {
+    lv_event_code_t c = lv_event_get_code(e);
+    if ((c == LV_EVENT_READY || c == LV_EVENT_CANCEL) && s_an_kb) {
+        lv_obj_add_flag(s_an_kb, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void an_save_cb(lv_event_t * /*e*/) {
+    for (int i = 0; i < ANALOG_CHANNELS; i++) {
+        if (s_an_ta_name[i]) {
+            const char *t = lv_textarea_get_text(s_an_ta_name[i]);
+            strncpy(g_analog_cfg[i].name, t, sizeof(g_analog_cfg[i].name) - 1);
+            g_analog_cfg[i].name[sizeof(g_analog_cfg[i].name) - 1] = '\0';
+        }
+        if (s_an_ta_scale[i])
+            g_analog_cfg[i].scale   = (float)atof(lv_textarea_get_text(s_an_ta_scale[i]));
+        if (s_an_ta_offset[i])
+            g_analog_cfg[i].offset  = (float)atof(lv_textarea_get_text(s_an_ta_offset[i]));
+        if (s_an_ta_min[i])
+            g_analog_cfg[i].min_val = (float)atof(lv_textarea_get_text(s_an_ta_min[i]));
+        if (s_an_ta_max[i])
+            g_analog_cfg[i].max_val = (float)atof(lv_textarea_get_text(s_an_ta_max[i]));
+        if (s_an_sw[i])
+            g_analog_cfg[i].enabled = lv_obj_has_state(s_an_sw[i], LV_STATE_CHECKED);
+    }
+    analog_in_save_config();
+    an_clear_state();
+    open_settings_screen();
+}
+
+static void an_back_cb(lv_event_t * /*e*/) {
+    an_clear_state();
+    open_settings_screen();
+}
+
+static void an_refresh_cb(lv_timer_t * /*t*/) {
+    char buf[40];
+    for (int i = 0; i < ANALOG_CHANNELS; i++) {
+        if (!s_an_live[i]) continue;
+        const AnalogChannel &a = g_state.analog[i];
+        if (!a.valid) {
+            lv_label_set_text(s_an_live[i], "—");
+        } else {
+            snprintf(buf, sizeof(buf), "%d mV  →  %.2f",
+                     (int)a.raw_mv, a.value);
+            lv_label_set_text(s_an_live[i], buf);
+        }
+    }
+}
+
+static void open_analog_screen() {
+    an_clear_state();
+    lv_obj_t *action_btn = nullptr;
+    lv_obj_t *scr = make_sub_screen(tr(TR_ANALOG_TITLE), an_back_cb,
+                                    &action_btn, tr(TR_SAVE));
+    if (action_btn)
+        lv_obj_add_event_cb(action_btn, an_save_cb, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *content = build_content_area(scr, true);
+    lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(content, 6, LV_STATE_DEFAULT);
+    // Leave room at the bottom so the keyboard doesn't cover the last card
+    lv_obj_set_style_pad_bottom(content, 220, LV_STATE_DEFAULT);
+
+    char buf[32];
+    for (int i = 0; i < ANALOG_CHANNELS; i++) {
+        lv_obj_t *card = lv_obj_create(content);
+        lv_obj_set_width(card, LV_PCT(100));
+        lv_obj_set_height(card, 120);
+        brl_style_card(card);
+        lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+        // Header — channel id (left), live value (center), enable switch (right)
+        snprintf(buf, sizeof(buf), "AN%d", i + 1);
+        lv_obj_t *hdr = lv_label_create(card);
+        lv_label_set_text(hdr, buf);
+        brl_style_label(hdr, &BRL_FONT_24, BRL_CLR_ACCENT);
+        lv_obj_align(hdr, LV_ALIGN_TOP_LEFT, 8, 6);
+
+        s_an_live[i] = lv_label_create(card);
+        lv_label_set_text(s_an_live[i], "—");
+        brl_style_label(s_an_live[i], &BRL_FONT_20, BRL_CLR_TEXT);
+        lv_obj_align(s_an_live[i], LV_ALIGN_TOP_MID, 0, 8);
+
+        s_an_sw[i] = lv_switch_create(card);
+        lv_obj_set_size(s_an_sw[i], 60, 32);
+        lv_obj_align(s_an_sw[i], LV_ALIGN_TOP_RIGHT, -8, 6);
+        if (g_analog_cfg[i].enabled) lv_obj_add_state(s_an_sw[i], LV_STATE_CHECKED);
+
+        // Helper: label + textarea pair, positioned absolutely inside the card
+        auto mk_field = [&](const char *label, int x, int y, int w,
+                            const char *initial, bool numeric) -> lv_obj_t* {
+            lv_obj_t *l = lv_label_create(card);
+            lv_label_set_text(l, label);
+            brl_style_label(l, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+            lv_obj_set_pos(l, x, y);
+
+            lv_obj_t *ta = lv_textarea_create(card);
+            lv_obj_set_size(ta, w, 32);
+            lv_obj_set_pos(ta, x + 70, y - 6);
+            lv_textarea_set_one_line(ta, true);
+            lv_textarea_set_text(ta, initial);
+            lv_textarea_set_max_length(ta, 15);
+            lv_obj_set_user_data(ta, numeric ? (void*)1 : nullptr);
+            lv_obj_set_style_text_font(ta, &BRL_FONT_14, LV_STATE_DEFAULT);
+            lv_obj_set_style_pad_all(ta, 4, LV_STATE_DEFAULT);
+            lv_obj_add_event_cb(ta, an_ta_focus_cb, LV_EVENT_FOCUSED, nullptr);
+            return ta;
+        };
+
+        // Row 1 (y=54): Name | Scale | Offset
+        snprintf(buf, sizeof(buf), "%s", g_analog_cfg[i].name);
+        s_an_ta_name[i] = mk_field(tr(TR_ANALOG_NAME), 8, 54, 120, buf, false);
+        snprintf(buf, sizeof(buf), "%g", (double)g_analog_cfg[i].scale);
+        s_an_ta_scale[i] = mk_field(tr(TR_ANALOG_SCALE), 268, 54, 110, buf, true);
+        snprintf(buf, sizeof(buf), "%g", (double)g_analog_cfg[i].offset);
+        s_an_ta_offset[i] = mk_field(tr(TR_ANALOG_OFFSET), 528, 54, 110, buf, true);
+
+        // Row 2 (y=88): Min | Max
+        snprintf(buf, sizeof(buf), "%g", (double)g_analog_cfg[i].min_val);
+        s_an_ta_min[i] = mk_field(tr(TR_ANALOG_MIN), 268, 88, 110, buf, true);
+        snprintf(buf, sizeof(buf), "%g", (double)g_analog_cfg[i].max_val);
+        s_an_ta_max[i] = mk_field(tr(TR_ANALOG_MAX), 528, 88, 110, buf, true);
+    }
+
+    // Single shared on-screen keyboard at the bottom — hidden until a TA is
+    // focused. The user dismisses it with the Tick (READY) or X (CANCEL).
+    s_an_kb = lv_keyboard_create(scr);
+    lv_obj_set_size(s_an_kb, BRL_SCREEN_W, 200);
+    lv_obj_align(s_an_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_add_flag(s_an_kb, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(s_an_kb, an_kb_done_cb, LV_EVENT_READY,  nullptr);
+    lv_obj_add_event_cb(s_an_kb, an_kb_done_cb, LV_EVENT_CANCEL, nullptr);
+
+    s_an_refresh_timer = lv_timer_create(an_refresh_cb, 100, nullptr);
+
+    sub_screen_load(scr);
+}
+
+// ============================================================================
 // CAR PROFILE MANAGER SCREEN
 // ============================================================================
 static void open_car_profiles_screen();
@@ -2689,6 +2878,16 @@ static void open_settings_screen() {
             dash_config_save();
             lv_label_set_text(lv_obj_get_child(set_units_btn, 0),
                               g_state.units == 0 ? "km/h" : "mph");
+        }, LV_EVENT_CLICKED, nullptr);
+    }
+    // Analog inputs (AN1-AN4 calibration)
+    {
+        lv_obj_t *r = make_setting_row(content, 0, RH2, LV_SYMBOL_CHARGE,
+                                        tr(TR_ANALOG_TITLE), tr(TR_ANALOG_SUB));
+        lv_obj_t *btn = make_setting_btn(r, tr(TR_CONFIGURE_BTN),
+                                         BRL_CLR_SURFACE2, LV_ALIGN_RIGHT_MID);
+        lv_obj_add_event_cb(btn, [](lv_event_t * /*e*/) {
+            open_analog_screen();
         }, LV_EVENT_CLICKED, nullptr);
     }
     // Engine data (Zone 3) visibility

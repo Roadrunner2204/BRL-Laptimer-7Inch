@@ -173,6 +173,19 @@ enum TrKey : uint8_t {
     // Engine-data visibility toggle
     TR_SHOW_OBD,
     TR_SHOW_OBD_SUB,
+    // Analog inputs
+    TR_ANALOG_TITLE,
+    TR_ANALOG_SUB,
+    TR_ANALOG_NAME,
+    TR_ANALOG_SCALE,
+    TR_ANALOG_OFFSET,
+    TR_ANALOG_MIN,
+    TR_ANALOG_MAX,
+    TR_ANALOG_ENABLED,
+    TR_ANALOG_LIVE,
+    TR_ANALOG_DISABLED,
+    TR_SAVE,
+    TR_CANCEL,
     TR_COUNT
 };
 
