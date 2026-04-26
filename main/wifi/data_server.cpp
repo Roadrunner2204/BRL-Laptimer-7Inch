@@ -20,6 +20,7 @@
 #include "../storage/session_store.h"
 #include "../data/lap_data.h"
 #include "../data/track_db.h"
+#include "../camera_link/cam_link.h"
 #include "compat.h"
 
 #include <string.h>
@@ -528,6 +529,92 @@ static esp_err_t handle_track_post(httpd_req_t *req)
     return httpd_resp_send(req, ok, n);
 }
 
+// ---------------------------------------------------------------------------
+// Camera-module proxy
+//
+// The external DFR1172 cam module records video to its own SD card and
+// exposes /video/<session_id> over HTTP on the laptimer's AP subnet. We
+// don't proxy the bytes through the laptimer (would re-introduce the
+// throughput bottleneck that motivated the daughter-board split) — we
+// just give the phone/Studio the index and a 302 Redirect to the cam's
+// IP so the download flows directly cam ↔ phone.
+// ---------------------------------------------------------------------------
+
+// GET /videos -- list video files known to the cam module (cached in
+// cam_link from the most recent CAM_FRAME_VIDEO_LIST reply). Each entry:
+// {"id","size_bytes","gps_utc_ms_start","duration_ms"}.
+static esp_err_t handle_videos(httpd_req_t *req)
+{
+    set_cors_headers(req);
+    httpd_resp_set_type(req, "application/json");
+
+    CamLinkInfo info = cam_link_get_info();
+    if (!info.link_up) {
+        const char *err = "{\"error\":\"cam link down\",\"link_up\":false}";
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_send(req, err, strlen(err));
+    }
+
+    CamVideoIndex idx = cam_link_get_video_index();
+    httpd_resp_send_chunk(req, "[", 1);
+    char entry[224];
+    for (uint32_t i = 0; i < idx.count; i++) {
+        const CamVideoListEntry &e = idx.entries[i];
+        int elen = snprintf(entry, sizeof(entry),
+            "%s{\"id\":\"%s\",\"size_bytes\":%llu,"
+            "\"gps_utc_ms_start\":%llu,\"duration_ms\":%lu}",
+            (i == 0) ? "" : ",",
+            e.session_id,
+            (unsigned long long)e.size_bytes,
+            (unsigned long long)e.gps_utc_ms_start,
+            (unsigned long)e.duration_ms);
+        if (elen > 0) httpd_resp_send_chunk(req, entry, elen);
+    }
+    httpd_resp_send_chunk(req, "]", 1);
+    httpd_resp_send_chunk(req, nullptr, 0);
+    ESP_LOGI(TAG, "GET /videos -- %lu entries (cam %s:%u)",
+             (unsigned long)idx.count, info.status.ip_addr,
+             (unsigned)info.status.http_port);
+    return ESP_OK;
+}
+
+// GET /video/{id} -- 302 Redirect to http://<cam-ip>:<port>/video/{id}
+static esp_err_t handle_video_get(httpd_req_t *req)
+{
+    // Reuse session-id parser (same charset / safety rules)
+    const char *prefix = "/video/";
+    size_t plen = strlen(prefix);
+    if (strncmp(req->uri, prefix, plen) != 0) {
+        return send_err(req, "400 Bad Request", "bad path");
+    }
+    const char *id = req->uri + plen;
+    if (strlen(id) == 0 || strchr(id, '/') || strchr(id, '.') == id) {
+        return send_err(req, "400 Bad Request", "bad id");
+    }
+
+    CamLinkInfo info = cam_link_get_info();
+    if (!info.link_up || !info.status.wifi_sta_up) {
+        return send_err(req, "503 Service Unavailable", "cam not on AP");
+    }
+    if (info.status.ip_addr[0] == 0 ||
+        strcmp(info.status.ip_addr, "0.0.0.0") == 0) {
+        return send_err(req, "503 Service Unavailable", "cam ip unknown");
+    }
+
+    char location[160];
+    snprintf(location, sizeof(location), "http://%s:%u/video/%s",
+             info.status.ip_addr,
+             (unsigned)(info.status.http_port ? info.status.http_port : 80),
+             id);
+
+    set_cors_headers(req);
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", location);
+    httpd_resp_set_type(req, "text/plain");
+    ESP_LOGI(TAG, "GET /video/%s -> 302 %s", id, location);
+    return httpd_resp_send(req, location, strlen(location));
+}
+
 // GET /generate_204 -- Android captive portal detection
 static esp_err_t handle_generate_204(httpd_req_t *req)
 {
@@ -661,6 +748,10 @@ static const httpd_uri_t s_uri_handlers[] = {
     { .uri = "/track",         .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
     { .uri = "/track/*",       .method = HTTP_GET,    .handler = handle_track_get_one,   .user_ctx = nullptr },
     { .uri = "/track/*",       .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
+    { .uri = "/videos",        .method = HTTP_GET,    .handler = handle_videos,          .user_ctx = nullptr },
+    { .uri = "/videos",        .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
+    { .uri = "/video/*",       .method = HTTP_GET,    .handler = handle_video_get,       .user_ctx = nullptr },
+    { .uri = "/video/*",       .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
     { .uri = "/generate_204",  .method = HTTP_GET,    .handler = handle_generate_204,    .user_ctx = nullptr },
     { .uri = "/hotspot-detect.html", .method = HTTP_GET, .handler = handle_generate_204, .user_ctx = nullptr },
     { .uri = "/ncsi.txt",      .method = HTTP_GET,    .handler = handle_generate_204,    .user_ctx = nullptr },
