@@ -155,7 +155,9 @@ void recorder_on_lap_marker(const CamLapMarker *m) {
 
 uint32_t recorder_get_session_bytes(void) { return avi_writer_file_size(); }
 uint8_t  recorder_get_sd_free_pct(void)   { return sd_mgr_free_pct(); }
-bool     recorder_has_sensor(void)        { return false; /* TODO: OV5647 detect */ }
+
+#include "../capture/capture.h"
+bool     recorder_has_sensor(void)        { return capture_sensor_present(); }
 
 /* ── Video index ─────────────────────────────────────────────────────── *
  *

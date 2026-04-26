@@ -57,25 +57,28 @@ This is a **separate ESP-IDF project** from the main laptimer in
 
 ## Bring-up status
 
-Skeleton only — frame transport works, capture / WiFi / HTTP are stubs:
-
 | Module | Status |
 |---|---|
 | `cam_link/cam_link_uart` | done — UART2 RX framer + TX sender + STATUS heartbeat |
-| `recorder/recorder`      | stub — TODO: esp_video + JPEG encoder + AVI writer (recycle from `e08cb92`) + telemetry sidecar in `.brl` format |
-| `wifi_sta/wifi_sta`      | stub — TODO: esp_hosted bring-up, join `BRL-Laptimer` AP |
-| `http_server/http_server`| stub — TODO: `GET /videos/list`, `GET /video/<id>` |
+| `recorder/avi_writer`    | done — recycled from main commit `e08cb92` (audio paths dropped) |
+| `recorder/sd_mgr`        | done — SDMMC mount + statvfs + `mkdir -p` |
+| `recorder/sidecar`       | done — NDJSON telemetry mirror (gps/obd/ana/lap) |
+| `recorder/recorder`      | done — orchestrates start/stop, owns the session directory + video index scanner |
+| `wifi_sta/wifi_sta`      | done — STA via esp_hosted, reconnect with backoff |
+| `http_server/http_server`| done — `/`, `/videos/list`, `/video/<id>`, `/telemetry/<id>` |
+| `capture/capture`        | scaffold — V4L2 ioctl path written, gated on `CONFIG_ESP_VIDEO_ENABLE`; sensor pinmux/format tuning happens on bring-up |
 
-Next implementation milestones in order:
+Next implementation milestones once the hardware arrives:
 
-1. **MIPI-CSI bring-up** with `esp_video` on the OV5647 — adapt
-   `examples/peripherals/isp/multi_pipelines`.
-2. **AVI writer** — recycle `main/video/avi_writer.{h,cpp}` from main
-   repo commit `e08cb92` (still in git history).
-3. **Telemetry sidecar** — port the laptimer's `session_store` writer to
-   write `.brl` to `/sdcard/sessions/<id>/telemetry.brl`.
-4. **WiFi STA + HTTP server** — pattern from main's `wifi_mgr` and
-   `data_server`.
+1. **MIPI-CSI bring-up** — fill `esp_video_init_config_t` with the
+   DFR1172's CSI lane / sensor I2C / reset pins, verify `/dev/video0`
+   appears, confirm 1080p30 JPEG output. Reference:
+   `examples/peripherals/isp/multi_pipelines` in ESP-IDF.
+2. **End-to-end test** — laptimer triggers REC START, cam writes a
+   playable AVI + NDJSON sidecar, HTTP `/video/<id>` streams it back
+   via the laptimer 302 redirect.
+3. **Field test** — full session on track, validate that telemetry
+   timestamps line up with video PTS within 1 frame (33 ms).
 
 ## Layout
 

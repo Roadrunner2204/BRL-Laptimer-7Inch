@@ -34,6 +34,7 @@
 #include "recorder/sd_mgr.h"
 #include "wifi_sta/wifi_sta.h"
 #include "http_server/http_server.h"
+#include "capture/capture.h"
 
 static const char *TAG = "brl-cam";
 
@@ -151,6 +152,7 @@ void app_main(void)
     cam_link_uart_init();
     sd_mgr_init();
     recorder_init();
+    capture_init();          /* sensor optional — logs + skips if absent */
     wifi_sta_init();
     http_server_start();
 
