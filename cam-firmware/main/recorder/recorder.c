@@ -1,99 +1,155 @@
 /**
- * recorder.c — STUB. Wires the cam_link inputs to a (TODO) MIPI-CSI →
- * JPEG-encode → AVI-write pipeline + telemetry sidecar.
+ * recorder.c — orchestrates one recording session on the cam module.
  *
- * Production work that is intentionally NOT in this skeleton — each of
- * these is its own follow-up:
+ * Owns the AVI writer + telemetry sidecar + cam-SD layout. Capture
+ * input (MIPI-CSI → JPEG) is pushed in via recorder_push_jpeg_frame()
+ * by the (still-TODO) camera capture pipeline; this layer is hardware-
+ * independent and can be unit-tested end-to-end with synthetic frames.
  *
- *   1. MIPI-CSI bring-up with esp_video on the OV5647 (1080p30 RAW10).
- *      Reference: examples/peripherals/isp/multi_pipelines.
- *   2. HW JPEG encoder driver (esp_driver_jpeg).
- *   3. AVI writer — recycle from main repo's deleted commit e08cb92
- *      (main/video/avi_writer.{h,cpp} survives in git history).
- *   4. Telemetry sidecar writer in the laptimer's existing .brl format
- *      so Studio uses the same parser for laptimer-SD and cam-SD imports.
- *   5. Atomic file rename on stop so partial writes are easy to detect.
- *
- * For now the stub just logs activity so the laptimer-side integration
- * can be brought up end-to-end before the heavy capture code lands.
+ * On-SD layout:
+ *   /sdcard/sessions/<session_id>/video.avi      (this file)
+ *   /sdcard/sessions/<session_id>/telemetry.brl  (TODO: sidecar)
+ *   /sdcard/sessions/<session_id>/sync.json      (TODO: sidecar)
+ *   /sdcard/sessions/<session_id>/meta.json      (this file, on start)
  */
 
 #include "recorder.h"
+#include "avi_writer.h"
+#include "sd_mgr.h"
 #include "esp_log.h"
+#include <stdio.h>
 #include <string.h>
 
 static const char *TAG = "recorder";
 
+/* Capture profile. Match the OV5647 driver config in the future
+ * camera bring-up — FHD at 30 fps is the OV5647 sweet spot per the
+ * DFRobot tutorial. */
+#define REC_WIDTH   1920
+#define REC_HEIGHT  1080
+#define REC_FPS     30
+
 static bool                s_active = false;
 static RecorderSessionInfo s_info   = {};
-static uint32_t            s_bytes  = 0;
+static char                s_session_dir[80] = {};
+static char                s_video_path[160] = {};
 
-void recorder_init(void) {
-    ESP_LOGI(TAG, "init (stub)");
+/* ── Public API ─────────────────────────────────────────────────────── */
+
+void recorder_init(void)
+{
+    avi_writer_preallocate();
+    ESP_LOGI(TAG, "init done (avi_writer preallocated)");
 }
 
-void recorder_poll(void) {
-    /* TODO: drain camera frame queue, write to AVI, update s_bytes. */
+void recorder_poll(void) { /* nothing periodic yet */ }
+
+static void write_meta_json(void)
+{
+    char path[200];
+    snprintf(path, sizeof(path), "%s/meta.json", s_session_dir);
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        ESP_LOGW(TAG, "fopen(%s) failed", path);
+        return;
+    }
+    fprintf(f,
+        "{\n"
+        "  \"session_id\":\"%s\",\n"
+        "  \"gps_utc_ms\":%llu,\n"
+        "  \"track_idx\":%ld,\n"
+        "  \"track_name\":\"%s\",\n"
+        "  \"car_name\":\"%s\",\n"
+        "  \"video\":{\"w\":%d,\"h\":%d,\"fps\":%d,\"codec\":\"MJPG\"}\n"
+        "}\n",
+        s_info.session_id,
+        (unsigned long long)s_info.gps_utc_ms,
+        (long)s_info.track_idx,
+        s_info.track_name,
+        s_info.car_name,
+        REC_WIDTH, REC_HEIGHT, REC_FPS);
+    fclose(f);
 }
 
-bool recorder_start(const RecorderSessionInfo *info) {
+bool recorder_start(const RecorderSessionInfo *info)
+{
     if (!info) return false;
     if (s_active) recorder_stop();
+
+    if (!sd_mgr_available()) {
+        ESP_LOGE(TAG, "REC START failed: SD not available");
+        return false;
+    }
+
     s_info = *info;
-    s_bytes = 0;
+
+    snprintf(s_session_dir, sizeof(s_session_dir),
+             "/sdcard/sessions/%s", s_info.session_id);
+    if (!sd_mgr_make_dirs(s_session_dir)) {
+        ESP_LOGE(TAG, "make_dirs(%s) failed", s_session_dir);
+        return false;
+    }
+
+    snprintf(s_video_path, sizeof(s_video_path), "%s/video.avi", s_session_dir);
+    if (!avi_writer_open(s_video_path, REC_WIDTH, REC_HEIGHT, REC_FPS)) {
+        ESP_LOGE(TAG, "avi_writer_open(%s) failed", s_video_path);
+        return false;
+    }
+
+    write_meta_json();
+    /* TODO: open telemetry.brl + sync.json once the sidecar writer
+     * lands. For now the cam captures video only — telemetry frames
+     * arriving via cam_link are just logged. */
+
     s_active = true;
     ESP_LOGI(TAG, "REC START session=%s track=%s car=%s utc=%llu",
              s_info.session_id, s_info.track_name, s_info.car_name,
              (unsigned long long)s_info.gps_utc_ms);
-    /* TODO: mkdir /sdcard/sessions/<id>/, open video.avi + telemetry.brl,
-     * write meta.json + sync.json header. */
     return true;
 }
 
-bool recorder_stop(void) {
+bool recorder_stop(void)
+{
     if (!s_active) return false;
-    ESP_LOGI(TAG, "REC STOP session=%s bytes=%lu",
-             s_info.session_id, (unsigned long)s_bytes);
-    s_active = false;
-    /* TODO: close all file handles, write final sync.json, fsync SD. */
-    return true;
+    s_active = false;        /* set first so push_frame stops accepting */
+
+    bool ok = avi_writer_close();
+    ESP_LOGI(TAG, "REC STOP session=%s ok=%d", s_info.session_id, ok ? 1 : 0);
+    /* TODO: close telemetry.brl + finalize sync.json. */
+    return ok;
 }
 
 bool recorder_is_active(void) { return s_active; }
 
+bool recorder_push_jpeg_frame(const uint8_t *jpeg, uint32_t size)
+{
+    if (!s_active) return false;
+    return avi_writer_write_frame(jpeg, size);
+}
+
 void recorder_on_telemetry_gps(const CamTelemetryGps *t) {
-    if (!s_active || !t) return;
-    /* TODO: append to telemetry.brl in laptimer-compatible format. */
-    ESP_LOGV(TAG, "GPS %.5f,%.5f spd=%.1f", t->lat, t->lon, t->speed_kmh);
+    (void)t; /* TODO: sidecar */
 }
 void recorder_on_telemetry_obd(const CamTelemetryObd *t) {
-    if (!s_active || !t) return;
-    ESP_LOGV(TAG, "OBD rpm=%.0f tps=%.1f", t->rpm, t->throttle_pct);
+    (void)t; /* TODO: sidecar */
 }
 void recorder_on_telemetry_analog(const CamTelemetryAnalog *t) {
-    if (!s_active || !t) return;
-    ESP_LOGV(TAG, "ANA mask=0x%02X", t->valid_mask);
+    (void)t; /* TODO: sidecar */
 }
 void recorder_on_lap_marker(const CamLapMarker *m) {
     if (!s_active || !m) return;
-    ESP_LOGI(TAG, "LAP %u: %lu ms (sectors=%u)",
-             m->lap_no, (unsigned long)m->lap_ms, m->sectors_used);
-    /* TODO: write into sync.json so Studio can map video_pts ↔ lap_no. */
+    ESP_LOGI(TAG, "LAP %u: %lu ms (sectors=%u, video frame %lu)",
+             m->lap_no, (unsigned long)m->lap_ms, m->sectors_used,
+             (unsigned long)avi_writer_frame_count());
+    /* TODO: append to sync.json so Studio can map video PTS ↔ lap_no. */
 }
 
-uint32_t recorder_get_session_bytes(void) { return s_bytes; }
+uint32_t recorder_get_session_bytes(void) { return avi_writer_file_size(); }
+uint8_t  recorder_get_sd_free_pct(void)   { return sd_mgr_free_pct(); }
+bool     recorder_has_sensor(void)        { return false; /* TODO: OV5647 detect */ }
 
-uint8_t recorder_get_sd_free_pct(void) {
-    /* TODO: statvfs("/sdcard") and compute free pct. */
-    return 100;
-}
-
-bool recorder_has_sensor(void) {
-    /* TODO: report the OV5647 detect status from esp_video init. */
-    return false;
-}
-
-const CamVideoListEntry *recorder_get_video_index(uint32_t *out_count) {
+const CamVideoListEntry *recorder_get_video_index(uint32_t *out_count)
+{
     /* TODO: scan /sdcard/sessions/, populate a heap-allocated cache. */
     if (out_count) *out_count = 0;
     return NULL;

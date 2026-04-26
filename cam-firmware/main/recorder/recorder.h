@@ -45,6 +45,11 @@ void recorder_on_telemetry_obd(const CamTelemetryObd    *t);
 void recorder_on_telemetry_analog(const CamTelemetryAnalog *t);
 void recorder_on_lap_marker(const CamLapMarker        *m);
 
+/* Push one MJPEG frame into the AVI writer. Called from the camera
+ * capture pipeline once it lands. Returns false when not recording or
+ * on SD-write error. */
+bool recorder_push_jpeg_frame(const uint8_t *jpeg, uint32_t size);
+
 /* Status helpers (used by the periodic STATUS reply). */
 uint32_t recorder_get_session_bytes(void);
 uint8_t  recorder_get_sd_free_pct(void);

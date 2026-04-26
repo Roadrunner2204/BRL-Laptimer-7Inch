@@ -31,6 +31,7 @@
 
 #include "cam_link/cam_link_uart.h"
 #include "recorder/recorder.h"
+#include "recorder/sd_mgr.h"
 #include "wifi_sta/wifi_sta.h"
 #include "http_server/http_server.h"
 
@@ -148,6 +149,7 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     cam_link_uart_init();
+    sd_mgr_init();
     recorder_init();
     wifi_sta_init();
     http_server_start();
