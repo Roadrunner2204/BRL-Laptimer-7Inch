@@ -18,6 +18,7 @@ static const char *TAG = "app";
 #include "theme.h"
 #include "screen_splash.h"
 #include "screen_timing.h"
+#include "screen_video_settings.h"
 #include "dash_config.h"
 #include "../data/lap_data.h"
 #include "../data/track_db.h"
@@ -145,7 +146,8 @@ static void open_track_creator(lv_obj_t *parent_scroll, int edit_idx = -1);
 static void open_history_screen();
 static void open_session_detail_screen(const char *session_id,
                                        const char *session_name);
-static void open_settings_screen();
+/* open_settings_screen is declared extern in app.h so other screens
+ * can navigate back into Settings. */
 static void open_analog_screen();
 static void open_can_channels_screen();
 static void open_can_channel_edit(int slot_idx);  // -1 = new sensor
@@ -233,7 +235,7 @@ static lv_obj_t *build_sub_header(lv_obj_t *scr, const char *title,
 }
 
 // Content area: y=90, h=510 (below status bar + header)
-static lv_obj_t *build_content_area(lv_obj_t *scr, bool scrollable = true) {
+lv_obj_t *build_content_area(lv_obj_t *scr, bool scrollable) {
     lv_obj_t *area = lv_obj_create(scr);
     lv_obj_set_size(area, BRL_SCREEN_W, BRL_SCREEN_H - 90);
     lv_obj_set_pos(area, 0, 90);
@@ -249,9 +251,9 @@ static lv_obj_t *build_content_area(lv_obj_t *scr, bool scrollable = true) {
 }
 
 // Sub-screen skeleton: status bar + header + content area
-static lv_obj_t *make_sub_screen(const char *title, lv_event_cb_t back_cb,
-                                  lv_obj_t **action_btn = nullptr,
-                                  const char *action_lbl = nullptr) {
+lv_obj_t *make_sub_screen(const char *title, lv_event_cb_t back_cb,
+                          lv_obj_t **action_btn,
+                          const char *action_lbl) {
     lv_obj_t *scr = lv_obj_create(nullptr);
     lv_obj_set_style_bg_color(scr, BRL_CLR_BG, LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_STATE_DEFAULT);
@@ -287,7 +289,7 @@ void menu_screen_show() {
 
 static void cb_back_to_menu(lv_event_t * /*e*/) { menu_screen_show(); }
 
-static void sub_screen_load(lv_obj_t *scr) {
+void sub_screen_load(lv_obj_t *scr) {
     if (s_scr_sub && s_scr_sub != scr) {
         // Clear handles pointing into old screen before deleting
         sb_sub = {};
@@ -3056,7 +3058,7 @@ static void open_car_profiles_screen() {
     sub_screen_load(scr);
 }
 
-static void open_settings_screen() {
+void open_settings_screen() {
     lv_obj_t *scr = make_sub_screen(tr(TR_SETTINGS_TITLE), cb_back_to_menu);
     lv_obj_t *content = build_content_area(scr, true);
     lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
@@ -3141,6 +3143,32 @@ static void open_settings_screen() {
         lv_obj_t *bgps = make_setting_btn(r, "Info", BRL_CLR_ACCENT, LV_ALIGN_RIGHT_MID);
         lv_obj_add_event_cb(bgps, [](lv_event_t* /*e*/){ open_gps_info_screen(); },
                             LV_EVENT_CLICKED, nullptr);
+    }
+    // Camera module — only shown when the cam link is up. Hidden entirely
+    // (no greyed-out row) when no cam is detected, per product brief: a
+    // user without the cam shouldn't see anything that hints at it.
+    {
+        CamLinkInfo ci = cam_link_get_info();
+        if (ci.link_up) {
+            lv_obj_t *r = make_setting_row(content, 0, RH2, LV_SYMBOL_VIDEO,
+                                            tr(TR_CAM_TITLE), tr(TR_CAM_SUB));
+            lv_obj_t *st = lv_label_create(r);
+            if (ci.status.rec_active) {
+                lv_label_set_text(st, tr(TR_CAM_RECORDING));
+                brl_style_label(st, &BRL_FONT_16, lv_color_hex(0xFF3030));
+            } else {
+                lv_label_set_text(st, tr(TR_CAM_CONNECTED));
+                brl_style_label(st, &BRL_FONT_16, lv_color_hex(0x00CC66));
+            }
+            lv_obj_set_width(st, 200);
+            lv_obj_align(st, LV_ALIGN_LEFT_MID, 0, 0);
+
+            lv_obj_t *bopen = make_setting_btn(r, tr(TR_CAM_OPEN_BTN),
+                BRL_CLR_ACCENT, LV_ALIGN_RIGHT_MID);
+            lv_obj_add_event_cb(bopen, [](lv_event_t * /*e*/) {
+                open_video_settings_screen();
+            }, LV_EVENT_CLICKED, nullptr);
+        }
     }
     // WiFi AP — live status, on/off toggle, configure dialog
     {

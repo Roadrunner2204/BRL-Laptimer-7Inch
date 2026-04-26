@@ -24,8 +24,10 @@
 
 #include "capture.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "../recorder/recorder.h"
 
 #include <fcntl.h>
@@ -38,8 +40,53 @@ static const char *TAG = "capture";
 #define CAPTURE_DEV  "/dev/video0"
 #define CAPTURE_BUF_COUNT  3            /* triple-buffer for steady 30 fps */
 
+/* Latest-frame snapshot for the HTTP preview endpoint. Sized for a
+ * full-res JPEG worst case (≈ 0.05 bpp at 1080p ≈ 130 KB; 256 KB gives
+ * comfortable headroom for high-detail scenes). Allocated in PSRAM
+ * because the HW JPEG output is too big for internal RAM. */
+#define PREVIEW_BUF_SIZE  (256 * 1024)
+static uint8_t          *s_preview_buf = NULL;
+static uint32_t          s_preview_len = 0;
+static SemaphoreHandle_t s_preview_mux = NULL;
+
 static bool s_sensor_present = false;
 static TaskHandle_t s_task = NULL;
+
+/* Stash a frame into the preview buffer. Cheap fast-path when the
+ * mutex is held by the HTTP handler — we just skip this frame, the
+ * next one (33 ms later) will land. */
+static void stash_preview(const uint8_t *src, uint32_t len)
+{
+    if (!s_preview_mux || !s_preview_buf) return;
+    if (len > PREVIEW_BUF_SIZE) return;
+    if (xSemaphoreTake(s_preview_mux, 0) != pdTRUE) return;
+    memcpy(s_preview_buf, src, len);
+    s_preview_len = len;
+    xSemaphoreGive(s_preview_mux);
+}
+
+uint32_t capture_get_latest_jpeg(uint8_t *out, uint32_t max_size)
+{
+    if (!s_preview_mux || !s_preview_buf || !out) return 0;
+    uint32_t copied = 0;
+    if (xSemaphoreTake(s_preview_mux, pdMS_TO_TICKS(50)) != pdTRUE) return 0;
+    if (s_preview_len > 0 && s_preview_len <= max_size) {
+        memcpy(out, s_preview_buf, s_preview_len);
+        copied = s_preview_len;
+    }
+    xSemaphoreGive(s_preview_mux);
+    return copied;
+}
+
+static void preview_alloc_once(void)
+{
+    if (s_preview_buf) return;
+    s_preview_buf = (uint8_t *)heap_caps_malloc(PREVIEW_BUF_SIZE, MALLOC_CAP_SPIRAM);
+    s_preview_mux = xSemaphoreCreateMutex();
+    if (!s_preview_buf || !s_preview_mux) {
+        ESP_LOGE(TAG, "preview buf alloc failed (%d B PSRAM)", PREVIEW_BUF_SIZE);
+    }
+}
 
 #ifdef CONFIG_ESP_VIDEO_ENABLE
 /* ── Real implementation, gated on the esp_video component being
@@ -121,11 +168,6 @@ static void capture_task(void *arg)
 {
     (void)arg;
     for (;;) {
-        if (!recorder_is_active()) {
-            vTaskDelay(pdMS_TO_TICKS(50));
-            continue;
-        }
-
         struct v4l2_buffer b = {0};
         b.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         b.memory = V4L2_MEMORY_MMAP;
@@ -135,8 +177,15 @@ static void capture_task(void *arg)
             continue;
         }
         if (b.bytesused > 0 && b.index < (uint32_t)s_buf_count) {
-            recorder_push_jpeg_frame((const uint8_t *)s_bufs[b.index].start,
-                                     b.bytesused);
+            const uint8_t *frame = (const uint8_t *)s_bufs[b.index].start;
+            /* Always snapshot for the preview endpoint — a phone or the
+             * laptimer's Video Settings screen may be aiming the cam
+             * even when no recording is active. */
+            stash_preview(frame, b.bytesused);
+
+            if (recorder_is_active()) {
+                recorder_push_jpeg_frame(frame, b.bytesused);
+            }
         }
         ioctl(s_fd, VIDIOC_QBUF, &b);
     }
@@ -144,6 +193,7 @@ static void capture_task(void *arg)
 
 bool capture_init(void)
 {
+    preview_alloc_once();
     /* esp_video_init wires up the CSI receiver + ISP + sensor I2C, then
      * registers the V4L2 device node. Config struct is target-specific
      * — adjust against the actual esp_video version on bring-up. */
@@ -166,6 +216,7 @@ bool capture_init(void)
 
 bool capture_init(void)
 {
+    preview_alloc_once();
     ESP_LOGW(TAG, "esp_video not enabled — capture disabled. Add the "
                   "espressif/esp_video component and rebuild.");
     s_sensor_present = false;

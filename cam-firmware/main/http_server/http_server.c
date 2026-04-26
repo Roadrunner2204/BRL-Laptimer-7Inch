@@ -9,9 +9,11 @@
 #include "http_server.h"
 #include "esp_log.h"
 #include "esp_http_server.h"
+#include "esp_heap_caps.h"
 #include "../recorder/recorder.h"
 #include "../recorder/sd_mgr.h"
 #include "../wifi_sta/wifi_sta.h"
+#include "../capture/capture.h"
 #include <string.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -150,6 +152,36 @@ static esp_err_t handle_telemetry_get(httpd_req_t *req)
     return stream_file(req, path, "application/x-ndjson");
 }
 
+/* GET /preview.jpg — most recent JPEG frame from the capture pipeline.
+ * Used by the laptimer's Video Settings screen to aim the camera. The
+ * underlying buffer is mutex-protected in capture.c — we copy out, then
+ * release, so the capture task isn't blocked while we transmit. */
+static esp_err_t handle_preview(httpd_req_t *req)
+{
+    if (!capture_sensor_present()) {
+        return send_err(req, "503 Service Unavailable", "no sensor");
+    }
+
+    /* JPEG can be up to ~150 KB at 1080p; PSRAM is the natural home. */
+    const uint32_t max_len = 256 * 1024;
+    uint8_t *buf = (uint8_t *)heap_caps_malloc(max_len, MALLOC_CAP_SPIRAM);
+    if (!buf) return send_err(req, "500 Internal Server Error", "oom");
+
+    uint32_t len = capture_get_latest_jpeg(buf, max_len);
+    if (len == 0) {
+        free(buf);
+        return send_err(req, "503 Service Unavailable", "no frame yet");
+    }
+
+    set_cors(req);
+    httpd_resp_set_type(req, "image/jpeg");
+    /* No-cache so the laptimer always gets the freshest frame. */
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store, max-age=0");
+    esp_err_t r = httpd_resp_send(req, (const char *)buf, len);
+    free(buf);
+    return r;
+}
+
 /* ── Lifecycle ───────────────────────────────────────────────────────── */
 static const httpd_uri_t s_uris[] = {
     { .uri = "/",                .method = HTTP_GET,    .handler = handle_root,           .user_ctx = NULL },
@@ -160,6 +192,8 @@ static const httpd_uri_t s_uris[] = {
     { .uri = "/video/*",         .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = NULL },
     { .uri = "/telemetry/*",     .method = HTTP_GET,    .handler = handle_telemetry_get,   .user_ctx = NULL },
     { .uri = "/telemetry/*",     .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = NULL },
+    { .uri = "/preview.jpg",     .method = HTTP_GET,    .handler = handle_preview,         .user_ctx = NULL },
+    { .uri = "/preview.jpg",     .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = NULL },
 };
 
 void http_server_start(void)
