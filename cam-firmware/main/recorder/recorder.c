@@ -16,6 +16,7 @@
 #include "recorder.h"
 #include "avi_writer.h"
 #include "sd_mgr.h"
+#include "sidecar.h"
 #include "esp_log.h"
 #include <stdio.h>
 #include <string.h>
@@ -97,9 +98,8 @@ bool recorder_start(const RecorderSessionInfo *info)
     }
 
     write_meta_json();
-    /* TODO: open telemetry.brl + sync.json once the sidecar writer
-     * lands. For now the cam captures video only — telemetry frames
-     * arriving via cam_link are just logged. */
+    sidecar_open(s_session_dir, s_info.session_id, s_info.gps_utc_ms,
+                 s_info.track_idx, s_info.track_name, s_info.car_name);
 
     s_active = true;
     ESP_LOGI(TAG, "REC START session=%s track=%s car=%s utc=%llu",
@@ -113,9 +113,11 @@ bool recorder_stop(void)
     if (!s_active) return false;
     s_active = false;        /* set first so push_frame stops accepting */
 
+    uint32_t frames = avi_writer_frame_count();
     bool ok = avi_writer_close();
-    ESP_LOGI(TAG, "REC STOP session=%s ok=%d", s_info.session_id, ok ? 1 : 0);
-    /* TODO: close telemetry.brl + finalize sync.json. */
+    sidecar_close(frames);
+    ESP_LOGI(TAG, "REC STOP session=%s ok=%d frames=%lu",
+             s_info.session_id, ok ? 1 : 0, (unsigned long)frames);
     return ok;
 }
 
@@ -128,20 +130,21 @@ bool recorder_push_jpeg_frame(const uint8_t *jpeg, uint32_t size)
 }
 
 void recorder_on_telemetry_gps(const CamTelemetryGps *t) {
-    (void)t; /* TODO: sidecar */
+    if (s_active) sidecar_on_gps(t);
 }
 void recorder_on_telemetry_obd(const CamTelemetryObd *t) {
-    (void)t; /* TODO: sidecar */
+    if (s_active) sidecar_on_obd(t);
 }
 void recorder_on_telemetry_analog(const CamTelemetryAnalog *t) {
-    (void)t; /* TODO: sidecar */
+    if (s_active) sidecar_on_analog(t);
 }
 void recorder_on_lap_marker(const CamLapMarker *m) {
     if (!s_active || !m) return;
+    uint32_t frame = avi_writer_frame_count();
     ESP_LOGI(TAG, "LAP %u: %lu ms (sectors=%u, video frame %lu)",
              m->lap_no, (unsigned long)m->lap_ms, m->sectors_used,
-             (unsigned long)avi_writer_frame_count());
-    /* TODO: append to sync.json so Studio can map video PTS ↔ lap_no. */
+             (unsigned long)frame);
+    sidecar_on_lap(m, frame);
 }
 
 uint32_t recorder_get_session_bytes(void) { return avi_writer_file_size(); }
