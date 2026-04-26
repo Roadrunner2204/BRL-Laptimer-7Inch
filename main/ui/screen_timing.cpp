@@ -24,6 +24,7 @@
 #include "../timing/lap_timer.h"
 #include "../obd/obd_bt.h"
 #include "../wifi/wifi_mgr.h"
+#include "../camera_link/cam_link.h"
 #include "../sensors/analog_in.h"
 #include "../storage/session_store.h"
 #include "compat.h"
@@ -635,7 +636,12 @@ static void timing_show_session_name_dialog() {
 
 // Build
 // ---------------------------------------------------------------------------
-static void cb_back(lv_event_t * /*e*/) { menu_screen_show(); }
+static void cb_back(lv_event_t * /*e*/) {
+    /* Stop video recording on the cam module before leaving the timing
+     * screen. Safe no-op if the cam isn't recording or the link is down. */
+    cam_link_rec_stop();
+    menu_screen_show();
+}
 
 lv_obj_t *timing_screen_build() {
     lv_obj_t *scr = lv_obj_create(nullptr);

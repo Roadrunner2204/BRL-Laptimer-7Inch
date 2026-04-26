@@ -29,8 +29,11 @@
 
 #include "../gps/gps.h"
 #include "../data/lap_data.h"
+#include "../data/car_profile.h"
 #include "../data/track_db.h"
 #include "../timing/lap_timer.h"
+#include "../camera_link/cam_link.h"
+#include <time.h>
 
 #include <dirent.h>
 #include <sys/stat.h>
@@ -114,6 +117,34 @@ void session_store_begin(const char *track_name, const char *session_name)
     }
 
     log_i("Session begun: '%s'  file:%s", s_session_name, s_session_path);
+
+    /* Trigger video recording on the external cam module. The cam mirrors
+     * our telemetry stream onto its own SD so the offline workflow works
+     * even when the laptimer's fixed SD is inaccessible. */
+    {
+        GpsDateTime dt = gps_get_datetime();
+        uint64_t utc_ms = 0;
+        if (dt.valid) {
+            /* Rough UTC ms from y/m/d/h/m/s. Good enough as session anchor —
+             * studio uses the (anchor + lap markers) for video sync. */
+            struct tm t = {};
+            t.tm_year = dt.year - 1900;
+            t.tm_mon  = dt.month - 1;
+            t.tm_mday = dt.day;
+            t.tm_hour = dt.hour;
+            t.tm_min  = dt.minute;
+            t.tm_sec  = dt.second;
+            time_t epoch = mktime(&t);
+            if (epoch > 0) utc_ms = (uint64_t)epoch * 1000ull;
+        }
+        char car_name[32] = {};
+        car_profile_get_active(car_name, (int)sizeof(car_name));
+        cam_link_rec_start(g_state.session.session_id,
+                           utc_ms,
+                           g_state.active_track_idx,
+                           s_track_name,
+                           car_name);
+    }
 }
 
 // ---------------------------------------------------------------------------

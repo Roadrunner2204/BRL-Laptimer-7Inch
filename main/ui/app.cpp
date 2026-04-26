@@ -27,6 +27,7 @@ static const char *TAG = "app";
 #include "../gps/gps.h"
 #include "driver/gpio.h"
 #include "../wifi/wifi_mgr.h"
+#include "../camera_link/cam_link.h"
 #include "../storage/session_store.h"
 #include "../sensors/analog_in.h"
 #include "../storage/sd_mgr.h"
@@ -3377,9 +3378,18 @@ static void update_sb(SbH &sb) {
         lv_label_set_text(sb.wifi, wlbl);
         lv_obj_set_style_text_color(sb.wifi, wcol, 0);
     }
-    // Recording indicator (always blank — camera module deleted 2026-04-21)
+    // Recording indicator — driven by cam_link status (external cam module).
     if (sb.rec) {
-        lv_label_set_text(sb.rec, "");
+        CamLinkInfo ci = cam_link_get_info();
+        if (ci.link_up && ci.status.rec_active) {
+            lv_label_set_text(sb.rec, LV_SYMBOL_VIDEO " REC");
+            lv_obj_set_style_text_color(sb.rec, lv_color_hex(0xFF3030), 0);
+        } else if (ci.link_up) {
+            lv_label_set_text(sb.rec, LV_SYMBOL_VIDEO);
+            lv_obj_set_style_text_color(sb.rec, lv_color_hex(0x666666), 0);
+        } else {
+            lv_label_set_text(sb.rec, "");
+        }
     }
     // Vehicle connection label (auto icon + OBD/CAN mode)
     if (sb.obd) {
