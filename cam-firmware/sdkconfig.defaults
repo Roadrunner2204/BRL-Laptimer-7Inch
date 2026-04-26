@@ -1,0 +1,29 @@
+# Cam-firmware defaults. Run `idf.py set-target esp32p4` once before build.
+
+CONFIG_IDF_TARGET="esp32p4"
+
+# ── PSRAM (DFR1172 ships with 32 MB hex-mode PSRAM @ 200 MHz) ────────────
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_HEX=y
+CONFIG_SPIRAM_SPEED_200M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+# ── Flash (16 MB QIO) ───────────────────────────────────────────────────
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# ── FreeRTOS ────────────────────────────────────────────────────────────
+CONFIG_FREERTOS_UNICORE=n
+CONFIG_FREERTOS_HZ=1000
+
+# ── ESP32-C6 wireless co-processor over SDIO (esp_hosted) ──────────────
+# Bring-up uses the same esp_hosted setup as the main firmware. Pin to
+# the same versions as ../main/idf_component.yml to keep behavior aligned.
+CONFIG_ESP_WIFI_REMOTE_ENABLED=y
+
+# ── Logging ─────────────────────────────────────────────────────────────
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
