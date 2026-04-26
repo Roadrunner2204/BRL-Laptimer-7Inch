@@ -41,6 +41,7 @@
 #include "data/car_profile.h"
 #include "can/can_bus.h"
 #include "sensors/analog_in.h"
+#include "camera_link/cam_link.h"
 #include "esp_timer.h"
 
 static const char *TAG = "brl-laptimer";
@@ -71,6 +72,7 @@ static void logic_task(void *param)
             obd_bt_poll();
         wifi_mgr_poll();
         data_server_poll();
+        cam_link_poll();
 
         /* Analog inputs sampled at ~10 Hz — no need to read 200x/s */
         uint32_t now = esp_timer_get_time() / 1000;
@@ -138,6 +140,10 @@ void app_main(void)
     /* ── GPS: UART (RX=GPIO2, TX=GPIO3, PPS=GPIO4) ─────────── */
     ESP_LOGI(TAG, "gps_init");
     gps_init();
+
+    /* ── Camera link: UART2 to external DFR1172 cam module ─── */
+    ESP_LOGI(TAG, "cam_link_init");
+    cam_link_init();
 
     /* ── SD card ─────────────────────────────────────────────── */
     ESP_LOGI(TAG, "sd_mgr_init");

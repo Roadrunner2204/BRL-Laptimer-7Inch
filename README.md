@@ -67,13 +67,23 @@ The SD card uses the board's built-in SDMMC slot (directly on the Waveshare boar
 
 Display uses MIPI DSI (directly managed by BSP, no user-facing GPIOs).
 
+### Camera Link (UART2 → external DFR1172 cam module)
+
+| Signal | GPIO | Header Pin | Notes                              |
+|--------|------|------------|------------------------------------|
+| TX     | 30   | IO30       | Main TX → cam RX (115200 8N1)      |
+| RX     | 31   | IO31       | Main RX ← cam TX                   |
+
+Cable to the camera enclosure: **4-pin M8** carrying 5 V + GND + UART TX/RX.
+The camera module (FireBeetle 2 ESP32-P4 + RPi Cam v1.3 OV5647) records video
+to its own SD card; main streams telemetry over this UART so the cam can
+mirror GPS/OBD/CAN data alongside the video for offline overlay rendering.
+
 ### Free Header Pins
 
 | GPIO | Header Pin | Status    |
 |------|------------|-----------|
 | 29   | IO29       | Available |
-| 30   | IO30       | Available |
-| 31   | IO31       | Available |
 | 34   | IO34       | Available |
 | 36   | IO36       | Available |
 
