@@ -1,0 +1,23 @@
+## BRL Laptimer Camera — Component Dependencies
+##
+## Pin esp_hosted + esp_wifi_remote to the same versions as the main
+## laptimer firmware (../../main/idf_component.yml). 2.11+ has the
+## xPortCheckValidTCBMem regression that asserts on ESP32-P4 boot.
+dependencies:
+  idf: ">=5.4.0"
+
+  ## WiFi 6 / BT via the onboard ESP32-C6 over SDIO. The DFR1172 wires
+  ## the C6 to the same SDIO slot as the Waveshare board, so esp_hosted
+  ## brings it up identically.
+  espressif/esp_hosted:
+    version: "2.10.0"
+  espressif/esp_wifi_remote:
+    version: "~1.3.0"
+
+  ## Camera sensor + ISP. esp_video is the V4L2-style high-level API;
+  ## esp_cam_sensor includes the OV5647 driver (the only RPi-cam sensor
+  ## with a production-ready ESP-IDF driver as of early 2026).
+  espressif/esp_video:
+    version: "*"
+  espressif/esp_cam_sensor:
+    version: "*"

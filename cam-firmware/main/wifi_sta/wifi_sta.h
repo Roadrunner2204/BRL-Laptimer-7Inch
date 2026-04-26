@@ -6,11 +6,18 @@
 extern "C" {
 #endif
 
-/* WiFi STA bring-up — joins the laptimer's AP so the phone/Studio can
- * pull videos from us via the laptimer's HTTP 302 redirect.
+/*
+ * wifi_sta — joins the laptimer's AP via the onboard ESP32-C6
+ * (esp_hosted, SDIO).
  *
- * Credentials: hard-coded for v1 (must match the laptimer AP). Once
- * pairing is implemented, store them in NVS and provision over UART. */
+ * The cam exposes its HTTP server on this connection; the laptimer's
+ * data_server hands clients a 302 redirect to <our IP>:80. Reconnect
+ * is handled internally — the laptimer might be off when the cam
+ * boots, or the AP cycles when the user toggles WiFi mode.
+ *
+ * SSID / passphrase are compile-time constants for v1; provisioning
+ * over the cam_link UART can be added later.
+ */
 
 #define BRL_CAM_AP_SSID  "BRL-Laptimer"
 #define BRL_CAM_AP_PASS  ""              /* TODO: provisioning */

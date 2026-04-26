@@ -5,20 +5,24 @@
 extern "C" {
 #endif
 
-/* HTTP server — exposes:
- *   GET /videos/list      JSON index of recorded sessions
- *   GET /video/<id>       streams /sdcard/sessions/<id>/video.avi
+/*
+ * HTTP file server.
  *
- * The phone/Studio reaches this server via a 302 redirect from the
- * laptimer's data_server (see ../../main/wifi/data_server.cpp).
+ * Endpoints (all return CORS-permissive headers so Studio web tooling
+ * works from a browser context):
+ *   GET /                JSON status (device id, IP, sd info)
+ *   GET /videos/list     JSON array of recorded sessions
+ *   GET /video/<id>      streams /sdcard/sessions/<id>/video.avi
+ *   GET /telemetry/<id>  streams /sdcard/sessions/<id>/telemetry.ndjson
  *
- * Default port 80; reported back in the STATUS frame so the laptimer
- * can build the right Location: header. */
+ * The phone / Studio reaches this server via a 302 Redirect from the
+ * laptimer's data_server (../../main/wifi/data_server.cpp).
+ */
 
 #define BRL_CAM_HTTP_PORT  80
 
-void http_server_start(void);
-void http_server_stop(void);
+void     http_server_start(void);
+void     http_server_stop(void);
 uint16_t http_server_port(void);
 
 #ifdef __cplusplus
