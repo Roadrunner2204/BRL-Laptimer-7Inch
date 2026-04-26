@@ -55,6 +55,15 @@ bool cam_link_send_obd(const CamTelemetryObd    *t);
 bool cam_link_send_analog(const CamTelemetryAnalog *t);
 bool cam_link_send_lap_marker(const CamLapMarker *m);
 
+/* ── Telemetry pump (defined in cam_link_pump.cpp) ────────────────── *
+ * Reads g_state and forwards GPS / OBD / analog samples at throttled
+ * rates while a recording is active. Call once per logic_task iteration. */
+void cam_link_pump_telemetry(void);
+
+/* Build + send a CAM_FRAME_LAP_MARKER from session.laps[lap_idx]. Call
+ * from lap_timer immediately after session_store_save_lap(). */
+void cam_link_send_lap_marker_for(uint8_t lap_idx);
+
 /* ── Status (kept in sync from CAM_FRAME_STATUS replies) ──────────── */
 typedef struct {
     bool     link_up;          /* true while STATUS frames arrive < 2 s old */

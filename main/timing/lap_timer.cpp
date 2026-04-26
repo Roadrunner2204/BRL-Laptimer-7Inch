@@ -11,6 +11,7 @@
 #include "../storage/session_store.h"
 #include "../storage/track_best.h"
 #include "../data/track_db.h"
+#include "../camera_link/cam_link.h"
 #include "../compat.h"
 #include "esp_heap_caps.h"
 #include <math.h>
@@ -296,6 +297,7 @@ static void finish_lap(uint32_t cross_ms) {
     lt.in_lap = false;
 
     session_store_save_lap(sess.lap_count - 1);
+    cam_link_send_lap_marker_for(sess.lap_count - 1);
 }
 
 // ---------------------------------------------------------------------------

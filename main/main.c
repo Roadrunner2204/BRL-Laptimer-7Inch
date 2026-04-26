@@ -73,6 +73,7 @@ static void logic_task(void *param)
         wifi_mgr_poll();
         data_server_poll();
         cam_link_poll();
+        cam_link_pump_telemetry();
 
         /* Analog inputs sampled at ~10 Hz — no need to read 200x/s */
         uint32_t now = esp_timer_get_time() / 1000;
