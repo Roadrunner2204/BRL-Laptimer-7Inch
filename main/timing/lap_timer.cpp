@@ -115,6 +115,10 @@ uint32_t lap_timer_alltime_sector_best(uint8_t si) {
     return s_alltime_sector_best[si];
 }
 
+uint8_t lap_timer_sector_count(void) {
+    return s_sector_count;
+}
+
 static bool ensure_ext_ref_buffer() {
     if (s_ext_ref_points) return true;
     s_ext_ref_points = (TrackPoint *)heap_caps_malloc(

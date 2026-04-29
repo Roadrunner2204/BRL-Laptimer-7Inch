@@ -53,6 +53,12 @@ bool lap_timer_get_external_ref(char *sid_out, size_t sid_size,
 // ("this sector is a new all-time record").
 uint32_t lap_timer_alltime_sector_best(uint8_t si);
 
+// How many sectors the currently-loaded track defines (clamped to MAX_SECTORS).
+// 0 if no track is active. Used by the dashboard slot renderer for sector
+// cycling: with N sectors the three Z2 slots show sector i where i%3 maps
+// to slot 0/1/2.
+uint8_t lap_timer_sector_count(void);
+
 // Internal: called by storage module after saving
 void lap_timer_mark_saved(uint8_t lap_idx);
 

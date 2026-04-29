@@ -61,20 +61,7 @@ void live_delta_update(double lat, double lon, uint32_t elapsed_ms) {
     if (!ref_lap || !ref_lap->valid || !ref_lap->points ||
         ref_lap->point_count == 0) return;
 
-    // Freeze the delta once the driver has gone beyond the reference lap's
-    // recorded length. Without this the cursor sticks at the last ref point
-    // and (elapsed - last_point.lap_ms) just keeps growing linearly, which
-    // looks exactly like a stopwatch ticking up on the delta display. Once
-    // the next S/F crossing rewinds the cursor, the value snaps back —
-    // producing the oscillation the user reported.
     uint32_t ref_total_ms = ref_lap->points[ref_lap->point_count - 1].lap_ms;
-    if (ref_total_ms > 0 && elapsed_ms > ref_total_ms + 1000) {
-        // Driver is more than 1 s past the end of the reference lap —
-        // further comparison is meaningless. Keep the last computed delta
-        // on screen until the new lap starts.
-        return;
-    }
-
     uint16_t &cursor = g_state.timing.ref_point_idx;
     if (cursor >= ref_lap->point_count) cursor = ref_lap->point_count - 1;
 
@@ -98,6 +85,24 @@ void live_delta_update(double lat, double lon, uint32_t elapsed_ms) {
     }
 
     cursor = best_idx;
+
+    // Past-polyline-end freeze. Original guard was "elapsed > ref_total
+    // → freeze" but that ALSO froze when the driver stood still mid-
+    // track long enough for elapsed to overrun ref_total — once the
+    // freeze kicked in, even resuming driving didn't recover (return
+    // skipped the next decode entirely).
+    //
+    // New rule: freeze only when both
+    //   (a) the cursor is genuinely at the polyline tail (driver crossed
+    //       the recorded portion of the ref lap), AND
+    //   (b) elapsed has overshot ref_total by > 1 s.
+    // Standing still mid-track now keeps producing a growing delta —
+    // which is the correct "you're losing time vs. ref" indicator.
+    bool at_polyline_end = (best_idx >= ref_lap->point_count - 2);
+    if (at_polyline_end && ref_total_ms > 0
+        && elapsed_ms > ref_total_ms + 1000) {
+        return;
+    }
 
     // ── Linear-interpolate ref_time along the polyline ────────────────
     //

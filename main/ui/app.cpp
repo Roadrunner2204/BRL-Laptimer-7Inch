@@ -3633,7 +3633,7 @@ void timer_live_update(lv_timer_t * /*t*/) {
             case FIELD_SECTOR1:
             case FIELD_SECTOR2:
             case FIELD_SECTOR3: {
-                int si = fid - FIELD_SECTOR1;  // 0-based sector index
+                int slot_n = fid - FIELD_SECTOR1;  // 0,1,2 — which Z2 slot
                 uint32_t now_ms = millis();
                 auto sec_fmt = [](char *b, size_t len, uint8_t n, uint32_t ms) {
                     char t[16];
@@ -3641,39 +3641,46 @@ void timer_live_update(lv_timer_t * /*t*/) {
                     snprintf(b, len, "S%u %s", (unsigned)n, t);
                 };
 
-                // --- F1-style sector coloring --------------------------------
-                // Purple : new all-time best (beats the scan-loaded record)
-                // Green  : new personal best this session for this sector
-                //          (or the lap that currently HOLDS the session best)
-                // Red    : slower than the session best
-                // Blue   : sector is currently running (set below as ACCENT)
-                //
-                // best_in_session(si, excl): min sector_ms[si] over
-                //   completed laps whose index != excl. excl=-1 = no exclusion.
-                // Excluding the lap being displayed lets us answer "was this
-                // faster than everything before it" rather than tautologically
-                // matching itself.
-                auto best_in_session = [&](int excl) -> uint32_t {
+                // ------------------------------------------------------------
+                // Slot cycling for >3 sectors per lap
+                // ------------------------------------------------------------
+                // Tracks may have up to MAX_SECTORS sectors (8) but we only
+                // have 3 Z2 slots on the display. Mapping:
+                //   Slot 1 (FIELD_SECTOR1, slot_n=0) → sectors 1, 4, 7 …
+                //   Slot 2 (FIELD_SECTOR2, slot_n=1) → sectors 2, 5, 8 …
+                //   Slot 3 (FIELD_SECTOR3, slot_n=2) → sectors 3, 6 …
+                // i.e. slot N shows the **latest completed sector** with
+                // index%3 == N. Once the next sector in that slot's column
+                // finishes, the slot updates to that newer time. New lap →
+                // counters reset → all slots show "---" until sector 1
+                // closes again.
+
+                // Count of sectors actually configured on this track. Falls
+                // back to 3 when no track is active so the slot picker stays
+                // useful in pre-track-selected state.
+                uint8_t total_sectors = lap_timer_sector_count();
+                if (total_sectors == 0) total_sectors = 3;
+
+                // F1-style coloring uses the *actual* sector index (not the
+                // slot number) for "is this a new best for this sector".
+                auto best_in_session_for = [&](int sec_idx, int excl) -> uint32_t {
                     uint32_t best = 0;
                     for (uint8_t L = 0; L < sess.lap_count; L++) {
                         if ((int)L == excl) continue;
                         if (!sess.laps[L].valid) continue;
-                        uint32_t t = sess.laps[L].sector_ms[si];
+                        uint32_t t = sess.laps[L].sector_ms[sec_idx];
                         if (t > 0 && (best == 0 || t < best)) best = t;
                     }
-                    return best;  // 0 = no data
+                    return best;
                 };
-                uint32_t alltime_best = lap_timer_alltime_sector_best((uint8_t)si);
-
-                auto color_for = [&](uint32_t T, uint32_t session_best_prev) -> lv_color_t {
+                auto color_for_sec = [&](int sec_idx, uint32_t T,
+                                         uint32_t session_best_prev) -> lv_color_t {
                     if (T == 0) return BRL_CLR_TEXT;
-                    if (alltime_best > 0 && T < alltime_best)
-                        return BRL_CLR_PURPLE;
-                    if (session_best_prev == 0 || T < session_best_prev)
-                        return BRL_CLR_OK;      // green
-                    if (T == session_best_prev)
-                        return BRL_CLR_OK;      // matching session best → green
-                    return BRL_CLR_DANGER;      // red
+                    uint32_t alltime = lap_timer_alltime_sector_best((uint8_t)sec_idx);
+                    if (alltime > 0 && T < alltime)        return BRL_CLR_PURPLE;
+                    if (session_best_prev == 0 || T <= session_best_prev)
+                        return BRL_CLR_OK;
+                    return BRL_CLR_DANGER;
                 };
 
                 lv_color_t clr = BRL_CLR_TEXT;
@@ -3682,28 +3689,47 @@ void timer_live_update(lv_timer_t * /*t*/) {
                     const uint32_t *s_ms = sess.laps[sess.lap_count].sector_ms;
                     uint8_t cs      = lt.current_sector;
                     uint32_t run_ms = now_ms - lt.sector_start_ms;
-                    if ((int)cs > si) {
-                        sec_fmt(buf, sizeof(buf), si + 1, s_ms[si]);
-                        // This sector just completed on the CURRENT lap.
-                        // Session best "before this sector" = best over
-                        // completed laps (current lap not yet in sess.laps).
-                        clr = color_for(s_ms[si], best_in_session(-1));
-                    } else if ((int)cs == si) {
+
+                    // Is the currently-running sector mapped to this slot?
+                    // → show live counter in blue.
+                    if ((int)cs < (int)total_sectors
+                        && ((int)cs % 3) == slot_n) {
                         fmt_sector_time(buf, sizeof(buf), run_ms);
-                        clr = BRL_CLR_ACCENT;   // running = blue
+                        clr = BRL_CLR_ACCENT;
                     } else {
-                        strncpy(buf, "---", sizeof(buf));
-                        clr = BRL_CLR_TEXT_DIM;
+                        // Find the newest completed sector that maps to this
+                        // slot (walk backwards from the most recently
+                        // closed sector).
+                        int latest = -1;
+                        for (int j = (int)cs - 1; j >= 0; j--) {
+                            if ((j % 3) == slot_n) { latest = j; break; }
+                        }
+                        if (latest >= 0 && s_ms[latest] > 0) {
+                            sec_fmt(buf, sizeof(buf), latest + 1, s_ms[latest]);
+                            clr = color_for_sec(latest, s_ms[latest],
+                                                best_in_session_for(latest, -1));
+                        } else {
+                            strncpy(buf, "---", sizeof(buf));
+                            clr = BRL_CLR_TEXT_DIM;
+                        }
                     }
                 } else if (sess.lap_count > 0) {
-                    // Between laps — show last completed lap's sector.
-                    // Exclude it from the "session best prev" so the very
-                    // lap that SET the session best still colors green.
+                    // Between laps — same cycling logic, but on the last
+                    // completed lap (so all sectors are present and we just
+                    // pick the highest-index one matching this slot).
                     int last_idx = sess.lap_count - 1;
-                    uint32_t s = sess.laps[last_idx].sector_ms[si];
-                    if (s > 0) {
-                        sec_fmt(buf, sizeof(buf), si + 1, s);
-                        clr = color_for(s, best_in_session(last_idx));
+                    int latest = -1;
+                    for (int j = (int)total_sectors - 1; j >= 0; j--) {
+                        if ((j % 3) == slot_n
+                            && sess.laps[last_idx].sector_ms[j] > 0) {
+                            latest = j; break;
+                        }
+                    }
+                    if (latest >= 0) {
+                        uint32_t s = sess.laps[last_idx].sector_ms[latest];
+                        sec_fmt(buf, sizeof(buf), latest + 1, s);
+                        clr = color_for_sec(latest, s,
+                                            best_in_session_for(latest, last_idx));
                     } else {
                         strncpy(buf, "---", sizeof(buf));
                     }
