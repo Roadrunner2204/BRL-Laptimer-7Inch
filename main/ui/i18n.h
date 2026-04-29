@@ -119,6 +119,8 @@ enum TrKey : uint8_t {
     TR_HIST_NO_SAVED,
     TR_HIST_BEST,
     TR_HIST_LAPS,
+    TR_HIST_SESSIONS,
+    TR_HIST_NO_TRACK,
     // History screen -- filter & delete
     TR_HIST_ALL_TRACKS,
     TR_HIST_DELETE_CONFIRM,

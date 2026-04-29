@@ -144,6 +144,7 @@ static lv_obj_t   *s_tracks_search_kb   = nullptr;  // reset on each rebuild
 static void open_tracks_screen();
 static void open_track_creator(lv_obj_t *parent_scroll, int edit_idx = -1);
 static void open_history_screen();
+static void open_track_sessions_screen(const char *track_name);
 static void open_session_detail_screen(const char *session_id,
                                        const char *session_name);
 /* open_settings_screen is declared extern in app.h so other screens
@@ -1285,9 +1286,6 @@ static void hist_section_header(lv_obj_t *parent, const char *text) {
     lv_obj_set_style_pad_bottom(hdr, 2, LV_STATE_DEFAULT);
 }
 
-// Track filter state for history screen
-static char s_hist_filter_track[48] = {};
-
 static void open_history_screen() {
     lv_obj_t *scr = make_sub_screen(tr(TR_HISTORY_TITLE), cb_back_to_menu);
     lv_obj_t *content = build_content_area(scr, true);
@@ -1360,7 +1358,12 @@ static void open_history_screen() {
         }
     }
 
-    // ── Saved sessions from SD ────────────────────────────────────────────
+    // ── Saved sessions, grouped by track ──────────────────────────────────
+    // Hierarchy: history shows one row per TRACK with aggregate (sessions,
+    // total laps, best lap on the track). Tapping a track row opens a
+    // second screen that lists the actual sessions of that track. That
+    // second screen is the same one the Studio shows in its hierarchical
+    // browser, so behaviour matches the desktop tool 1:1.
     hist_section_header(content, tr(TR_HIST_SAVED));
 
     if (!g_state.sd_available) {
@@ -1371,155 +1374,209 @@ static void open_history_screen() {
         static SessionSummary s_summaries[30];
         int n = session_store_list_summaries(s_summaries, 30);
 
-        // ── Track filter dropdown ────────────────────────────────────────
-        // Collect unique track names from summaries
-        static char track_names[30][48];
-        int n_tracks = 0;
+        struct TrackAgg {
+            char     name[48];
+            int      n_sessions;
+            uint32_t n_laps;
+            uint32_t best_ms;
+        };
+        static TrackAgg s_aggs[16];
+        int n_aggs = 0;
         for (int i = 0; i < n; i++) {
-            if (strcmp(s_summaries[i].id, sess.session_id) == 0) continue;
-            if (strlen(s_summaries[i].track) == 0) continue;
-            bool found = false;
-            for (int t = 0; t < n_tracks; t++) {
-                if (strcmp(track_names[t], s_summaries[i].track) == 0) { found = true; break; }
+            const SessionSummary &s = s_summaries[i];
+            if (strcmp(s.id, sess.session_id) == 0) continue;
+            const char *track = strlen(s.track) > 0
+                                ? s.track : tr(TR_HIST_NO_TRACK);
+            int idx = -1;
+            for (int t = 0; t < n_aggs; t++) {
+                if (strcmp(s_aggs[t].name, track) == 0) { idx = t; break; }
             }
-            if (!found && n_tracks < 30) {
-                strncpy(track_names[n_tracks], s_summaries[i].track, 47);
-                track_names[n_tracks][47] = '\0';
-                n_tracks++;
+            if (idx < 0 && n_aggs < (int)(sizeof(s_aggs) / sizeof(s_aggs[0]))) {
+                idx = n_aggs++;
+                strncpy(s_aggs[idx].name, track, sizeof(s_aggs[idx].name) - 1);
+                s_aggs[idx].name[sizeof(s_aggs[idx].name) - 1] = '\0';
+                s_aggs[idx].n_sessions = 0;
+                s_aggs[idx].n_laps     = 0;
+                s_aggs[idx].best_ms    = 0;
             }
-        }
-
-        if (n_tracks > 1) {
-            static char dd_opts[512];
-            dd_opts[0] = '\0';
-            strncpy(dd_opts, tr(TR_HIST_ALL_TRACKS), sizeof(dd_opts) - 1);
-            int active_opt = 0;
-            for (int t = 0; t < n_tracks; t++) {
-                strncat(dd_opts, "\n", sizeof(dd_opts) - strlen(dd_opts) - 1);
-                strncat(dd_opts, track_names[t], sizeof(dd_opts) - strlen(dd_opts) - 1);
-                if (s_hist_filter_track[0] != '\0' && strcmp(s_hist_filter_track, track_names[t]) == 0)
-                    active_opt = t + 1;
-            }
-
-            lv_obj_t *dd = lv_dropdown_create(content);
-            lv_dropdown_set_options(dd, dd_opts);
-            lv_dropdown_set_selected(dd, (uint32_t)active_opt);
-            lv_obj_set_width(dd, 280);
-            lv_obj_set_height(dd, 40);
-            lv_obj_set_style_bg_color(dd, BRL_CLR_SURFACE2, LV_STATE_DEFAULT);
-            lv_obj_set_style_bg_opa(dd, LV_OPA_COVER, LV_STATE_DEFAULT);
-            lv_obj_set_style_text_color(dd, BRL_CLR_TEXT, LV_STATE_DEFAULT);
-            lv_obj_set_style_text_font(dd, &BRL_FONT_16, LV_STATE_DEFAULT);
-            lv_obj_set_style_border_width(dd, 0, LV_STATE_DEFAULT);
-            lv_obj_set_style_shadow_width(dd, 0, LV_STATE_DEFAULT);
-            lv_obj_set_style_pad_hor(dd, 10, LV_STATE_DEFAULT);
-            lv_obj_t *ddlist = lv_dropdown_get_list(dd);
-            if (ddlist) {
-                lv_obj_set_style_bg_color(ddlist, BRL_CLR_SURFACE, LV_STATE_DEFAULT);
-                lv_obj_set_style_text_color(ddlist, BRL_CLR_TEXT, LV_STATE_DEFAULT);
-                lv_obj_set_style_text_font(ddlist, &BRL_FONT_16, LV_STATE_DEFAULT);
-                lv_obj_set_style_border_width(ddlist, 0, LV_STATE_DEFAULT);
-                lv_obj_set_style_shadow_width(ddlist, 0, LV_STATE_DEFAULT);
-            }
-            lv_obj_add_event_cb(dd, [](lv_event_t *e) {
-                lv_obj_t *obj = (lv_obj_t*)lv_event_get_target(e);
-                uint32_t sel = lv_dropdown_get_selected(obj);
-                if (sel == 0) {
-                    s_hist_filter_track[0] = '\0';
-                } else {
-                    lv_dropdown_get_selected_str(obj, s_hist_filter_track,
-                                                 sizeof(s_hist_filter_track));
+            if (idx >= 0) {
+                s_aggs[idx].n_sessions++;
+                s_aggs[idx].n_laps += s.lap_count;
+                if (s.best_ms > 0
+                    && (s_aggs[idx].best_ms == 0
+                        || s.best_ms < s_aggs[idx].best_ms))
+                {
+                    s_aggs[idx].best_ms = s.best_ms;
                 }
-                open_history_screen();
-            }, LV_EVENT_VALUE_CHANGED, nullptr);
-        }
-
-        // ── Session rows ─────────────────────────────────────────────────
-        int shown = 0;
-        for (int i = 0; i < n; i++) {
-            if (strcmp(s_summaries[i].id, sess.session_id) == 0) continue;
-
-            // Apply track filter
-            if (s_hist_filter_track[0] != '\0' &&
-                strcmp(s_summaries[i].track, s_hist_filter_track) != 0) continue;
-
-            lv_obj_t *row = lv_obj_create(content);
-            lv_obj_set_width(row, LV_PCT(100)); lv_obj_set_height(row, 60);
-            brl_style_card(row);
-            lv_obj_set_style_radius(row, 0, LV_STATE_DEFAULT); // PERF: flat for scroll
-            lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-            // Whole row is tappable → opens the lap-detail screen where the
-            // user can pick a lap as live-delta reference. The delete button
-            // below has its bubble disabled so that only the delete fires
-            // when its button is tapped.
-            lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_set_user_data(row, (void*)(intptr_t)i);
-            lv_obj_add_event_cb(row, [](lv_event_t *e){
-                int idx = (int)(intptr_t)lv_obj_get_user_data(
-                    (lv_obj_t*)lv_event_get_current_target(e));
-                open_session_detail_screen(s_summaries[idx].id,
-                                           s_summaries[idx].name);
-            }, LV_EVENT_CLICKED, nullptr);
-
-            // Session name (top) + track as subtitle
-            lv_obj_t *name_lbl = lv_label_create(row);
-            lv_label_set_text(name_lbl, s_summaries[i].name);
-            brl_style_label(name_lbl, &BRL_FONT_16, BRL_CLR_TEXT);
-            lv_obj_align(name_lbl, LV_ALIGN_TOP_LEFT, 0, 0);
-
-            lv_obj_t *id_lbl = lv_label_create(row);
-            const char *sub = strlen(s_summaries[i].track) > 0
-                              ? s_summaries[i].track : s_summaries[i].id;
-            lv_label_set_text(id_lbl, sub);
-            brl_style_label(id_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
-            lv_obj_align(id_lbl, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-
-            // Right side: N laps + best lap + delete button
-            char info[48] = {};
-            if (s_summaries[i].best_ms > 0) {
-                char bt[16]; fmt_laptime(bt, sizeof(bt), s_summaries[i].best_ms);
-                snprintf(info, sizeof(info), "%u %s  |  %s %s",
-                         s_summaries[i].lap_count, tr(TR_HIST_LAPS),
-                         tr(TR_HIST_BEST), bt);
-            } else {
-                snprintf(info, sizeof(info), "%u %s",
-                         s_summaries[i].lap_count, tr(TR_HIST_LAPS));
             }
-            lv_obj_t *info_lbl = lv_label_create(row);
-            lv_label_set_text(info_lbl, info);
-            brl_style_label(info_lbl, &BRL_FONT_14, BRL_CLR_ACCENT);
-            lv_obj_align(info_lbl, LV_ALIGN_RIGHT_MID, -60, 0);
-
-            // Delete button — must NOT bubble to the row handler, otherwise
-            // tapping delete would both delete and try to open the (now
-            // deleted) session's detail screen.
-            lv_obj_t *del_btn = lv_button_create(row);
-            lv_obj_set_size(del_btn, 48, 40);
-            lv_obj_align(del_btn, LV_ALIGN_RIGHT_MID, 0, 0);
-            lv_obj_remove_flag(del_btn, LV_OBJ_FLAG_EVENT_BUBBLE);
-            lv_obj_set_style_bg_color(del_btn, lv_color_hex(0x5A1A1A), LV_STATE_DEFAULT);
-            lv_obj_set_style_bg_color(del_btn, BRL_CLR_DANGER, LV_STATE_PRESSED);
-            lv_obj_set_style_border_width(del_btn, 0, LV_STATE_DEFAULT);
-            lv_obj_set_style_radius(del_btn, 6, LV_STATE_DEFAULT);
-            lv_obj_set_style_shadow_width(del_btn, 0, LV_STATE_DEFAULT);
-            lv_obj_t *del_lbl = lv_label_create(del_btn);
-            lv_label_set_text(del_lbl, LV_SYMBOL_TRASH);
-            brl_style_label(del_lbl, &BRL_FONT_16, lv_color_hex(0xFF6666));
-            lv_obj_center(del_lbl);
-            lv_obj_set_user_data(del_btn, (void*)(intptr_t)i);
-            lv_obj_add_event_cb(del_btn, [](lv_event_t *e) {
-                int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t*)lv_event_get_current_target(e));
-                session_store_delete_session(s_summaries[idx].id);
-                open_history_screen();
-            }, LV_EVENT_CLICKED, nullptr);
-
-            shown++;
         }
-        if (shown == 0) {
+
+        if (n_aggs == 0) {
             lv_obj_t *ph = lv_label_create(content);
             lv_label_set_text(ph, tr(TR_HIST_NO_SAVED));
             brl_style_label(ph, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
         }
+
+        for (int t = 0; t < n_aggs; t++) {
+            const TrackAgg &ag = s_aggs[t];
+
+            lv_obj_t *row = lv_obj_create(content);
+            lv_obj_set_width(row, LV_PCT(100)); lv_obj_set_height(row, 64);
+            brl_style_card(row);
+            lv_obj_set_style_radius(row, 0, LV_STATE_DEFAULT);
+            lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_user_data(row, (void*)(intptr_t)t);
+            lv_obj_add_event_cb(row, [](lv_event_t *e){
+                int t_idx = (int)(intptr_t)lv_obj_get_user_data(
+                    (lv_obj_t*)lv_event_get_current_target(e));
+                open_track_sessions_screen(s_aggs[t_idx].name);
+            }, LV_EVENT_CLICKED, nullptr);
+
+            lv_obj_t *name_lbl = lv_label_create(row);
+            lv_label_set_text(name_lbl, ag.name);
+            brl_style_label(name_lbl, &BRL_FONT_16, BRL_CLR_TEXT);
+            lv_obj_align(name_lbl, LV_ALIGN_TOP_LEFT, 0, 2);
+
+            char sub[80];
+            if (ag.best_ms > 0) {
+                char bt[16]; fmt_laptime(bt, sizeof(bt), ag.best_ms);
+                snprintf(sub, sizeof(sub), "%d %s · %u %s · %s %s",
+                         ag.n_sessions, tr(TR_HIST_SESSIONS),
+                         (unsigned)ag.n_laps, tr(TR_HIST_LAPS),
+                         tr(TR_HIST_BEST), bt);
+            } else {
+                snprintf(sub, sizeof(sub), "%d %s · %u %s",
+                         ag.n_sessions, tr(TR_HIST_SESSIONS),
+                         (unsigned)ag.n_laps, tr(TR_HIST_LAPS));
+            }
+            lv_obj_t *sub_lbl = lv_label_create(row);
+            lv_label_set_text(sub_lbl, sub);
+            brl_style_label(sub_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+            lv_obj_align(sub_lbl, LV_ALIGN_BOTTOM_LEFT, 0, -2);
+
+            lv_obj_t *chev = lv_label_create(row);
+            lv_label_set_text(chev, LV_SYMBOL_RIGHT);
+            brl_style_label(chev, &BRL_FONT_16, BRL_CLR_ACCENT);
+            lv_obj_align(chev, LV_ALIGN_RIGHT_MID, -8, 0);
+        }
+    }
+
+    sub_screen_load(scr);
+}
+
+// ---------------------------------------------------------------------------
+// Track-sessions screen — list of sessions for one track.
+// Reached by tapping a track row on the history screen. Same look as the
+// pre-hierarchy session list (rows tappable → session detail; trash icon
+// inline-deletes); just filtered to one track and with a back button to
+// the history screen.
+// ---------------------------------------------------------------------------
+static char s_tsess_track[48] = {};
+
+static void cb_back_from_track_sessions(lv_event_t * /*e*/) {
+    open_history_screen();
+}
+
+static void open_track_sessions_screen(const char *track_name) {
+    strncpy(s_tsess_track, track_name ? track_name : "",
+            sizeof(s_tsess_track) - 1);
+    s_tsess_track[sizeof(s_tsess_track) - 1] = '\0';
+
+    lv_obj_t *scr = make_sub_screen(s_tsess_track,
+                                    cb_back_from_track_sessions);
+    lv_obj_t *content = build_content_area(scr, true);
+    lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(content, 4, LV_STATE_DEFAULT);
+
+    if (!g_state.sd_available) {
+        lv_obj_t *ph = lv_label_create(content);
+        lv_label_set_text(ph, tr(TR_STORAGE_UNAVAIL));
+        brl_style_label(ph, &BRL_FONT_14, BRL_CLR_DANGER);
+        sub_screen_load(scr);
+        return;
+    }
+
+    LapSession &sess = g_state.session;
+    static SessionSummary s_summaries[30];
+    int n = session_store_list_summaries(s_summaries, 30);
+
+    int shown = 0;
+    for (int i = 0; i < n; i++) {
+        if (strcmp(s_summaries[i].id, sess.session_id) == 0) continue;
+        const char *track = strlen(s_summaries[i].track) > 0
+                            ? s_summaries[i].track : tr(TR_HIST_NO_TRACK);
+        if (strcmp(track, s_tsess_track) != 0) continue;
+
+        lv_obj_t *row = lv_obj_create(content);
+        lv_obj_set_width(row, LV_PCT(100)); lv_obj_set_height(row, 60);
+        brl_style_card(row);
+        lv_obj_set_style_radius(row, 0, LV_STATE_DEFAULT);
+        lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_user_data(row, (void*)(intptr_t)i);
+        lv_obj_add_event_cb(row, [](lv_event_t *e){
+            int idx = (int)(intptr_t)lv_obj_get_user_data(
+                (lv_obj_t*)lv_event_get_current_target(e));
+            open_session_detail_screen(s_summaries[idx].id,
+                                       s_summaries[idx].name);
+        }, LV_EVENT_CLICKED, nullptr);
+
+        lv_obj_t *name_lbl = lv_label_create(row);
+        lv_label_set_text(name_lbl, s_summaries[i].name);
+        brl_style_label(name_lbl, &BRL_FONT_16, BRL_CLR_TEXT);
+        lv_obj_align(name_lbl, LV_ALIGN_TOP_LEFT, 0, 0);
+
+        lv_obj_t *id_lbl = lv_label_create(row);
+        lv_label_set_text(id_lbl, s_summaries[i].id);
+        brl_style_label(id_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+        lv_obj_align(id_lbl, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+
+        char info[48] = {};
+        if (s_summaries[i].best_ms > 0) {
+            char bt[16]; fmt_laptime(bt, sizeof(bt), s_summaries[i].best_ms);
+            snprintf(info, sizeof(info), "%u %s | %s %s",
+                     s_summaries[i].lap_count, tr(TR_HIST_LAPS),
+                     tr(TR_HIST_BEST), bt);
+        } else {
+            snprintf(info, sizeof(info), "%u %s",
+                     s_summaries[i].lap_count, tr(TR_HIST_LAPS));
+        }
+        lv_obj_t *info_lbl = lv_label_create(row);
+        lv_label_set_text(info_lbl, info);
+        brl_style_label(info_lbl, &BRL_FONT_14, BRL_CLR_ACCENT);
+        lv_obj_align(info_lbl, LV_ALIGN_RIGHT_MID, -60, 0);
+
+        lv_obj_t *del_btn = lv_button_create(row);
+        lv_obj_set_size(del_btn, 48, 40);
+        lv_obj_align(del_btn, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_remove_flag(del_btn, LV_OBJ_FLAG_EVENT_BUBBLE);
+        lv_obj_set_style_bg_color(del_btn, lv_color_hex(0x5A1A1A), LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(del_btn, BRL_CLR_DANGER, LV_STATE_PRESSED);
+        lv_obj_set_style_border_width(del_btn, 0, LV_STATE_DEFAULT);
+        lv_obj_set_style_radius(del_btn, 6, LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_width(del_btn, 0, LV_STATE_DEFAULT);
+        lv_obj_t *del_lbl = lv_label_create(del_btn);
+        lv_label_set_text(del_lbl, LV_SYMBOL_TRASH);
+        brl_style_label(del_lbl, &BRL_FONT_16, lv_color_hex(0xFF6666));
+        lv_obj_center(del_lbl);
+        lv_obj_set_user_data(del_btn, (void*)(intptr_t)i);
+        lv_obj_add_event_cb(del_btn, [](lv_event_t *e) {
+            int idx = (int)(intptr_t)lv_obj_get_user_data(
+                (lv_obj_t*)lv_event_get_current_target(e));
+            session_store_delete_session(s_summaries[idx].id);
+            // After delete, refresh on the same track-sessions screen so
+            // the user stays in context.
+            open_track_sessions_screen(s_tsess_track);
+        }, LV_EVENT_CLICKED, nullptr);
+
+        shown++;
+    }
+
+    if (shown == 0) {
+        lv_obj_t *ph = lv_label_create(content);
+        lv_label_set_text(ph, tr(TR_HIST_NO_SAVED));
+        brl_style_label(ph, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
     }
 
     sub_screen_load(scr);
@@ -3477,12 +3534,37 @@ void timer_live_update(lv_timer_t * /*t*/) {
         // — that re-renders ~600k pixels 10×/s with DRAW_UNIT=1 (HARD RULE)
         // which is expensive enough to compete with touch gestures on Core 1.
         //
-        // Fix: invalidate a tiny 32×32 area in the top-left corner every
-        // tick. LVGL still walks its dirty-rect pipeline (cache stays warm)
-        // but actual blit work is negligible (~1k pixels/tick).
+        // Two-phase strategy:
+        //   Boot warmup (first ~3 s of menu activity, or after every screen
+        //   switch): full-screen invalidate so LVGL's full render pipeline
+        //   (font blitter, scroll, alpha, gradient) gets paged into L2.
+        //   This is the equivalent of what a Timing-screen visit does;
+        //   the user reported smooth menus right after Timing exit, so
+        //   we trigger the same priming up-front. Without it, scrolling
+        //   and keyboard typing on the first menu after boot stutter
+        //   for several seconds while every render fn pages in one by one.
+        //
+        //   Steady-state: tiny 32×32 invalidate top-left so LVGL still
+        //   walks the dirty-rect pipeline (cache stays warm) but actual
+        //   blit work is negligible (~1k pixels/tick).
+        static lv_obj_t *s_last_warmed_scr = nullptr;
+        static int       s_warmup_ticks_left = 0;
         if (active_scr) {
-            lv_area_t a = { 0, 0, 31, 31 };
-            lv_obj_invalidate_area(active_scr, &a);
+            if (active_scr != s_last_warmed_scr) {
+                // New screen (boot or navigation). Re-prime L2 with the
+                // render paths this screen actually uses. ~3 s at 10 Hz
+                // is enough; the timing-screen comparison shows that's
+                // when full coverage settles in.
+                s_warmup_ticks_left = 30;
+                s_last_warmed_scr   = active_scr;
+            }
+            if (s_warmup_ticks_left > 0) {
+                s_warmup_ticks_left--;
+                lv_obj_invalidate(active_scr);
+            } else {
+                lv_area_t a = { 0, 0, 31, 31 };
+                lv_obj_invalidate_area(active_scr, &a);
+            }
         }
     }
 
@@ -3540,7 +3622,7 @@ void timer_live_update(lv_timer_t * /*t*/) {
             }
             case FIELD_DELTA_NUM: {
                 int32_t d = lt.live_delta_ms;
-                snprintf(buf, sizeof(buf), "%+.2f s", d / 1000.0f);
+                snprintf(buf, sizeof(buf), "%+.1f s", d / 1000.0f);
                 lv_obj_set_style_text_color(lbl, lv_color_hex(0x000000), 0);
                 lbl_set(lbl, buf);
                 return;
@@ -3658,6 +3740,12 @@ void timer_live_update(lv_timer_t * /*t*/) {
             case FIELD_STEERING:
                 snprintf(buf, sizeof(buf), "%+.0f°", obd.steering_angle);
                 break;
+            case FIELD_BATTERY:
+                snprintf(buf, sizeof(buf), "%.1f V", obd.battery_v);
+                break;
+            case FIELD_MAF:
+                snprintf(buf, sizeof(buf), "%.1f g/s", obd.maf_gps);
+                break;
             // Analog inputs — value already calibrated by analog_in_poll()
             case FIELD_AN1:
             case FIELD_AN2:
@@ -3713,9 +3801,9 @@ void timer_live_update(lv_timer_t * /*t*/) {
         }
         char dbuf[16];
         if (!g_state.timing.timing_active || d == 0) {
-            snprintf(dbuf, sizeof(dbuf), "\xC2\xB1" "0.00 s");
+            snprintf(dbuf, sizeof(dbuf), "\xC2\xB1" "0.0 s");
         } else {
-            snprintf(dbuf, sizeof(dbuf), "%+.2f s", d / 1000.0f);
+            snprintf(dbuf, sizeof(dbuf), "%+.1f s", d / 1000.0f);
         }
         lbl_set(tw.delta_bar_lbl, dbuf);
     }
@@ -3886,11 +3974,18 @@ void app_init() {
     build_menu_screen();
 
     // Show splash, then load menu screen when done.
-    // (L2-cache warm-up happens continuously via timer_live_update, which
-    // force-invalidates non-timing screens every ~400 ms — that's what
-    // keeps the first scroll gesture smooth.)
     splash_show(3000, []() {
         lv_screen_load(s_scr_menu);
+        // Force a full immediate render of the menu before the user
+        // can interact with it. This pages every LVGL render path
+        // (font blitter, scroll engine, alpha, gradient) into the
+        // 256 KB L2 cache in one pass so the first scroll/keyboard
+        // gesture doesn't stutter while the C6 WiFi/SDIO traffic
+        // and BLE-init compete for memory bandwidth. Without this,
+        // the menu only smooths out after the user visits the timing
+        // screen (whose 33 ms tick warms the cache continuously).
+        lv_obj_invalidate(s_scr_menu);
+        lv_refr_now(nullptr);
     });
 }
 
