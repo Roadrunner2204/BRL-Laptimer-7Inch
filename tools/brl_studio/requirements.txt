@@ -1,0 +1,11 @@
+# BRL Studio runtime dependencies
+# pip install -r requirements.txt
+
+PyQt6>=6.6,<7
+PyQt6-WebEngine>=6.6,<7   # Leaflet maps in QWebEngineView (Phase 1+)
+pyqtgraph>=0.13           # multi-trace charts (Phase 1)
+requests>=2.31
+python-vlc>=3.0           # AVI/MJPEG video playback (Phase 2)
+
+# Build-time only (not bundled in the installer):
+# pyinstaller>=6.4
