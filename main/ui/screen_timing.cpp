@@ -23,6 +23,7 @@
 #include "../data/track_db.h"
 #include "../timing/lap_timer.h"
 #include "../obd/obd_bt.h"
+#include "../obd/obd_status.h"
 #include "../wifi/wifi_mgr.h"
 #include "../camera_link/cam_link.h"
 #include "../sensors/analog_in.h"
@@ -110,6 +111,8 @@ static const char *field_title(uint8_t f) {
         case FIELD_COOLANT:   return tr(TR_COOLANT);
         case FIELD_INTAKE:    return tr(TR_INTAKE);
         case FIELD_STEERING:  return tr(TR_STEERING);
+        case FIELD_BATTERY:   return "Batterie";
+        case FIELD_MAF:       return "MAF";
         // Analog inputs — title comes from the user-set channel name
         case FIELD_AN1:       return g_analog_cfg[0].name;
         case FIELD_AN2:       return g_analog_cfg[1].name;
@@ -314,6 +317,7 @@ static const uint8_t LAPTIME_FIELDS[] = {
 static const uint8_t OBD_FIELDS[] = {
     FIELD_RPM, FIELD_THROTTLE, FIELD_BOOST, FIELD_COOLANT,
     FIELD_INTAKE, FIELD_LAMBDA, FIELD_BRAKE, FIELD_STEERING,
+    FIELD_BATTERY, FIELD_MAF,
     FIELD_AN1, FIELD_AN2, FIELD_AN3, FIELD_AN4,
     FIELD_NONE,
 };
@@ -376,13 +380,27 @@ static void open_field_picker(int zone, int slot, uint8_t current_field) {
         lv_obj_t *btn = lv_button_create(grid);
         lv_obj_set_size(btn, 186, 54);
         bool active = (fid == current_field);
-        brl_style_btn(btn, active ? BRL_CLR_ACCENT : BRL_CLR_SURFACE2);
+
+        // OBD/Analog fields that aren't currently delivering data get a
+        // dimmed style — still tappable so the user can pre-stage a
+        // layout, but the missing-signal status is visible at a glance.
+        bool obd_field = (fid >= 32 && fid < 68) && fid != FIELD_NONE;
+        bool live = !obd_field || obd_status_is_live(fid);
+
+        if (active) {
+            brl_style_btn(btn, BRL_CLR_ACCENT);
+        } else if (!live) {
+            brl_style_btn(btn, lv_color_hex(0x202326));
+        } else {
+            brl_style_btn(btn, BRL_CLR_SURFACE2);
+        }
         lv_obj_set_user_data(btn, (void*)(intptr_t)fid);
         lv_obj_add_event_cb(btn, cb_pick_field, LV_EVENT_CLICKED, (void*)(intptr_t)token);
 
         lv_obj_t *lbl = lv_label_create(btn);
         lv_label_set_text(lbl, fid == FIELD_NONE ? (i18n_get_language() == 0 ? "AUS" : "OFF") : field_title(fid));
-        brl_style_label(lbl, &BRL_FONT_14, BRL_CLR_TEXT);
+        brl_style_label(lbl, &BRL_FONT_14,
+                        (active || live) ? BRL_CLR_TEXT : BRL_CLR_TEXT_DIM);
         lv_obj_center(lbl);
     }
 }
@@ -730,7 +748,7 @@ lv_obj_t *timing_screen_build() {
 
     // Single white label — readable on both red and green backgrounds
     tw.delta_bar_lbl = lv_label_create(dbar);
-    lv_label_set_text(tw.delta_bar_lbl, "\xC2\xB1" "0.00 s");
+    lv_label_set_text(tw.delta_bar_lbl, "\xC2\xB1" "0.0 s");
     brl_style_label(tw.delta_bar_lbl, &BRL_FONT_64, lv_color_hex(0xFFFFFF));
     lv_obj_align(tw.delta_bar_lbl, LV_ALIGN_CENTER, 0, 0);
 

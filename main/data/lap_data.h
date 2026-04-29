@@ -36,6 +36,8 @@ typedef struct {
     float    steering_angle;  // degrees, +/-540 (custom BRL PID 0xA1)
     float    coolant_temp_c;
     float    intake_temp_c;
+    float    battery_v;       // PID 0x42 (Control Module Voltage)
+    float    maf_gps;         // PID 0x10 (Mass Air Flow, g/s)
     bool     connected;
 } ObdData;
 

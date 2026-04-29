@@ -25,6 +25,8 @@ typedef enum : uint8_t {
     FIELD_LAMBDA    = 37,
     FIELD_BRAKE     = 38,
     FIELD_STEERING  = 39,
+    FIELD_BATTERY   = 40,    // PID 0x42 / "BattVolt" / Bordnetzspannung
+    FIELD_MAF       = 41,    // PID 0x10 / Mass Air Flow (g/s)
     // Analog inputs (Zone 3, alongside OBD). One per ADC1 channel on
     // GPIO 20/21/22/23. Value comes from g_state.analog[i].value (already
     // scale+offset+clamp applied by analog_in_poll).

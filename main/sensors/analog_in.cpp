@@ -4,6 +4,8 @@
 
 #include "analog_in.h"
 #include "../compat.h"
+#include "../obd/obd_status.h"
+#include "../ui/dash_config.h"
 
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
@@ -75,10 +77,12 @@ void analog_in_init(void)
                   i + 1, esp_err_to_name(err));
             continue;
         }
-        // Curve-fit calibration is the recommended scheme for ESP32-P4. If
-        // the chip wasn't factory-calibrated this falls through to nullptr
-        // and we keep using raw counts; the value is still usable, just less
-        // accurate.
+        // ESP32-P4 in ESP-IDF v5.4.1 ships no ADC calibration scheme
+        // (esp_adc/esp32p4/include/adc_cali_schemes.h is empty). Both
+        // ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED and _LINE_FITTING_ are 0,
+        // so the API symbols are not even declared. poll() already falls
+        // back to (raw * 3300 / 4095) when s_cali[i] is nullptr.
+#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
         adc_cali_curve_fitting_config_t cali_cfg = {
             .unit_id  = ADC_UNIT_1,
             .chan     = ADC_CHANNELS[i],
@@ -87,8 +91,21 @@ void analog_in_init(void)
         };
         if (adc_cali_create_scheme_curve_fitting(&cali_cfg, &s_cali[i]) != ESP_OK) {
             s_cali[i] = nullptr;
-            log_w("AN%d: no calibration scheme available, using raw counts", i + 1);
+            log_w("AN%d: no curve-fitting cal, using raw counts", i + 1);
         }
+#elif ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
+        adc_cali_line_fitting_config_t cali_cfg = {
+            .unit_id  = ADC_UNIT_1,
+            .atten    = ADC_ATTEN_DB_12,
+            .bitwidth = ADC_BITWIDTH_DEFAULT,
+        };
+        if (adc_cali_create_scheme_line_fitting(&cali_cfg, &s_cali[i]) != ESP_OK) {
+            s_cali[i] = nullptr;
+            log_w("AN%d: no line-fitting cal, using raw counts", i + 1);
+        }
+#else
+        s_cali[i] = nullptr;
+#endif
     }
 
     s_ready = true;
@@ -215,5 +232,8 @@ void analog_in_poll(void)
         if (v > cfg.max_val) v = cfg.max_val;
         out.value = v;
         out.valid = true;
+        // Mark this analog channel "live" so the slot pickers (Display,
+        // App, Studio) can grey out unconnected/disabled channels.
+        obd_status_mark_active((uint8_t)(FIELD_AN1 + i));
     }
 }

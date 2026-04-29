@@ -1,4 +1,10 @@
-# Collect all .c and .cpp source files from main/ and subdirectories
+# Collect all .c and .cpp source files from main/ and subdirectories.
+#
+# NOTE: CONFIGURE_DEPENDS would re-glob on every build, but ESP-IDF runs
+# this CMakeLists in script mode during component_get_requirements where
+# that flag is rejected ("CONFIGURE_DEPENDS is invalid for script and
+# find package modes"). So when adding a new .c/.cpp file: run
+# `idf.py reconfigure` once to pick it up.
 file(GLOB_RECURSE SRCS
     "${CMAKE_CURRENT_SOURCE_DIR}/*.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"

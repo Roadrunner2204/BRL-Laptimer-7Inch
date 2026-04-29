@@ -20,6 +20,7 @@
 #include "../storage/session_store.h"
 #include "../data/lap_data.h"
 #include "../data/track_db.h"
+#include "../obd/obd_status.h"
 #include "../camera_link/cam_link.h"
 #include "compat.h"
 
@@ -732,6 +733,22 @@ static void dns_process_one(void)
 }
 
 // ---------------------------------------------------------------------------
+// GET /obd_status -- per-FieldId freshness map for slot pickers in the
+// Android app + Studio. Tiny payload (~256 ints worst case), polled
+// every couple of seconds when a layout editor is open.
+static esp_err_t handle_obd_status(httpd_req_t *req)
+{
+    set_cors_headers(req);
+    httpd_resp_set_type(req, "application/json");
+    char buf[2048];
+    size_t n = obd_status_render_json(buf, sizeof(buf));
+    if (n == 0) {
+        const char *err = "{\"error\":\"render failed\"}";
+        return httpd_resp_send(req, err, strlen(err));
+    }
+    return httpd_resp_send(req, buf, n);
+}
+
 // URI handler registration table
 // ---------------------------------------------------------------------------
 static const httpd_uri_t s_uri_handlers[] = {
@@ -750,6 +767,8 @@ static const httpd_uri_t s_uri_handlers[] = {
     { .uri = "/track/*",       .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
     { .uri = "/videos",        .method = HTTP_GET,    .handler = handle_videos,          .user_ctx = nullptr },
     { .uri = "/videos",        .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
+    { .uri = "/obd_status",    .method = HTTP_GET,    .handler = handle_obd_status,      .user_ctx = nullptr },
+    { .uri = "/obd_status",    .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
     { .uri = "/video/*",       .method = HTTP_GET,    .handler = handle_video_get,       .user_ctx = nullptr },
     { .uri = "/video/*",       .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
     { .uri = "/generate_204",  .method = HTTP_GET,    .handler = handle_generate_204,    .user_ctx = nullptr },
