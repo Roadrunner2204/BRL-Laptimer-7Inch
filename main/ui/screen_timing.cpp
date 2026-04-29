@@ -271,9 +271,18 @@ static void cb_pick_field(lv_event_t *e) {
         close_picker();
     }, 1, nullptr);
 
-    // If the field change involves FIELD_MAP (entering or leaving), a full rebuild
-    // is unavoidable. Otherwise update labels in-place — no screen deletion.
-    if (fid == FIELD_MAP || old_fid == FIELD_MAP) {
+    // Full rebuild is required when:
+    //  - FIELD_MAP is involved (map widget construction is special)
+    //  - The slot is transitioning *out of* FIELD_NONE — slots created
+    //    with FIELD_NONE have no value label, so apply_field_change()
+    //    has nothing to update and the slot stays empty even though
+    //    the config saved correctly. This was the "Slot 5 zeigt
+    //    keinen Wert" bug.
+    //  - The slot is transitioning *into* FIELD_NONE — the existing
+    //    value label needs to be removed and the title reset.
+    bool needs_rebuild = (fid == FIELD_MAP || old_fid == FIELD_MAP)
+                      || (fid == FIELD_NONE) != (old_fid == FIELD_NONE);
+    if (needs_rebuild) {
         lv_timer_create([](lv_timer_t *t) {
             lv_timer_delete(t);
             timing_screen_rebuild();
@@ -290,12 +299,17 @@ static const uint8_t LAPTIME_FIELDS[] = {
     FIELD_MAP, FIELD_NONE,
 };
 
-// Build the Zone-3 picker list dynamically from whatever data source is
-// active and which sensors actually answered on this car (filtered by
-// the per-VIN PID cache + live-status). The result populates `out` and
-// returns the count. Order: live OBD/CAN sensors first, then analog
-// inputs, then "OFF".
-static int build_z3_fields(uint8_t *out, int max_count, bool include_silent)
+// Build the Zone-3 picker list. Lists *every* sensor in the active
+// .brl — live-status drives only the visual style (dimmed when stale),
+// not list membership. This is the Torque-Pro-style stable picker:
+// the user picks "RPM" once and it stays in the list, even if the ECU
+// goes briefly silent.
+//
+// Earlier revision filtered out cached-dead PIDs, which produced
+// flickering: revive_dead_pids() flipped them alive every 30 s, the
+// list grew, then they died again and the list shrank — Settings →
+// "Slot konfigurieren" was unusable for sporadic-response PIDs.
+static int build_z3_fields(uint8_t *out, int max_count, bool /*include_silent*/)
 {
     int n = 0;
     auto push = [&](uint8_t f) {
@@ -303,27 +317,19 @@ static int build_z3_fields(uint8_t *out, int max_count, bool include_silent)
     };
 
     if (g_dash_cfg.veh_conn_mode == 0) {
-        // OBD-via-BLE — list /cars/OBD.brl sensors. obd_bt_pid_profile()
-        // returns NULL until first connect populates it; in that case
-        // the picker will only show analog + OFF, which is the correct
-        // pre-connect state.
+        // OBD-via-BLE — list every OBD2 sensor in /cars/OBD.brl. NULL
+        // until first connect populates the profile; in that case the
+        // picker will only show analog + OFF (correct pre-connect
+        // state, the user can come back after the adapter is up).
         const CarProfile *p = (const CarProfile *)obd_bt_pid_profile();
         if (p) {
             for (int i = 0; i < p->sensor_count && i < 64; i++) {
                 if (p->sensors[i].proto != 7) continue;  // OBD2-only
-                uint8_t pid = (uint8_t)(p->sensors[i].can_id & 0xFFu);
-                bool live = obd_dynamic_is_live(pid);
-                bool dead_in_cache = obd_pid_cache_is_dead(pid);
-                // User asked: silent sensors should NOT appear in the
-                // picker so the list isn't full of greyed-out garbage.
-                // But keep "include_silent" as a fallback path for the
-                // "alle anzeigen" toggle later if needed.
-                if (!live && dead_in_cache && !include_silent) continue;
                 push((uint8_t)(DASH_SLOT_OBD_DYN_BASE + i));
             }
         }
     } else {
-        // CAN-direct — list active vehicle profile (motorspezifische .brl).
+        // CAN-direct — every sensor of the active vehicle profile.
         if (g_car_profile.loaded) {
             for (int i = 0; i < g_car_profile.sensor_count && i < 64; i++) {
                 push((uint8_t)(DASH_SLOT_CAN_DYN_BASE + i));
