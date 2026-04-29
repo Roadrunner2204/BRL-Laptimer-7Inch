@@ -72,6 +72,38 @@ void       obd_bt_pause(bool paused);
  */
 const void *obd_bt_pid_profile(void);
 
+/**
+ * Same for the active vehicle profile (e.g. /cars/N47F.brl) — sourced
+ * from car_profile_get_active() at every reconnect. Carries proto=2
+ * BMW UDS DIDs that the Mode-01-only OBD.brl doesn't have, plus any
+ * vehicle-specific extra Mode-01 PIDs. NULL when no active profile is
+ * configured or the file isn't on the SD.
+ */
+const void *obd_bt_vehicle_profile(void);
+
+/**
+ * Look up the most recent live value for a CarSensor (matched by
+ * pointer identity against the active sensor list). Used by the
+ * dashboard slot renderer for dynamic slots (IDs 128..255).
+ *
+ *   sensor    — pointer into a CarProfile.sensors[] array
+ *   out_value — receives the post-scale/offset value
+ *   out_age_ms — optional, receives ms since the last successful decode
+ *
+ * Returns true when a value has ever been received this session, false
+ * when the sensor hasn't answered yet (caller renders "--"). The value
+ * stays available until the next disconnect (last-known-good even after
+ * the ECU goes silent) — this is what makes the dashboard slots stop
+ * flickering when the BMW responds sporadically to a particular DID.
+ *
+ * Opaque pointer return-types in the rest of this header keep
+ * car_profile.h out of the include chain; here we accept const void *
+ * (cast from const CarSensor *) for the same reason.
+ */
+bool obd_bt_get_sensor_value(const void *sensor,
+                             float       *out_value,
+                             uint32_t    *out_age_ms);
+
 #ifdef __cplusplus
 }
 #endif

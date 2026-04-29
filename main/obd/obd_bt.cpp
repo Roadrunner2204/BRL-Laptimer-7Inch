@@ -72,6 +72,7 @@ enum OBDCmd : uint8_t {
     CMD_READ_PID       = 0x01,   // [PID]                  → [SVC, PID, data...]
     CMD_READ_VIN       = 0x02,   // []                     → [VIN 17 chars]
     CMD_READ_MULTI_PID = 0x05,   // [PID1..PID6, max 6]    → [SVC, PID1, d.., PID2, d..]
+    CMD_READ_DID_22    = 0x10,   // [DID_hi, DID_lo]       → [SVC=0x62, DID, data...]
     CMD_PING           = 0xFF,
 };
 enum OBDStatus : uint8_t {
@@ -146,26 +147,44 @@ static const uint8_t DEFAULT_PIDS[] = {
     0x0F,  // Intake C     (1 B) -> A - 40
 };
 
-// Active PID entry. When sensor != nullptr, the response is decoded with
-// the profile's scale/offset/start/len instead of the built-in formulas.
+// Active sensor entry. Each one represents a single OBD2 PID (Mode 01) OR
+// a UDS DID (Mode 22) drawn from /cars/OBD.brl + the active vehicle .brl.
+// `sensor` always points back to the CarSensor so the decoder uses the
+// .brl's scale/offset/start/len.
 //
 // Dead-PID tracking: when an ECU answers STATUS_TIMEOUT or NEGATIVE
 // repeatedly for the same PID, it doesn't support it — keep polling
 // it would just waste round-trip time. After DEAD_THRESHOLD strikes
 // the PID is skipped in the round-robin. Every REVIVE_INTERVAL_MS we
-// flip every dead PID back alive once for a re-test, in case the
-// ECU started supporting it (engine warmed up, ABS module woke etc.).
+// flip every dead PID back alive once for a re-test.
+//
+// Per-sensor live value cache: each successful decode stores `last_value`
+// + `last_seen_ms` here so the dashboard slot renderer can pull the
+// value back via obd_bt_get_sensor_value(sensor, ...) regardless of
+// whether the sensor is a Mode-01 PID or a Mode-22 DID. Replaces the
+// global obd_dynamic[256] PID-byte-keyed cache for dynamic slots
+// (the global cache stays around for the legacy hardcoded FIELD_RPM
+// etc. resolvers in dash_config.cpp).
 //
 // `unmapped_logged` suppresses the "no dashboard slot routes that name"
-// warning after the first hit per PID — otherwise it spams every cycle.
+// warning after the first hit per sensor — otherwise it spams every cycle.
 struct ActivePid {
-    uint8_t          pid;
+    uint8_t          proto;           // 7 = OBD2 Mode 01 PID
+                                       // 2 = BMW UDS Mode 22 DID
+                                       // (= CarSensor.proto)
+    uint8_t          pid;             // Mode 01: PID byte (low 8b of can_id)
+    uint16_t         did;             // Mode 22: BMW DID (top 16b of can_id)
     const CarSensor *sensor;
     uint8_t          strikes;          // consecutive bad responses
     bool             dead;
     bool             unmapped_logged;  // route_sensor warning fired once
+
+    // Per-sensor live cache
+    float            last_value;
+    uint32_t         last_seen_ms;     // millis() of last successful decode
+    bool             has_value;        // true once a value has been seen
 };
-#define MAX_ACTIVE_PIDS    32
+#define MAX_ACTIVE_PIDS    64          // up to 32 OBD2 + 32 UDS-DID sensors
 #define DEAD_THRESHOLD     3
 #define REVIVE_INTERVAL_MS 30000
 // Adapter firmware accepts up to 6 PIDs per request, but BMW E-series ECUs
@@ -174,16 +193,27 @@ struct ActivePid {
 // work fine. 4 PIDs per request is the sweet spot that BMW reliably
 // returns; only ~50 ms slower than 6 per round-trip.
 #define MULTI_PID_MAX      4
+
+// CarSensor.proto values we care about (CAN-Checked .brl convention):
+#define BRL_PROTO_PT_CAN     0   // 11-bit broadcast (only via CAN-Direct)
+#define BRL_PROTO_UDS_BMW    2   // BMW DDE/DKG UDS Mode 22 — our new path
+#define BRL_PROTO_OBD2_MODE1 7   // standard OBD2 Mode 01 (existing path)
 static ActivePid s_pids[MAX_ACTIVE_PIDS];
 static uint8_t   s_pid_count   = 0;
 static uint8_t   s_pid_idx     = 0;
 static uint32_t  s_last_revive_ms = 0;
 
-// PIDs sent in the current outstanding multi-request. Used to attribute
-// strikes on timeout / partial response, and to advance s_pid_idx past
-// the served block so the next round picks up where we left off.
+// In-flight request bookkeeping. Two flavours:
+//   proto=7 (OBD2 Mode 01): up to MULTI_PID_MAX PIDs in s_inflight_pids[]
+//   proto=2 (BMW UDS 22):   exactly 1 DID in s_inflight_did
+// `s_inflight_idx[]` records the s_pids[] index for each inflight entry so
+// the response handler can attribute strikes / store last_value back to
+// the correct ActivePid even when two .brls map the same PID twice.
 static uint8_t   s_inflight_pids[MULTI_PID_MAX] = {};
+static uint8_t   s_inflight_idx[MULTI_PID_MAX]  = {};
 static uint8_t   s_inflight_count               = 0;
+static uint8_t   s_inflight_proto               = 0;   // 7 or 2; 0 when idle
+static uint16_t  s_inflight_did                 = 0;   // for proto=2
 
 // Cache-poisoning guard. We persist a PID as DEAD only after the session
 // has seen at least one *real* response come back. Without this, a stuck
@@ -205,57 +235,89 @@ static int count_obd2_sensors(const CarProfile *p)
     if (!p || !p->loaded) return 0;
     int n = 0;
     for (int i = 0; i < p->sensor_count; i++) {
-        if (p->sensors[i].proto == 7) n++;
+        if (p->sensors[i].proto == BRL_PROTO_OBD2_MODE1) n++;
     }
     return n;
 }
 
-static void append_obd2_sensors(const CarProfile *p)
+// Append every sensor of the given proto from `p` into s_pids[]. The
+// .brl `can_id` encoding for these two protos:
+//   proto=7 (OBD2 Mode 01)   →  can_id = PID byte (low 8 bits used)
+//   proto=2 (BMW UDS Mode 22) →  can_id = (DID << 8) | bank, where
+//                                 DID = top 16 bits, bank = 0x01 (DDE)
+// PT-CAN broadcast (proto=0) is intentionally skipped — that lives on
+// the passive bus side and is only reachable when the user runs the
+// laptimer in CAN-Direct mode (SN65HVD230 hardwired to PT-CAN).
+static void append_sensors_of_proto(const CarProfile *p, uint8_t proto)
 {
     if (!p || !p->loaded) return;
     for (int i = 0; i < p->sensor_count; i++) {
         const CarSensor *s = &p->sensors[i];
-        if (s->proto != 7) continue;
+        if (s->proto != proto) continue;
         if (s_pid_count >= MAX_ACTIVE_PIDS) break;
-        s_pids[s_pid_count].pid    = (uint8_t)(s->can_id & 0xFF);
-        s_pids[s_pid_count].sensor = s;
-        s_pids[s_pid_count].strikes         = 0;
-        s_pids[s_pid_count].dead            = false;
-        s_pids[s_pid_count].unmapped_logged = false;
-        // Diagnostic — log each sensor's .brl decode parameters. If RPM
-        // shows wrong values in the field, comparing this dump to the
-        // OBD2 spec (start=2, len=2, scale=0.25) immediately reveals
-        // whether the .brl was generated with PT-CAN scaling by mistake.
-        ESP_LOGI(TAG, "  PID 0x%02X '%s'  start=%d len=%d scale=%.6f "
-                      "offset=%.3f  unsigned=%d",
-                 (unsigned)(s->can_id & 0xFFu),
-                 s->name,
-                 (int)s->start, (int)s->len,
-                 (double)s->scale, (double)s->offset,
-                 (int)s->is_unsigned);
+
+        ActivePid &ap = s_pids[s_pid_count];
+        ap.proto           = proto;
+        ap.sensor          = s;
+        ap.strikes         = 0;
+        ap.dead            = false;
+        ap.unmapped_logged = false;
+        ap.has_value       = false;
+        ap.last_value      = 0.0f;
+        ap.last_seen_ms    = 0;
+
+        if (proto == BRL_PROTO_OBD2_MODE1) {
+            ap.pid = (uint8_t)(s->can_id & 0xFFu);
+            ap.did = 0;
+            ESP_LOGI(TAG,
+                "  PID 0x%02X '%s'  start=%d len=%d scale=%.6f "
+                "offset=%.3f  unsigned=%d",
+                (unsigned)ap.pid, s->name,
+                (int)s->start, (int)s->len,
+                (double)s->scale, (double)s->offset,
+                (int)s->is_unsigned);
+        } else if (proto == BRL_PROTO_UDS_BMW) {
+            // BMW DID is the top 16 bits of can_id.
+            ap.pid = 0;
+            ap.did = (uint16_t)((s->can_id >> 8) & 0xFFFFu);
+            ESP_LOGI(TAG,
+                "  DID 0x%04X '%s'  start=%d len=%d scale=%.6f "
+                "offset=%.3f  unsigned=%d  (UDS Mode 22)",
+                (unsigned)ap.did, s->name,
+                (int)s->start, (int)s->len,
+                (double)s->scale, (double)s->offset,
+                (int)s->is_unsigned);
+        }
         s_pid_count++;
     }
 }
 
-// Build the active PID list. The BRL OBD BLE Adapter speaks OBD2 Mode 01
-// and only that, so the data source is always /cars/OBD.brl — NOT the
-// currently-active vehicle profile (which lives alongside for CAN-Direct
-// hardwire use and display labelling).
+// Build the active sensor list. The BLE adapter handles two protocols:
+//   - OBD2 Mode 01 (proto=7) — universal, decoder uses CMD_READ_PID /
+//                              CMD_READ_MULTI_PID, sourced from
+//                              /cars/OBD.brl
+//   - UDS BMW Mode 22 (proto=2) — vehicle-specific, decoder uses
+//                                  CMD_READ_DID_22, sourced from the
+//                                  active vehicle profile (e.g.
+//                                  /cars/N47F.brl) selected by the
+//                                  user in Settings → Vehicle.
 //
-// Order of preference:
-//   1. /cars/OBD.brl from SD card (loaded lazily on first use).
-//   2. Built-in DEFAULT_PIDS (RPM / TPS / MAP / Coolant / Intake) as a
-//      last resort if OBD.brl isn't on the card.
+// PT-CAN broadcast (proto=0) sensors are intentionally not selectable
+// over the adapter — the adapter has no passive-listen command. Those
+// only become visible when the user runs the laptimer in CAN-Direct
+// mode (SN65HVD230 hardwired to PT-CAN).
 //
-// "OBD2 sensor" inside OBD.brl means CAN-Checked proto field "7DF"
-// (atoi() gives 7). Each sensor's low can_id byte is taken as the Mode-01
-// PID. Non-OBD2 protocols (PT-CAN broadcast=0, BMW UDS=1, 29-bit extended
-// etc.) in OBD.brl are skipped because the adapter firmware only handles
-// Mode 01.
-// `cache_key` identifies the connected vehicle for the PID cache. The
-// caller picks it — preferred is the ECU fingerprint from PID 0x00
-// (ISO-15031-5 supported-PIDs bitmap, unique per ECU model), falling
-// back to the active car-profile name when fingerprinting fails.
+// Order:
+//   1. /cars/OBD.brl                                — generic OBD2 baseline
+//   2. /cars/<active>.brl proto=7 (extra OBD2-PIDs) — vehicle-specific
+//   3. /cars/<active>.brl proto=2 (UDS DIDs)        — vehicle-specific
+//   4. fallback DEFAULT_PIDS if nothing else loaded
+//
+// `cache_key` identifies the connected vehicle for the PID cache.
+static CarProfile s_vehicle_profile = {};   // active /cars/<NAME>.brl
+static bool       s_vehicle_tried   = false;
+static char       s_vehicle_name[32] = {};
+
 static void rebuild_pid_list(const char *cache_key)
 {
     s_pid_count = 0;
@@ -263,9 +325,7 @@ static void rebuild_pid_list(const char *cache_key)
 
     obd_pid_cache_load(cache_key);
 
-    // Load /cars/OBD.brl lazily — once per session. If the user adds or
-    // replaces OBD.brl, a reboot (or a physical BLE reconnect, which forces
-    // the tried-flag below back to false in future) picks it up.
+    // 1. Load /cars/OBD.brl lazily — once per session.
     if (!s_obd_profile_tried) {
         s_obd_profile_tried = true;
         if (car_profile_load_into("OBD.brl", &s_obd_profile_fallback)) {
@@ -277,21 +337,67 @@ static void rebuild_pid_list(const char *cache_key)
         }
     }
 
+    // 2+3. Load the user-selected vehicle profile so we can emit its
+    //      Mode-22 DIDs (and any extra Mode-01 PIDs not in OBD.brl).
+    char active_name[32];
+    car_profile_get_active(active_name, sizeof(active_name));
+    if (active_name[0]
+        && (!s_vehicle_tried || strcmp(active_name, s_vehicle_name) != 0)) {
+        s_vehicle_tried = true;
+        strncpy(s_vehicle_name, active_name, sizeof(s_vehicle_name) - 1);
+        s_vehicle_name[sizeof(s_vehicle_name) - 1] = '\0';
+        memset(&s_vehicle_profile, 0, sizeof(s_vehicle_profile));
+        if (car_profile_load_into(active_name, &s_vehicle_profile)) {
+            int n_obd2 = 0, n_uds = 0, n_ptcan = 0;
+            for (int i = 0; i < s_vehicle_profile.sensor_count; i++) {
+                switch (s_vehicle_profile.sensors[i].proto) {
+                    case BRL_PROTO_OBD2_MODE1: n_obd2++;  break;
+                    case BRL_PROTO_UDS_BMW:    n_uds++;   break;
+                    case BRL_PROTO_PT_CAN:     n_ptcan++; break;
+                    default: break;
+                }
+            }
+            ESP_LOGI(TAG, "Loaded vehicle profile %s: %d OBD2, %d UDS, "
+                          "%d PT-CAN (PT-CAN only via CAN-Direct mode)",
+                     active_name, n_obd2, n_uds, n_ptcan);
+        } else {
+            ESP_LOGW(TAG, "Vehicle profile %s not found", active_name);
+        }
+    }
+
+    // Append in priority order. OBD.brl first so generic PIDs always
+    // populate; vehicle-specific overrides come second (sensors with
+    // duplicate PIDs end up in s_pids[] twice but that's fine — both
+    // get polled, dynamic slots can pick whichever they reference by
+    // name/index).
     if (count_obd2_sensors(&s_obd_profile_fallback) > 0) {
-        append_obd2_sensors(&s_obd_profile_fallback);
-        ESP_LOGI(TAG, "OBD.brl: %d OBD2 PIDs active for BLE adapter",
+        append_sensors_of_proto(&s_obd_profile_fallback, BRL_PROTO_OBD2_MODE1);
+        ESP_LOGI(TAG, "OBD.brl: %d Mode-01 PIDs active",
                  s_pid_count);
-    } else {
+    }
+    if (s_vehicle_profile.loaded) {
+        int before = s_pid_count;
+        append_sensors_of_proto(&s_vehicle_profile, BRL_PROTO_OBD2_MODE1);
+        append_sensors_of_proto(&s_vehicle_profile, BRL_PROTO_UDS_BMW);
+        ESP_LOGI(TAG, "Vehicle profile: +%d sensors (Mode-01 + UDS)",
+                 s_pid_count - before);
+    }
+    if (s_pid_count == 0) {
         // Last resort — hardcoded defaults (RPM/TPS/MAP/Coolant/Intake)
         for (uint8_t p : DEFAULT_PIDS) {
-            s_pids[s_pid_count].pid    = p;
-            s_pids[s_pid_count].sensor = nullptr;
-            s_pids[s_pid_count].strikes         = 0;
-            s_pids[s_pid_count].dead            = false;
+            s_pids[s_pid_count].proto         = BRL_PROTO_OBD2_MODE1;
+            s_pids[s_pid_count].pid           = p;
+            s_pids[s_pid_count].did           = 0;
+            s_pids[s_pid_count].sensor        = nullptr;
+            s_pids[s_pid_count].strikes       = 0;
+            s_pids[s_pid_count].dead          = false;
             s_pids[s_pid_count].unmapped_logged = false;
+            s_pids[s_pid_count].has_value     = false;
+            s_pids[s_pid_count].last_value    = 0.0f;
+            s_pids[s_pid_count].last_seen_ms  = 0;
             s_pid_count++;
         }
-        ESP_LOGI(TAG, "Using %d built-in OBD2 PIDs (no OBD.brl on SD)",
+        ESP_LOGI(TAG, "Using %d built-in OBD2 PIDs (no .brl on SD)",
                  s_pid_count);
     }
 
@@ -482,16 +588,40 @@ static bool route_sensor(const char *name, float value)
 // Off-by-one here was the cause of "RPM 10-42" (decoder read D2 alone)
 // and silent drop of 1-byte PIDs (off >= len triggered the early exit).
 // ---------------------------------------------------------------------------
-static bool apply_profile_sensor(const CarSensor *s,
-                                 const uint8_t *d, uint8_t len)
+// (apply_profile_sensor was the original, single-proto Mode-01 decoder;
+//  it's been merged into apply_profile_sensor_cached below which is
+//  proto-aware and ALSO writes the per-sensor live cache. Kept as a
+//  comment-only stub for readers tracking the refactor.)
+
+// Decode a sensor response and record the post-scale value in the
+// matching ActivePid's per-sensor live cache. `d`/`len` is always the
+// raw DATA payload — the caller has stripped the response header
+// ([0x41][PID] for Mode 01, [DID_hi][DID_lo] for Mode 22). The .brl
+// uses different `start` conventions per proto:
+//   proto=7 (Mode 01): start = byte offset in full CAN frame
+//                              [PCI][0x41][PID][D1][D2] → minus 3
+//                              gives the DATA-buffer offset
+//   proto=2 (Mode 22): start = byte offset in DATA already → 0
+// We adjust accordingly here so a single decoder serves both paths.
+//
+// Used by both the Mode 01 and Mode 22 response parsers so dynamic
+// dashboard slots (IDs 128+N) read identical-shape values regardless
+// of how the underlying CarSensor is sourced.
+static bool apply_profile_sensor_cached(int pid_idx,
+                                        const uint8_t *d, uint8_t len)
 {
+    if (pid_idx < 0 || pid_idx >= s_pid_count) return false;
+    ActivePid *ap = &s_pids[pid_idx];
+    const CarSensor *s = ap->sensor;
     if (!s) return false;
-    int32_t off = (int32_t)s->start - 3;   // strip [PCI][0x41][PID] header
-    if (off < 0) off = 0;                  // sensors with 0-based start still work
+
+    int32_t off = (int32_t)s->start;
+    if (ap->proto == BRL_PROTO_OBD2_MODE1) off -= 3;   // CAN-frame → data
+    if (off < 0) off = 0;
     if (off >= len) return false;
+
     int32_t raw = 0;
     if (s->len == 2 && off + 1 < len) {
-        // Big-endian (Motorola byte order, what OBD2 returns)
         raw = ((int32_t)d[off] << 8) | d[off + 1];
     } else {
         raw = d[off];
@@ -503,12 +633,19 @@ static bool apply_profile_sensor(const CarSensor *s,
     float value = (float)raw * s->scale + s->offset;
     if (value < s->min_val) value = s->min_val;
     if (value > s->max_val) value = s->max_val;
-    // Stash the post-scale value in the per-PID dynamic cache so any
-    // dashboard slot mapped to this OBD.brl sensor can read it back —
-    // independent of whether route_sensor() recognises the name as one
-    // of the legacy hardcoded fields. This is what makes "all OBD2
-    // sensors selectable in the picker" work.
-    obd_dynamic_set((uint8_t)(s->can_id & 0xFFu), value);
+
+    // Per-sensor live cache → consumed by dash_config field_format_value
+    // for slot IDs ≥ 128 (dynamic dashboard slots).
+    ap->last_value    = value;
+    ap->last_seen_ms  = millis();
+    ap->has_value     = true;
+
+    // Legacy global PID-keyed cache (only valid for proto=7 since the
+    // key is one byte). Skip for proto=2 — DIDs are 16-bit and don't
+    // collide with PIDs in this 256-entry array.
+    if (ap->proto == BRL_PROTO_OBD2_MODE1) {
+        obd_dynamic_set(ap->pid, value);
+    }
     return route_sensor(s->name, value);
 }
 
@@ -520,64 +657,67 @@ static bool apply_profile_sensor(const CarSensor *s,
 // Returns true if the value was actually routed somewhere — false means the
 // PID decoded but the sensor's name has no matching slot (caller logs once).
 // ---------------------------------------------------------------------------
-static bool apply_pid(uint8_t pid, const CarSensor *sensor,
-                      const uint8_t *d, uint8_t len)
-{
-    if (sensor) {
-        return apply_profile_sensor(sensor, d, len);
-    }
-    // No sensor mapping — built-in fallback decoder for the 5 hardcoded
-    // PIDs (used when /cars/OBD.brl is absent). Mirror the value into
-    // obd_dynamic so dynamic slots still work in this minimal mode.
-    ObdData &obd = g_state.obd;
-    float v = 0.0f; bool ok = false;
-    switch (pid) {
-        case 0x0C: if (len >= 2) { v = ((d[0] * 256u) + d[1]) / 4.0f; obd.rpm = v;
-                                   obd_status_mark_active(FIELD_RPM); ok = true; } break;
-        case 0x11: if (len >= 1) { v = d[0] * 100.0f / 255.0f; obd.throttle_pct = v;
-                                   obd_status_mark_active(FIELD_THROTTLE); ok = true; } break;
-        case 0x0B: if (len >= 1) { v = (float)d[0]; obd.boost_kpa = v;
-                                   obd_status_mark_active(FIELD_BOOST); ok = true; } break;
-        case 0x05: if (len >= 1) { v = (float)d[0] - 40.0f; obd.coolant_temp_c = v;
-                                   obd_status_mark_active(FIELD_COOLANT); ok = true; } break;
-        case 0x0F: if (len >= 1) { v = (float)d[0] - 40.0f; obd.intake_temp_c = v;
-                                   obd_status_mark_active(FIELD_INTAKE); ok = true; } break;
-        default: break;
-    }
-    if (ok) obd_dynamic_set(pid, v);
-    return ok;
-}
-
 // ---------------------------------------------------------------------------
 // Round-robin helpers — skip dead PIDs so we don't waste adapter round-trips
 // on things the ECU never answers, and bundle up to MULTI_PID_MAX live PIDs
 // per request so one ~80 ms BLE round-trip serves 6 dashboard slots.
+// (The previous static apply_pid() and find_active_pid() helpers are gone —
+// the response parsers now go through apply_profile_sensor_cached() with
+// per-inflight-slot bookkeeping, which handles both Mode 01 and Mode 22.)
 // ---------------------------------------------------------------------------
-static ActivePid *find_active_pid(uint8_t pid)
-{
-    for (int i = 0; i < s_pid_count; i++) {
-        if (s_pids[i].pid == pid) return &s_pids[i];
-    }
-    return nullptr;
-}
 
 // Walk forward from s_pid_idx and pack up to MULTI_PID_MAX alive PIDs into
 // s_inflight_pids[]. Advances s_pid_idx past the last gathered slot so the
 // next call continues round-robin where this one stopped. If every PID is
 // dead, returns 0 — caller should idle and let maybe_revive_dead_pids() try.
+// One round-robin step. Picks a single proto-flavour for this batch
+// (whatever the next alive sensor uses) and gathers as many compatible
+// alive sensors as the adapter accepts in one request:
+//   proto=7 → up to MULTI_PID_MAX PIDs in one CMD_READ_MULTI_PID
+//   proto=2 → exactly 1 DID  in one CMD_READ_DID_22
+// Mixing protos in one request isn't possible — adapter has no
+// "multi-DID" command and Mode-22 reads one DID at a time. A purely
+// proto=2 vehicle profile (no Mode-01 sensors) ends up with one DID
+// per ~80 ms tick = ~30 sensors per ~2.5 s round-robin cycle, which
+// is fast enough for everything except RPM-style high-rate values
+// (RPM is always Mode-01 anyway).
 static uint8_t gather_inflight(void)
 {
     s_inflight_count = 0;
+    s_inflight_proto = 0;
+    s_inflight_did   = 0;
     if (s_pid_count == 0) return 0;
+
+    // Find the first alive sensor — its proto locks the batch flavour.
+    int first_idx = -1;
+    for (int tries = 0; tries < s_pid_count; tries++) {
+        int idx = (s_pid_idx + tries) % s_pid_count;
+        if (!s_pids[idx].dead) { first_idx = idx; break; }
+    }
+    if (first_idx < 0) return 0;
+    s_inflight_proto = s_pids[first_idx].proto;
+
     int last_picked = -1;
+    int max_count   = (s_inflight_proto == BRL_PROTO_OBD2_MODE1)
+                      ? MULTI_PID_MAX : 1;
+
     for (int tries = 0;
-         tries < s_pid_count && s_inflight_count < MULTI_PID_MAX;
+         tries < s_pid_count && s_inflight_count < max_count;
          tries++) {
         int idx = (s_pid_idx + tries) % s_pid_count;
-        if (!s_pids[idx].dead) {
-            s_inflight_pids[s_inflight_count++] = s_pids[idx].pid;
-            last_picked = idx;
+        if (s_pids[idx].dead) continue;
+        if (s_pids[idx].proto != s_inflight_proto) continue;
+
+        s_inflight_idx[s_inflight_count] = (uint8_t)idx;
+        if (s_inflight_proto == BRL_PROTO_OBD2_MODE1) {
+            s_inflight_pids[s_inflight_count] = s_pids[idx].pid;
+        } else {
+            // proto=2: only one fits per batch. Stash the DID separately
+            // so the dispatcher can pull it for send_did22_request().
+            s_inflight_did = s_pids[idx].did;
         }
+        s_inflight_count++;
+        last_picked = idx;
     }
     if (last_picked >= 0) {
         s_pid_idx = (last_picked + 1) % s_pid_count;
@@ -647,6 +787,35 @@ static void send_vin_request(void)
     }
     s_rx_ready = false;
     s_req_ts   = millis();
+}
+
+// Send a UDS Mode 22 ReadDataByIdentifier for the given 16-bit DID.
+// Adapter wraps it as `[0x10][DID_hi][DID_lo]` and runs the standard
+// UDS request (default tx/rx 7E0/7E8). For BMW-DDE-specific adressing
+// the user can later send CMD_SET_ECU_DIAG (0x21) — for now the
+// default OBD2-physical addressing reaches the engine ECU which is
+// where ~95% of the .brl DIDs live.
+//
+// Response shape from the adapter: `[0x10][STATUS][SVC=0x62][DID_hi][DID_lo][data...]`.
+// We strip the [DID_hi][DID_lo] echo before passing data to the decoder
+// so the .brl `start` field indexes the same byte as on the Mode-01 path.
+static void send_did22_request(uint16_t did)
+{
+    if (s_cmd_val_handle == 0 || s_conn_handle == BLE_HS_CONN_HANDLE_NONE) return;
+    uint8_t cmd[3] = {
+        CMD_READ_DID_22,
+        (uint8_t)((did >> 8) & 0xFFu),
+        (uint8_t)(did & 0xFFu),
+    };
+    int rc = ble_gattc_write_no_rsp_flat(s_conn_handle, s_cmd_val_handle,
+                                         cmd, sizeof(cmd));
+    if (rc != 0) {
+        ESP_LOGW(TAG, "Write DID 0x%04X failed: rc=%d", (unsigned)did, rc);
+        return;
+    }
+    s_rx_ready = false;
+    s_req_ts   = millis();
+    s_state    = OBD_REQUESTING;
 }
 
 // OBD2 standard data-length per PID, used to demultiplex the
@@ -1300,13 +1469,15 @@ void obd_bt_poll(void)
                 s_retry_ts = now;
                 break;
             }
-            // Bundle the next 6 alive PIDs into one round-trip. With a
-            // typical ~80 ms BLE turnaround, this serves a full HUD page
-            // in a single request — Torque-Pro-class throughput. When
-            // every PID is dead, gather returns 0 and we idle until the
-            // next revive sweep flips one back alive.
+            // Round-robin step. gather_inflight() picks one proto-flavour
+            // (Mode 01 multi or Mode 22 single) based on what's next in
+            // the rotation, then we dispatch the appropriate command.
             if (gather_inflight() > 0) {
-                send_multi_pid_request(s_inflight_pids, s_inflight_count);
+                if (s_inflight_proto == BRL_PROTO_OBD2_MODE1) {
+                    send_multi_pid_request(s_inflight_pids, s_inflight_count);
+                } else if (s_inflight_proto == BRL_PROTO_UDS_BMW) {
+                    send_did22_request(s_inflight_did);
+                }
             }
             break;
 
@@ -1318,14 +1489,15 @@ void obd_bt_poll(void)
                 break;
             }
             if (s_rx_ready) {
-                // Response shape (multi-PID, what we always send now):
-                //   [CMD=0x05] [STATUS] [SVC=0x41] [PID1] [d..] [PID2] [d..]...
-                // Per-PID payload length comes from the active sensor
-                // (OBD.brl knows for sure) or the OBD2 standard table
-                // as a fallback.
                 bool seen[MULTI_PID_MAX] = {};
                 bool ok = false;
-                if (s_rx_len >= 4
+
+                // Multi-PID Mode 01 response shape:
+                //   [CMD=0x05] [STATUS] [SVC=0x41] [PID1] [d..] [PID2] [d..]...
+                // Single-DID Mode 22 response shape:
+                //   [CMD=0x10] [STATUS] [SVC=0x62] [DID_hi] [DID_lo] [data...]
+                if (s_inflight_proto == BRL_PROTO_OBD2_MODE1
+                    && s_rx_len >= 4
                     && s_rx_buf[0] == CMD_READ_MULTI_PID
                     && s_rx_buf[1] == STATUS_OK
                     && s_rx_buf[2] == 0x41) {
@@ -1334,72 +1506,114 @@ void obd_bt_poll(void)
                     const uint8_t *end = s_rx_buf + s_rx_len;
                     while (p < end) {
                         uint8_t pid = *p++;
-                        ActivePid *ap = find_active_pid(pid);
-                        uint8_t plen = (ap && ap->sensor && ap->sensor->len > 0)
-                                       ? (uint8_t)ap->sensor->len
+                        // Find the inflight slot this PID belongs to (so
+                        // we credit the right ActivePid even if two .brls
+                        // mapped the same PID twice — the inflight index
+                        // remembers which one we asked for).
+                        int matched = -1;
+                        for (uint8_t i = 0; i < s_inflight_count; i++) {
+                            if (s_inflight_pids[i] == pid) {
+                                matched = s_inflight_idx[i];
+                                seen[i] = true;
+                                break;
+                            }
+                        }
+                        if (matched < 0) matched = -1;
+                        const CarSensor *sensor = (matched >= 0)
+                                                  ? s_pids[matched].sensor
+                                                  : nullptr;
+                        uint8_t plen = (sensor && sensor->len > 0)
+                                       ? (uint8_t)sensor->len
                                        : obd2_standard_pid_len(pid);
-                        if (p + plen > end) break;  // truncated tail
-                        if (ap) {
-                            bool routed = apply_pid(ap->pid, ap->sensor,
-                                                    p, plen);
-                            ap->strikes = 0;
-                            if (ap->dead) {
-                                ap->dead = false;
+                        if (p + plen > end) break;
+                        if (matched >= 0) {
+                            ActivePid &ap = s_pids[matched];
+                            // Single decoder pass — proto-aware, writes
+                            // per-sensor cache + global obd_dynamic +
+                            // route_sensor for the legacy fields.
+                            bool routed =
+                                apply_profile_sensor_cached(matched, p, plen);
+                            ap.strikes = 0;
+                            if (ap.dead) {
+                                ap.dead = false;
                                 ESP_LOGI(TAG, "PID 0x%02X is alive again",
-                                         (unsigned)ap->pid);
+                                         (unsigned)ap.pid);
                             }
                             s_session_had_alive = true;
-                            obd_pid_cache_set(ap->pid, PID_ALIVE);
-                            if (!routed && !ap->unmapped_logged) {
-                                ap->unmapped_logged = true;
-                                const char *nm = ap->sensor
-                                                 ? ap->sensor->name : "?";
+                            obd_pid_cache_set(ap.pid, PID_ALIVE);
+                            if (!routed && !ap.unmapped_logged) {
+                                ap.unmapped_logged = true;
                                 ESP_LOGW(TAG,
-                                    "PID 0x%02X decoded as '%s' but no "
-                                    "dashboard slot routes that name "
-                                    "(rename in OBD.brl, or add alias in "
-                                    "route_sensor)",
-                                    (unsigned)ap->pid, nm);
-                            }
-                            for (uint8_t i = 0; i < s_inflight_count; i++) {
-                                if (s_inflight_pids[i] == pid) {
-                                    seen[i] = true;
-                                    break;
-                                }
+                                    "PID 0x%02X '%s' — no legacy slot but "
+                                    "available via dynamic picker.",
+                                    (unsigned)ap.pid,
+                                    ap.sensor ? ap.sensor->name : "?");
                             }
                         }
                         p += plen;
                     }
+                } else if (s_inflight_proto == BRL_PROTO_UDS_BMW
+                           && s_rx_len >= 5
+                           && s_rx_buf[0] == CMD_READ_DID_22
+                           && s_rx_buf[1] == STATUS_OK
+                           && s_rx_buf[2] == 0x62) {
+                    // Single-DID Mode 22. [CMD][STATUS][0x62][DID_hi][DID_lo][data...]
+                    uint16_t resp_did = ((uint16_t)s_rx_buf[3] << 8)
+                                       | s_rx_buf[4];
+                    if (s_inflight_count == 1
+                        && resp_did == s_inflight_did) {
+                        ok = true;
+                        seen[0] = true;
+                        int matched = s_inflight_idx[0];
+                        if (matched >= 0 && matched < s_pid_count) {
+                            ActivePid &ap = s_pids[matched];
+                            // Pass DATA bytes only (after [SVC][DID_hi][DID_lo]
+                            // header). apply_profile_sensor_cached uses
+                            // proto=2's start-as-data-offset convention.
+                            const uint8_t *data = s_rx_buf + 5;
+                            uint8_t data_len = (uint8_t)(s_rx_len - 5);
+                            apply_profile_sensor_cached(matched,
+                                                        data, data_len);
+                            ap.strikes = 0;
+                            if (ap.dead) {
+                                ap.dead = false;
+                                ESP_LOGI(TAG, "DID 0x%04X is alive again",
+                                         (unsigned)ap.did);
+                            }
+                            s_session_had_alive = true;
+                            // DIDs don't share the 8-bit PID-cache key
+                            // space — DEAD-state for DIDs is in-RAM only
+                            // (per session). Persistent DID-cache would
+                            // need its own NVS namespace; deferred.
+                        }
+                    }
                 }
+
                 // Strike everything we asked for that didn't come back.
-                // On a complete failure (status != OK / malformed / no SVC=0x41)
-                // `ok` stays false and every inflight PID strikes.
                 for (uint8_t i = 0; i < s_inflight_count; i++) {
                     if (ok && seen[i]) continue;
-                    ActivePid *ap = find_active_pid(s_inflight_pids[i]);
-                    if (!ap) continue;
-                    ap->strikes++;
-                    if (ap->strikes >= DEAD_THRESHOLD && !ap->dead) {
-                        ap->dead = true;
-                        // Only persist DEAD if the session has proven the
-                        // link works at least once. Otherwise this could
-                        // be a transient bus problem, not a real "PID not
-                        // supported" — see s_session_had_alive comment.
-                        if (s_session_had_alive) {
-                            obd_pid_cache_set(ap->pid, PID_DEAD);
-                            ESP_LOGI(TAG,
-                                "PID 0x%02X marked dead after %d× no-answer "
-                                "(persisted to cache)",
-                                (unsigned)ap->pid, DEAD_THRESHOLD);
+                    int idx = s_inflight_idx[i];
+                    if (idx < 0 || idx >= s_pid_count) continue;
+                    ActivePid &ap = s_pids[idx];
+                    ap.strikes++;
+                    if (ap.strikes >= DEAD_THRESHOLD && !ap.dead) {
+                        ap.dead = true;
+                        if (s_session_had_alive
+                            && ap.proto == BRL_PROTO_OBD2_MODE1) {
+                            // PID-keyed cache only fits Mode 01.
+                            obd_pid_cache_set(ap.pid, PID_DEAD);
+                        }
+                        if (ap.proto == BRL_PROTO_OBD2_MODE1) {
+                            ESP_LOGI(TAG, "PID 0x%02X dead after %d× no-answer",
+                                     (unsigned)ap.pid, DEAD_THRESHOLD);
                         } else {
-                            ESP_LOGI(TAG,
-                                "PID 0x%02X dead in-RAM (cache write held — "
-                                "no alive PID seen yet this session)",
-                                (unsigned)ap->pid);
+                            ESP_LOGI(TAG, "DID 0x%04X dead after %d× no-answer",
+                                     (unsigned)ap.did, DEAD_THRESHOLD);
                         }
                     }
                 }
                 s_inflight_count = 0;
+                s_inflight_proto = 0;
                 s_state = OBD_CONNECTED;
             } else if (now - s_req_ts > REQ_TIMEOUT_MS) {
                 // No notification at all. This is almost always a link-side
@@ -1439,4 +1653,26 @@ void obd_bt_disconnect(void)
 extern "C" const void *obd_bt_pid_profile(void)
 {
     return s_obd_profile_fallback.loaded ? &s_obd_profile_fallback : nullptr;
+}
+
+extern "C" const void *obd_bt_vehicle_profile(void)
+{
+    return s_vehicle_profile.loaded ? &s_vehicle_profile : nullptr;
+}
+
+extern "C" bool obd_bt_get_sensor_value(const void *sensor_v,
+                                        float      *out_value,
+                                        uint32_t   *out_age_ms)
+{
+    const CarSensor *target = (const CarSensor *)sensor_v;
+    if (!target) return false;
+    for (int i = 0; i < s_pid_count; i++) {
+        if (s_pids[i].sensor == target) {
+            if (!s_pids[i].has_value) return false;
+            if (out_value)  *out_value  = s_pids[i].last_value;
+            if (out_age_ms) *out_age_ms = millis() - s_pids[i].last_seen_ms;
+            return true;
+        }
+    }
+    return false;
 }

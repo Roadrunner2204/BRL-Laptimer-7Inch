@@ -309,6 +309,14 @@ static const uint8_t LAPTIME_FIELDS[] = {
 // flickering: revive_dead_pids() flipped them alive every 30 s, the
 // list grew, then they died again and the list shrank — Settings →
 // "Slot konfigurieren" was unusable for sporadic-response PIDs.
+// Build the Zone-3 picker list. List membership is stable — every
+// sensor known to the active datasource is selectable, live-status
+// drives only the visual style. Slot ID encoding for OBD-BLE mode:
+//   DASH_SLOT_OBD_DYN_BASE + i for i in [0..N_obd)         → OBD.brl
+//   DASH_SLOT_OBD_DYN_BASE + N_obd + j for j in [0..N_veh) → vehicle.brl
+// dash_config.cpp's title/value/live resolvers use the same packing
+// so saved slot IDs survive restarts as long as the .brls don't change
+// sensor order.
 static int build_z3_fields(uint8_t *out, int max_count, bool /*include_silent*/)
 {
     int n = 0;
@@ -317,19 +325,33 @@ static int build_z3_fields(uint8_t *out, int max_count, bool /*include_silent*/)
     };
 
     if (g_dash_cfg.veh_conn_mode == 0) {
-        // OBD-via-BLE — list every OBD2 sensor in /cars/OBD.brl. NULL
-        // until first connect populates the profile; in that case the
-        // picker will only show analog + OFF (correct pre-connect
-        // state, the user can come back after the adapter is up).
-        const CarProfile *p = (const CarProfile *)obd_bt_pid_profile();
-        if (p) {
-            for (int i = 0; i < p->sensor_count && i < 64; i++) {
-                if (p->sensors[i].proto != 7) continue;  // OBD2-only
+        // OBD-via-BLE: combine OBD.brl (Mode 01 generic) + active
+        // vehicle profile (Mode 22 BMW DIDs + extra Mode 01 PIDs).
+        // PT-CAN broadcast (proto=0) sensors are skipped here — only
+        // the CAN-direct path can read those passively.
+        const CarProfile *p_obd = (const CarProfile *)obd_bt_pid_profile();
+        const CarProfile *p_veh = (const CarProfile *)obd_bt_vehicle_profile();
+        int obd_n = p_obd ? p_obd->sensor_count : 0;
+        if (p_obd) {
+            for (int i = 0; i < obd_n && i < 64; i++) {
+                if (p_obd->sensors[i].proto != 7) continue;
                 push((uint8_t)(DASH_SLOT_OBD_DYN_BASE + i));
             }
         }
+        if (p_veh) {
+            for (int j = 0;
+                 j < p_veh->sensor_count
+                 && (obd_n + j) < (DASH_SLOT_OBD_DYN_END - DASH_SLOT_OBD_DYN_BASE);
+                 j++) {
+                uint8_t pr = p_veh->sensors[j].proto;
+                if (pr != 7 && pr != 2) continue;   // skip PT-CAN
+                push((uint8_t)(DASH_SLOT_OBD_DYN_BASE + obd_n + j));
+            }
+        }
     } else {
-        // CAN-direct — every sensor of the active vehicle profile.
+        // CAN-direct — every sensor of the active vehicle profile,
+        // including PT-CAN broadcast (proto=0) which the bus listens
+        // to passively.
         if (g_car_profile.loaded) {
             for (int i = 0; i < g_car_profile.sensor_count && i < 64; i++) {
                 push((uint8_t)(DASH_SLOT_CAN_DYN_BASE + i));

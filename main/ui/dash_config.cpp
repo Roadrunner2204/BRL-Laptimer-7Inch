@@ -205,9 +205,15 @@ const char *field_title(uint8_t slot)
     }
 
     if (field_is_obd_dynamic(slot)) {
-        const CarProfile *p = obd_brl_profile();
+        // OBD.brl first, then vehicle.brl — same packing as
+        // build_z3_fields and field_format_value above.
         uint8_t idx = field_obd_dyn_index(slot);
-        if (p && idx < p->sensor_count) return p->sensors[idx].name;
+        const CarProfile *obd_p = obd_brl_profile();
+        const CarProfile *veh_p = (const CarProfile *)obd_bt_vehicle_profile();
+        int obd_n = obd_p ? obd_p->sensor_count : 0;
+        if (idx < obd_n) return obd_p->sensors[idx].name;
+        if (veh_p && (idx - obd_n) < veh_p->sensor_count)
+            return veh_p->sensors[idx - obd_n].name;
         return "?";
     }
     if (field_is_can_dynamic(slot)) {
@@ -241,12 +247,17 @@ const char *field_unit(uint8_t slot)
         return "";
     }
     if (field_is_obd_dynamic(slot)) {
-        const CarProfile *p = obd_brl_profile();
         uint8_t idx = field_obd_dyn_index(slot);
-        if (!p || idx >= p->sensor_count) return "";
+        const CarProfile *obd_p = obd_brl_profile();
+        const CarProfile *veh_p = (const CarProfile *)obd_bt_vehicle_profile();
+        int obd_n = obd_p ? obd_p->sensor_count : 0;
+        const CarSensor *s = nullptr;
+        if (idx < obd_n) s = &obd_p->sensors[idx];
+        else if (veh_p && (idx - obd_n) < veh_p->sensor_count)
+            s = &veh_p->sensors[idx - obd_n];
+        if (!s) return "";
         // CAN-Checked .brl stores `type`: 1=pressure 2=temp 3=speed 4=lambda.
-        // Map to common units. type=0 (generic) → "" to stay quiet.
-        switch (p->sensors[idx].type) {
+        switch (s->type) {
             case 1: return "kPa";
             case 2: return "°C";
             case 3: return (g_dash_cfg.units == 0) ? "km/h" : "mph";
@@ -279,13 +290,20 @@ bool field_is_live(uint8_t slot)
         return obd_dynamic_is_live((uint8_t)legacy_pid);
     }
 
-    // Dynamic OBD slot — check the underlying PID directly.
+    // Dynamic OBD slot — proto-agnostic via per-sensor cache age.
     if (field_is_obd_dynamic(slot)) {
-        const CarProfile *p = obd_brl_profile();
         uint8_t idx = field_obd_dyn_index(slot);
-        if (!p || idx >= p->sensor_count) return false;
-        uint8_t pid = (uint8_t)(p->sensors[idx].can_id & 0xFFu);
-        return obd_dynamic_is_live(pid);
+        const CarProfile *obd_p = obd_brl_profile();
+        const CarProfile *veh_p = (const CarProfile *)obd_bt_vehicle_profile();
+        int obd_n = obd_p ? obd_p->sensor_count : 0;
+        const CarSensor *s = nullptr;
+        if (idx < obd_n) s = &obd_p->sensors[idx];
+        else if (veh_p && (idx - obd_n) < veh_p->sensor_count)
+            s = &veh_p->sensors[idx - obd_n];
+        if (!s) return false;
+        uint32_t age = 0;
+        if (!obd_bt_get_sensor_value(s, nullptr, &age)) return false;
+        return age <= OBD_DYNAMIC_LIVE_WINDOW_MS;
     }
 
     // CAN-direct dynamic — for now we don't have a per-sensor freshness
@@ -327,26 +345,57 @@ bool field_format_value(uint8_t slot, char *out, int out_size)
     }
 
     if (field_is_obd_dynamic(slot)) {
-        const CarProfile *p = obd_brl_profile();
+        // Dynamic slot — index into either OBD.brl (low half of the
+        // dynamic range) or the active vehicle profile (high half).
+        // The picker emits indices into a virtual "OBD.brl + vehicle.brl"
+        // catalog: first all OBD.brl sensors, then vehicle-profile
+        // sensors. We mirror that order here so a saved slot ID remains
+        // stable across reboots.
         uint8_t idx = field_obd_dyn_index(slot);
-        if (!p || idx >= p->sensor_count) return false;
-        const CarSensor *s = &p->sensors[idx];
-        uint8_t pid = (uint8_t)(s->can_id & 0xFFu);
-        // Pick a sensible decimal count from the sensor's scale: scales
-        // < 0.1 typically encode high-precision values (Lambda, BattVolt),
-        // 0.1..0.99 are tenth-precision (MAF, CatT), >= 1 are integers
-        // (RPM, temps, percentages).
+        const CarProfile *obd_p = obd_brl_profile();
+        const CarProfile *veh_p = (const CarProfile *)obd_bt_vehicle_profile();
+        const CarSensor *s = nullptr;
+        int obd_n = obd_p ? obd_p->sensor_count : 0;
+        if (idx < obd_n) {
+            s = &obd_p->sensors[idx];
+        } else if (veh_p && (idx - obd_n) < veh_p->sensor_count) {
+            s = &veh_p->sensors[idx - obd_n];
+        }
+        if (!s) return false;
+
+        // Read the per-sensor live value (proto-agnostic — works for
+        // Mode 01 PIDs and Mode 22 DIDs alike). Falls back to the global
+        // PID-keyed cache when this is a sensor without a live record
+        // yet but its underlying PID has been seen elsewhere (handles
+        // duplicate PIDs across OBD.brl + vehicle.brl).
+        float v;
+        bool have = obd_bt_get_sensor_value(s, &v, nullptr);
+        if (!have && s->proto == 7) {
+            uint8_t pid = (uint8_t)(s->can_id & 0xFFu);
+            have = obd_dynamic_get(pid, &v);
+        }
+        if (!have) return false;
+
+        // Decimals from .brl scale (high precision → more decimals).
         int dec = 0;
         float as = fabsf(s->scale);
-        if (as < 0.1f) dec = 2;
-        else if (as < 1.0f) dec = 1;
-        return fmt_pid(pid, dec);
+        if (as < 0.001f) dec = 4;
+        else if (as < 0.01f) dec = 3;
+        else if (as < 0.1f)  dec = 2;
+        else if (as < 1.0f)  dec = 1;
+        if (dec <= 0) snprintf(out, out_size, "%.0f", (double)v);
+        else          snprintf(out, out_size, "%.*f", dec, (double)v);
+        return true;
     }
 
     if (field_is_can_dynamic(slot)) {
-        // No per-sensor live store yet on CAN-direct path; render "--"
-        // until that's wired (separate work — can_bus.cpp keeps adding
-        // values to fixed g_state.obd fields, not a PID-keyed cache).
+        // CAN-direct path uses g_car_profile + can_bus.cpp's own per-
+        // sensor write into g_state.obd.X. There's no proto-agnostic
+        // live cache for CAN-direct yet — when the user runs the
+        // hardwired CAN mode, can_bus needs a parallel
+        // obd_bt_get_sensor_value-style API. Returning false here is
+        // safe (slot renders "--") and the legacy obd.* fields still
+        // populate via the FIELD_RPM/FIELD_THROTTLE etc. shortcut.
         return false;
     }
 

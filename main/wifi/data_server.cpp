@@ -762,29 +762,51 @@ static esp_err_t handle_sensors(httpd_req_t *req)
     cJSON_AddItemToObject(doc, "sensors", list);
 
     if (g_dash_cfg.veh_conn_mode == 0) {
-        // OBD-via-BLE — emit /cars/OBD.brl sensor list.
-        const CarProfile *p = (const CarProfile *)obd_bt_pid_profile();
-        if (p) {
-            cJSON_AddStringToObject(doc, "source", "obd.brl");
-            for (int i = 0; i < p->sensor_count && i < 64; i++) {
-                if (p->sensors[i].proto != 7) continue;
-                uint8_t pid = (uint8_t)(p->sensors[i].can_id & 0xFFu);
+        // OBD-via-BLE — emit OBD.brl + active vehicle profile combined.
+        // Slot IDs match what dash_config.cpp / build_z3_fields use, so
+        // a config saved here is directly compatible with the on-device
+        // picker. Sensor entries carry `proto` so Studio/Android can
+        // tell Mode-01 PID from Mode-22 DID and label accordingly.
+        const CarProfile *p_obd = (const CarProfile *)obd_bt_pid_profile();
+        const CarProfile *p_veh = (const CarProfile *)obd_bt_vehicle_profile();
+
+        char src[64] = "obd.brl (not loaded)";
+        if (p_obd && p_veh)
+            snprintf(src, sizeof(src), "obd.brl + %s", p_veh->name);
+        else if (p_obd) snprintf(src, sizeof(src), "obd.brl");
+        else if (p_veh) snprintf(src, sizeof(src), "%s", p_veh->name);
+        cJSON_AddStringToObject(doc, "source", src);
+
+        auto emit = [&](const CarProfile *p, int base_idx) {
+            if (!p) return;
+            for (int i = 0; i < p->sensor_count && (base_idx + i) < 64; i++) {
+                uint8_t proto = p->sensors[i].proto;
+                if (proto != 7 && proto != 2) continue;  // skip PT-CAN
                 cJSON *s = cJSON_CreateObject();
                 cJSON_AddNumberToObject(s, "slot_id",
-                                        DASH_SLOT_OBD_DYN_BASE + i);
-                cJSON_AddNumberToObject(s, "pid",  pid);
+                                        DASH_SLOT_OBD_DYN_BASE + base_idx + i);
+                cJSON_AddNumberToObject(s, "proto", proto);
                 cJSON_AddStringToObject(s, "name", p->sensors[i].name);
                 cJSON_AddNumberToObject(s, "type", p->sensors[i].type);
-                cJSON_AddBoolToObject(s, "live",
-                                      obd_dynamic_is_live(pid));
-                cJSON_AddBoolToObject(s, "cached_dead",
-                                      obd_pid_cache_is_dead(pid));
+                if (proto == 7) {
+                    uint8_t pid = (uint8_t)(p->sensors[i].can_id & 0xFFu);
+                    cJSON_AddNumberToObject(s, "pid",  pid);
+                    cJSON_AddBoolToObject(s, "live",
+                                          obd_dynamic_is_live(pid));
+                    cJSON_AddBoolToObject(s, "cached_dead",
+                                          obd_pid_cache_is_dead(pid));
+                } else {
+                    uint16_t did = (uint16_t)((p->sensors[i].can_id >> 8) & 0xFFFFu);
+                    cJSON_AddNumberToObject(s, "did", did);
+                    // No PID-byte cache — live status comes via the
+                    // per-sensor cache (not addressable from here).
+                }
                 cJSON_AddItemToArray(list, s);
             }
-        } else {
-            cJSON_AddStringToObject(doc, "source",
-                                    "obd.brl (not loaded yet)");
-        }
+        };
+        int obd_n = p_obd ? p_obd->sensor_count : 0;
+        emit(p_obd, 0);
+        emit(p_veh, obd_n);
     } else {
         // CAN-direct — active vehicle profile, all sensors are
         // hand-curated for this engine so they're treated as live.
