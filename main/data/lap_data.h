@@ -55,7 +55,18 @@ typedef struct {
 // ---------------------------------------------------------------------------
 // Recorded lap (PSRAM-backed)
 // ---------------------------------------------------------------------------
-#define MAX_SECTORS  8
+// Maximum sectors per lap. With N sector-lines we get N+1 sectors
+// (segments: SF→L1, L1→L2, …, Lₙ→SF), so MAX_SECTORS=12 supports up
+// to 11 user-defined sector-lines per track.
+//
+// Memory cost is small relative to the rest of the system:
+//   TrackDef.sectors[]: +4×48 = 192 B per track  → 904 tracks ≈ 175 KB PSRAM
+//   RecordedLap.sector_ms[]: +4×4 = 16 B per lap → 100 laps × 16 = 1.6 KB
+// Both live in PSRAM (28 MB) and are negligible.
+//
+// JSON / NVS persistence is dynamic (sectors_used field), so old saves
+// with 8-sector arrays parse unchanged — extra slots stay zero.
+#define MAX_SECTORS  12
 
 typedef struct {
     uint32_t    total_ms;
