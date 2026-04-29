@@ -24,6 +24,7 @@
 #include "obd_bt.h"
 #include "obd_status.h"
 #include "obd_pid_cache.h"
+#include "obd_dynamic.h"
 #include "../data/lap_data.h"
 #include "../data/car_profile.h"
 #include "../ui/dash_config.h"
@@ -502,6 +503,12 @@ static bool apply_profile_sensor(const CarSensor *s,
     float value = (float)raw * s->scale + s->offset;
     if (value < s->min_val) value = s->min_val;
     if (value > s->max_val) value = s->max_val;
+    // Stash the post-scale value in the per-PID dynamic cache so any
+    // dashboard slot mapped to this OBD.brl sensor can read it back —
+    // independent of whether route_sensor() recognises the name as one
+    // of the legacy hardcoded fields. This is what makes "all OBD2
+    // sensors selectable in the picker" work.
+    obd_dynamic_set((uint8_t)(s->can_id & 0xFFu), value);
     return route_sensor(s->name, value);
 }
 
@@ -519,21 +526,26 @@ static bool apply_pid(uint8_t pid, const CarSensor *sensor,
     if (sensor) {
         return apply_profile_sensor(sensor, d, len);
     }
+    // No sensor mapping — built-in fallback decoder for the 5 hardcoded
+    // PIDs (used when /cars/OBD.brl is absent). Mirror the value into
+    // obd_dynamic so dynamic slots still work in this minimal mode.
     ObdData &obd = g_state.obd;
+    float v = 0.0f; bool ok = false;
     switch (pid) {
-        case 0x0C: if (len >= 2) { obd.rpm           = ((d[0] * 256u) + d[1]) / 4.0f;
-                                   obd_status_mark_active(FIELD_RPM); return true; } break;
-        case 0x11: if (len >= 1) { obd.throttle_pct  = d[0] * 100.0f / 255.0f;
-                                   obd_status_mark_active(FIELD_THROTTLE); return true; } break;
-        case 0x0B: if (len >= 1) { obd.boost_kpa     = (float)d[0];
-                                   obd_status_mark_active(FIELD_BOOST); return true; } break;
-        case 0x05: if (len >= 1) { obd.coolant_temp_c = (float)d[0] - 40.0f;
-                                   obd_status_mark_active(FIELD_COOLANT); return true; } break;
-        case 0x0F: if (len >= 1) { obd.intake_temp_c  = (float)d[0] - 40.0f;
-                                   obd_status_mark_active(FIELD_INTAKE); return true; } break;
+        case 0x0C: if (len >= 2) { v = ((d[0] * 256u) + d[1]) / 4.0f; obd.rpm = v;
+                                   obd_status_mark_active(FIELD_RPM); ok = true; } break;
+        case 0x11: if (len >= 1) { v = d[0] * 100.0f / 255.0f; obd.throttle_pct = v;
+                                   obd_status_mark_active(FIELD_THROTTLE); ok = true; } break;
+        case 0x0B: if (len >= 1) { v = (float)d[0]; obd.boost_kpa = v;
+                                   obd_status_mark_active(FIELD_BOOST); ok = true; } break;
+        case 0x05: if (len >= 1) { v = (float)d[0] - 40.0f; obd.coolant_temp_c = v;
+                                   obd_status_mark_active(FIELD_COOLANT); ok = true; } break;
+        case 0x0F: if (len >= 1) { v = (float)d[0] - 40.0f; obd.intake_temp_c = v;
+                                   obd_status_mark_active(FIELD_INTAKE); ok = true; } break;
         default: break;
     }
-    return false;
+    if (ok) obd_dynamic_set(pid, v);
+    return ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -697,6 +709,9 @@ static void do_disconnect(void)
     // any DEAD writes start hitting NVS.
     s_session_had_alive = false;
     s_inflight_count    = 0;
+    // Wipe per-PID live cache so the next session doesn't briefly show
+    // stale values from the previous car/connection.
+    obd_dynamic_clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -1417,4 +1432,11 @@ void obd_bt_disconnect(void)
     do_disconnect();
     s_state    = OBD_IDLE;
     s_retry_ts = 0;
+}
+
+// Opaque getter for the cached /cars/OBD.brl profile (see obd_bt.h).
+// Returns NULL until OBD.brl has been parsed at least once.
+extern "C" const void *obd_bt_pid_profile(void)
+{
+    return s_obd_profile_fallback.loaded ? &s_obd_profile_fallback : nullptr;
 }

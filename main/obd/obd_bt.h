@@ -60,6 +60,18 @@ void       obd_bt_disconnect(void);
  */
 void       obd_bt_pause(bool paused);
 
+/**
+ * Access to the cached /cars/OBD.brl profile for the dashboard slot
+ * picker. Returns an opaque pointer (cast to `const CarProfile *` —
+ * we don't include car_profile.h here to keep this header free of
+ * C++/extern-"C" entanglement). NULL until OBD.brl was parsed at
+ * least once on the first OBD-BT connect. The picker walks
+ * `sensors[0..sensor_count-1]` and lets the user assign sensor
+ * index N to a Z3 slot via slot ID `128 + N` (see dash_config.h
+ * slot ranges).
+ */
+const void *obd_bt_pid_profile(void);
+
 #ifdef __cplusplus
 }
 #endif
