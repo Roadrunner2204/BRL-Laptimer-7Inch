@@ -376,11 +376,24 @@ static void rebuild_pid_list(const char *cache_key)
                  s_pid_count);
     }
     if (s_vehicle_profile.loaded) {
-        int before = s_pid_count;
-        append_sensors_of_proto(&s_vehicle_profile, BRL_PROTO_OBD2_MODE1);
-        append_sensors_of_proto(&s_vehicle_profile, BRL_PROTO_UDS_BMW);
-        ESP_LOGI(TAG, "Vehicle profile: +%d sensors (Mode-01 + UDS)",
-                 s_pid_count - before);
+        // Skip the vehicle-profile pass when the user has accidentally
+        // pointed the active profile at /cars/OBD.brl itself — that's
+        // already loaded as the fallback, doubling its 30+ Mode-01
+        // PIDs into s_pids[] just inflates the dead-cache and hides
+        // the fact that no UDS DIDs are coming. Tell the user clearly.
+        if (strcasecmp(s_vehicle_name, "OBD.brl") == 0) {
+            ESP_LOGW(TAG,
+                "Active vehicle profile is OBD.brl — that's the generic "
+                "OBD2 baseline, not a car-specific profile. Pick e.g. "
+                "N47F.brl (or your engine's .brl) in Settings → Vehicle "
+                "to enable BMW UDS DIDs.");
+        } else {
+            int before = s_pid_count;
+            append_sensors_of_proto(&s_vehicle_profile, BRL_PROTO_OBD2_MODE1);
+            append_sensors_of_proto(&s_vehicle_profile, BRL_PROTO_UDS_BMW);
+            ESP_LOGI(TAG, "Vehicle profile: +%d sensors (Mode-01 + UDS)",
+                     s_pid_count - before);
+        }
     }
     if (s_pid_count == 0) {
         // Last resort — hardcoded defaults (RPM/TPS/MAP/Coolant/Intake)
