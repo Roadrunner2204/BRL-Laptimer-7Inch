@@ -141,9 +141,62 @@ export function isFieldLive(status: ObdStatus, fieldId: number): boolean {
 }
 
 /** OBD/Analog FIELD_IDs (32-47, 64-67); GPS/timing fields are always
- *  considered "available" and exempt from grey-out. */
+ *  considered "available" and exempt from grey-out. Includes the
+ *  dynamic ranges 128..255 (per-vehicle .brl sensors). */
 export function isObdField(fieldId: number): boolean {
-  return (fieldId >= 32 && fieldId <= 47) || (fieldId >= 64 && fieldId <= 67);
+  return (
+    (fieldId >= 32 && fieldId <= 47) ||
+    (fieldId >= 64 && fieldId <= 67) ||
+    fieldId >= 128
+  );
+}
+
+/** Dynamic slot ranges — mirrors main/ui/dash_config.h. */
+export const DASH_SLOT_OBD_DYN_BASE = 128;
+export const DASH_SLOT_OBD_DYN_END  = 192;
+export const DASH_SLOT_CAN_DYN_BASE = 192;
+export const DASH_SLOT_CAN_DYN_END  = 256;
+
+export function isDynamicObd(slotId: number): boolean {
+  return slotId >= DASH_SLOT_OBD_DYN_BASE && slotId < DASH_SLOT_OBD_DYN_END;
+}
+export function isDynamicCan(slotId: number): boolean {
+  return slotId >= DASH_SLOT_CAN_DYN_BASE && slotId < DASH_SLOT_CAN_DYN_END;
+}
+
+/** One entry from /sensors. The firmware emits this per VIN, so the
+ *  app's slot picker shows exactly what the laptimer would show in
+ *  Settings → Slot konfigurieren — the unified-architecture rule. */
+export interface DynamicSensor {
+  slot_id: number;            // dash_config slot ID (128+ for OBD, 192+ for CAN)
+  name: string;               // e.g. "RPM", "WaterT", "BattVolt"
+  pid?: number;               // OBD-BLE: Mode-01 PID byte
+  can_id?: number;            // CAN-direct: full CAN ID
+  type: number;               // 0=generic 1=pressure 2=temp 3=speed 4=lambda
+  live: boolean;              // is the sensor producing data right now
+  cached_dead?: boolean;      // OBD-BLE: persistently dead in cache
+}
+
+export interface SensorsResponse {
+  veh_conn_mode: number;      // 0=OBD-BLE, 1=CAN-direct
+  source: string;             // human-readable source name
+  sensors: DynamicSensor[];
+}
+
+/** Pull the dynamic sensor list. Used by the dashboard config picker
+ *  to populate Z3 slots from the *actual* sensors this car answered
+ *  rather than a hardcoded list. */
+export async function fetchSensors(): Promise<SensorsResponse> {
+  const url = `${baseUrl}/sensors`;
+  log('GET', url);
+  const r = await withTimeout(dfetch(url), 5000, 'fetchSensors');
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const doc = await r.json();
+  return {
+    veh_conn_mode: typeof doc?.veh_conn_mode === 'number' ? doc.veh_conn_mode : 0,
+    source: typeof doc?.source === 'string' ? doc.source : '',
+    sensors: Array.isArray(doc?.sensors) ? doc.sensors : [],
+  };
 }
 
 // ── Tracks API ─────────────────────────────────────────────────────────────

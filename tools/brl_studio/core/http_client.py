@@ -123,6 +123,45 @@ class DisplayClient:
         except requests.RequestException:
             return {}
 
+    def get_sensors(self) -> dict[str, Any]:
+        """Active datasource + dynamic sensor list. Schema:
+
+            {
+              "veh_conn_mode": 0|1,        # 0=OBD-BLE, 1=CAN-direct
+              "source": "obd.brl" | "<engine name>",
+              "sensors": [
+                {
+                  "slot_id": 128..255,     # firmware-side dash slot ID
+                  "pid": 0..255,           # OBD-BLE only
+                  "can_id": int,           # CAN-direct only
+                  "name": "RPM",
+                  "type": 0..4,            # CAN-Checked unit hint
+                  "live": true|false,      # currently producing data
+                  "cached_dead": true|false  # OBD-BLE: persistently
+                                              dead in this car's NVS cache
+                },
+                ...
+              ]
+            }
+
+        Used by the layout designer's slot picker so the editor and
+        the on-device picker see the same list (unified-architecture
+        rule). Returns an empty stub on failure so callers fall back
+        to a "no sensors" state instead of crashing."""
+        try:
+            r = requests.get(self.ep.url("/sensors"),
+                             timeout=DEFAULT_TIMEOUT)
+            if not r.ok:
+                return {"sensors": [], "veh_conn_mode": 0}
+            doc = r.json()
+            if not isinstance(doc, dict):
+                return {"sensors": [], "veh_conn_mode": 0}
+            doc.setdefault("sensors", [])
+            doc.setdefault("veh_conn_mode", 0)
+            return doc
+        except requests.RequestException:
+            return {"sensors": [], "veh_conn_mode": 0}
+
 
 class CamClient:
     def __init__(self, endpoint: Endpoint) -> None:

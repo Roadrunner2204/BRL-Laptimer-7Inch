@@ -47,6 +47,38 @@ FIELD_AN2       = 65
 FIELD_AN3       = 66
 FIELD_AN4       = 67
 
+# Dynamic slot ranges — N is the sensor index in the active .brl file
+# (loaded from the laptimer via /sensors). The same numeric IDs are
+# used on the firmware side so a config saved here can be uploaded to
+# the device without translation.
+DASH_SLOT_OBD_DYN_BASE = 128   # OBD-via-BLE: index into /cars/OBD.brl
+DASH_SLOT_OBD_DYN_END  = 192
+DASH_SLOT_CAN_DYN_BASE = 192   # CAN-direct: index into active car_profile
+DASH_SLOT_CAN_DYN_END  = 256
+
+
+def is_dynamic_obd(slot_id: int) -> bool:
+    return DASH_SLOT_OBD_DYN_BASE <= slot_id < DASH_SLOT_OBD_DYN_END
+
+
+def is_dynamic_can(slot_id: int) -> bool:
+    return DASH_SLOT_CAN_DYN_BASE <= slot_id < DASH_SLOT_CAN_DYN_END
+
+
+def dynamic_label(slot_id: int, sensors: list[dict]) -> str:
+    """Resolve a dynamic slot ID to its sensor name from a /sensors
+    response. Returns 'Slot N' when the index doesn't match — happens
+    when a saved config refers to a sensor that isn't in the currently
+    loaded .brl (different vehicle profile)."""
+    for s in sensors:
+        if s.get("slot_id") == slot_id:
+            return str(s.get("name", "?"))
+    if is_dynamic_obd(slot_id):
+        return f"OBD-Slot {slot_id - DASH_SLOT_OBD_DYN_BASE}"
+    if is_dynamic_can(slot_id):
+        return f"CAN-Slot {slot_id - DASH_SLOT_CAN_DYN_BASE}"
+    return f"Slot {slot_id}"
+
 
 FIELD_LABELS: dict[int, str] = {
     FIELD_NONE:      "— leer —",

@@ -56,8 +56,11 @@ from core.dash_config import (
     Z3_FIELDS,
     Z3_SLOTS,
     default_dash_config,
+    is_dynamic_obd,
+    is_dynamic_can,
+    dynamic_label,
 )
-from core.http_client import Endpoint
+from core.http_client import DisplayClient, Endpoint
 from core.lvt_format import WIDGET_DEFAULTS, empty_lvt
 from core.obd_status import get_obd_status_poller, is_obd_field
 from ui.widgets.lvt_designer import LvtDesigner
@@ -187,10 +190,18 @@ class _SlotEditor(QWidget):
         self._cfg: dict = default_dash_config()
         self._silent = False
 
+        # Cached /sensors response (populated by _refresh_sensor_list).
+        # Empty list means "device unreachable or no profile loaded yet"
+        # — in that case Z3 combos fall back to the legacy fixed list.
+        self._sensors: list[dict] = []
+
         self.preview = _DashPreview()
 
         self.z1_combos = [_build_combo(Z1_FIELDS) for _ in range(Z1_SLOTS)]
         self.z2_combos = [_build_combo(Z2_FIELDS) for _ in range(Z2_SLOTS)]
+        # Z3 starts with the legacy field list; _refresh_sensor_list()
+        # rebuilds it from the device's actual /sensors output (one
+        # entry per sensor that's currently selectable).
         self.z3_combos = [_build_combo(Z3_FIELDS) for _ in range(Z3_SLOTS)]
 
         z1_box = QGroupBox("Zone 1 (oben)")
@@ -256,6 +267,69 @@ class _SlotEditor(QWidget):
         # OBD entries; first successful poll populates them.
         get_obd_status_poller().bus.updated.connect(self._refresh_live)
         self._refresh_live({})
+
+        # Initial sensor-list pull. The Z3 combos start with the legacy
+        # fixed list and switch to the device's dynamic list as soon as
+        # /sensors comes back. A "Sensoren neu laden" button below
+        # re-pulls on demand (e.g. after the user clicks "Erneut
+        # scannen" on the laptimer to relearn).
+        self._refresh_sensor_list()
+
+    def _refresh_sensor_list(self) -> None:
+        """Pull /sensors from the configured display host and rebuild
+        the Z3 combos so they list exactly what's selectable on the
+        device. Errors are silent — the legacy fallback list stays
+        active so the editor remains usable offline."""
+        try:
+            from PyQt6.QtCore import QSettings
+            s = QSettings()
+            host = str(s.value("display/host", "192.168.4.1"))
+            port = int(s.value("display/port", 80))
+            client = DisplayClient(Endpoint(host=host, port=port))
+            doc = client.get_sensors()
+        except Exception:  # noqa: BLE001
+            doc = {"sensors": []}
+        self._sensors = list(doc.get("sensors") or [])
+        self._rebuild_z3_combos()
+
+    def _rebuild_z3_combos(self) -> None:
+        """Replace Z3 combo entries with the dynamic sensor list +
+        analog inputs + OFF, preserving the user's current selection
+        when possible. Sensors flagged `live=false` get a "·offline"
+        suffix so the user can still pick them but knows they're not
+        producing data right now."""
+        from core.dash_config import (FIELD_AN1, FIELD_AN2, FIELD_AN3,
+                                      FIELD_AN4, FIELD_NONE)
+        items: list[tuple[int, str]] = []
+        if self._sensors:
+            for s in self._sensors:
+                slot_id = int(s.get("slot_id", 0))
+                name    = str(s.get("name", "?"))
+                live    = bool(s.get("live", False))
+                items.append((slot_id, f"{name}{'' if live else '  ·offline'}"))
+        else:
+            # Legacy fallback when device is offline or hasn't loaded
+            # an OBD.brl yet — keep the editor usable.
+            for fid in Z3_FIELDS:
+                items.append((fid, FIELD_LABELS.get(fid, str(fid))))
+        # Always append analog + OFF.
+        for fid in (FIELD_AN1, FIELD_AN2, FIELD_AN3, FIELD_AN4):
+            if not any(i == fid for i, _ in items):
+                items.append((fid, FIELD_LABELS.get(fid, str(fid))))
+        if not any(i == FIELD_NONE for i, _ in items):
+            items.append((FIELD_NONE, FIELD_LABELS[FIELD_NONE]))
+
+        self._silent = True
+        for cb in self.z3_combos:
+            current = cb.currentData()
+            cb.blockSignals(True)
+            cb.clear()
+            for fid, label in items:
+                cb.addItem(label, fid)
+            j = cb.findData(current)
+            cb.setCurrentIndex(j if j >= 0 else 0)
+            cb.blockSignals(False)
+        self._silent = False
 
     def _refresh_live(self, _doc: dict) -> None:
         live = get_obd_status_poller().live_field_ids()
