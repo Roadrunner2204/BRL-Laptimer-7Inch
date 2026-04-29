@@ -14,11 +14,19 @@
 
 #include "dash_config.h"
 #include "compat.h"
+#include "i18n.h"
+#include "../data/lap_data.h"
+#include "../data/car_profile.h"
+#include "../obd/obd_dynamic.h"
+#include "../obd/obd_bt.h"
+#include "../sensors/analog_in.h"
 
 #include "nvs_flash.h"
 #include "nvs.h"
 
 #include <string.h>
+#include <stdio.h>
+#include <math.h>
 
 static const char *TAG = "dash_config";
 
@@ -123,4 +131,237 @@ void dash_config_save()
     } else {
         log_i("Config saved");
     }
+}
+
+// ===========================================================================
+// Slot resolvers — title, value, unit, live-status for any 8-bit slot ID
+//
+// One function per concern, all four switch on the slot range first, then
+// dispatch:
+//   - hardcoded built-ins (laptime/sector/...)
+//   - legacy FIELD_RPM..MAF (resolved through their well-known PID)
+//   - dynamic OBD (128+N) — looks up OBD.brl[N], reads obd_dynamic[pid]
+//   - dynamic CAN (192+N) — looks up g_car_profile.sensors[N] (currently
+//                            decoded into g_state.obd by can_bus.cpp; until
+//                            that grows a per-sensor cache, we reuse the
+//                            sensor name to map back into legacy fields)
+//   - analog (AN1..4)
+// ===========================================================================
+
+// PID byte that backs each legacy FIELD_X. -1 if no direct PID mapping
+// (e.g. FIELD_BRAKE/STEERING come from analog or external inputs, not a PID).
+static int legacy_field_pid(uint8_t f)
+{
+    switch (f) {
+        case FIELD_RPM:      return 0x0C;
+        case FIELD_THROTTLE: return 0x11;
+        case FIELD_BOOST:    return 0x0B;  // PID 0x0B = MAP, often labelled "Boost"
+        case FIELD_COOLANT:  return 0x05;
+        case FIELD_INTAKE:   return 0x0F;
+        case FIELD_LAMBDA:   return 0x24;
+        case FIELD_BATTERY:  return 0x42;
+        case FIELD_MAF:      return 0x10;
+        default:             return -1;
+    }
+}
+
+// Find a CarProfile pointer either from the OBD.brl loaded in obd_bt or
+// the active CAN-direct car profile.
+static const CarProfile *obd_brl_profile(void)
+{
+    return (const CarProfile *)obd_bt_pid_profile();
+}
+
+const char *field_title(uint8_t slot)
+{
+    if (slot == FIELD_NONE) return "---";
+
+    // Built-ins
+    switch (slot) {
+        case FIELD_SPEED:     return tr(TR_SPEED);
+        case FIELD_LAPTIME:   return tr(TR_LAPTIME);
+        case FIELD_BESTLAP:   return tr(TR_BESTLAP);
+        case FIELD_DELTA_NUM: return tr(TR_LIVE_DELTA);
+        case FIELD_LAP_NR:    return tr(TR_LAP);
+        case FIELD_SECTOR1:   return tr(TR_SECTOR1);
+        case FIELD_SECTOR2:   return tr(TR_SECTOR2);
+        case FIELD_SECTOR3:   return tr(TR_SECTOR3);
+        case FIELD_MAP:       return "MAP";
+        case FIELD_RPM:       return tr(TR_RPM);
+        case FIELD_THROTTLE:  return tr(TR_THROTTLE);
+        case FIELD_BOOST:     return tr(TR_BOOST);
+        case FIELD_LAMBDA:    return tr(TR_LAMBDA);
+        case FIELD_BRAKE:     return tr(TR_BRAKE);
+        case FIELD_COOLANT:   return tr(TR_COOLANT);
+        case FIELD_INTAKE:    return tr(TR_INTAKE);
+        case FIELD_STEERING:  return tr(TR_STEERING);
+        case FIELD_BATTERY:   return "Batterie";
+        case FIELD_MAF:       return "MAF";
+        case FIELD_AN1:       return g_analog_cfg[0].name;
+        case FIELD_AN2:       return g_analog_cfg[1].name;
+        case FIELD_AN3:       return g_analog_cfg[2].name;
+        case FIELD_AN4:       return g_analog_cfg[3].name;
+        default: break;
+    }
+
+    if (field_is_obd_dynamic(slot)) {
+        const CarProfile *p = obd_brl_profile();
+        uint8_t idx = field_obd_dyn_index(slot);
+        if (p && idx < p->sensor_count) return p->sensors[idx].name;
+        return "?";
+    }
+    if (field_is_can_dynamic(slot)) {
+        uint8_t idx = field_can_dyn_index(slot);
+        if (g_car_profile.loaded && idx < g_car_profile.sensor_count)
+            return g_car_profile.sensors[idx].name;
+        return "?";
+    }
+    return "---";
+}
+
+const char *field_unit(uint8_t slot)
+{
+    // Legacy + dynamic both look up by name/PID context. We don't store
+    // unit strings in CarSensor (CAN-Checked .brl format has none), so
+    // we map by sensor name + PID range. Keep a tight whitelist —
+    // anything unknown returns "" so the dash doesn't show garbage.
+    if (slot == FIELD_RPM)       return "rpm";
+    if (slot == FIELD_THROTTLE)  return "%";
+    if (slot == FIELD_BOOST)     return "kPa";
+    if (slot == FIELD_COOLANT)   return "°C";
+    if (slot == FIELD_INTAKE)    return "°C";
+    if (slot == FIELD_LAMBDA)    return "λ";
+    if (slot == FIELD_BATTERY)   return "V";
+    if (slot == FIELD_MAF)       return "g/s";
+    if (slot == FIELD_SPEED)     return (g_dash_cfg.units == 0) ? "km/h" : "mph";
+    if (slot >= FIELD_AN1 && slot <= FIELD_AN4) {
+        // AnalogChannelCfg has no unit field — caller's name (e.g. "Oilpres")
+        // typically encodes the unit. Return empty so the dash doesn't
+        // duplicate it.
+        return "";
+    }
+    if (field_is_obd_dynamic(slot)) {
+        const CarProfile *p = obd_brl_profile();
+        uint8_t idx = field_obd_dyn_index(slot);
+        if (!p || idx >= p->sensor_count) return "";
+        // CAN-Checked .brl stores `type`: 1=pressure 2=temp 3=speed 4=lambda.
+        // Map to common units. type=0 (generic) → "" to stay quiet.
+        switch (p->sensors[idx].type) {
+            case 1: return "kPa";
+            case 2: return "°C";
+            case 3: return (g_dash_cfg.units == 0) ? "km/h" : "mph";
+            case 4: return "λ";
+            default: return "";
+        }
+    }
+    if (field_is_can_dynamic(slot)) {
+        uint8_t idx = field_can_dyn_index(slot);
+        if (!g_car_profile.loaded || idx >= g_car_profile.sensor_count) return "";
+        switch (g_car_profile.sensors[idx].type) {
+            case 1: return "kPa";
+            case 2: return "°C";
+            case 3: return (g_dash_cfg.units == 0) ? "km/h" : "mph";
+            case 4: return "λ";
+            default: return "";
+        }
+    }
+    return "";
+}
+
+bool field_is_live(uint8_t slot)
+{
+    // Built-ins are always "live" (timing/GPS is always up).
+    if (slot < 32) return slot != FIELD_NONE;
+
+    // Legacy OBD field → check the corresponding PID's freshness.
+    int legacy_pid = legacy_field_pid(slot);
+    if (legacy_pid >= 0) {
+        return obd_dynamic_is_live((uint8_t)legacy_pid);
+    }
+
+    // Dynamic OBD slot — check the underlying PID directly.
+    if (field_is_obd_dynamic(slot)) {
+        const CarProfile *p = obd_brl_profile();
+        uint8_t idx = field_obd_dyn_index(slot);
+        if (!p || idx >= p->sensor_count) return false;
+        uint8_t pid = (uint8_t)(p->sensors[idx].can_id & 0xFFu);
+        return obd_dynamic_is_live(pid);
+    }
+
+    // CAN-direct dynamic — for now we don't have a per-sensor freshness
+    // tracker on the CAN bus path; assume live whenever the bus is up.
+    if (field_is_can_dynamic(slot)) {
+        uint8_t idx = field_can_dyn_index(slot);
+        return g_car_profile.loaded && idx < g_car_profile.sensor_count;
+    }
+
+    // Analog channels — analog_in_poll always runs, so they're always live.
+    if (slot >= FIELD_AN1 && slot <= FIELD_AN4) return true;
+
+    return false;
+}
+
+bool field_format_value(uint8_t slot, char *out, int out_size)
+{
+    if (!out || out_size < 2) return false;
+    out[0] = '\0';
+
+    // Legacy / dynamic OBD → resolve PID + read obd_dynamic.
+    auto fmt_pid = [&](uint8_t pid, int decimals) -> bool {
+        float v;
+        if (!obd_dynamic_get(pid, &v)) return false;
+        if (decimals <= 0)
+            snprintf(out, out_size, "%.0f", (double)v);
+        else
+            snprintf(out, out_size, "%.*f", decimals, (double)v);
+        return true;
+    };
+
+    int legacy_pid = legacy_field_pid(slot);
+    if (legacy_pid >= 0) {
+        // Decimals follow the typical display precision for each.
+        int dec = (slot == FIELD_LAMBDA || slot == FIELD_BATTERY) ? 2
+                : (slot == FIELD_MAF) ? 1
+                : 0;
+        return fmt_pid((uint8_t)legacy_pid, dec);
+    }
+
+    if (field_is_obd_dynamic(slot)) {
+        const CarProfile *p = obd_brl_profile();
+        uint8_t idx = field_obd_dyn_index(slot);
+        if (!p || idx >= p->sensor_count) return false;
+        const CarSensor *s = &p->sensors[idx];
+        uint8_t pid = (uint8_t)(s->can_id & 0xFFu);
+        // Pick a sensible decimal count from the sensor's scale: scales
+        // < 0.1 typically encode high-precision values (Lambda, BattVolt),
+        // 0.1..0.99 are tenth-precision (MAF, CatT), >= 1 are integers
+        // (RPM, temps, percentages).
+        int dec = 0;
+        float as = fabsf(s->scale);
+        if (as < 0.1f) dec = 2;
+        else if (as < 1.0f) dec = 1;
+        return fmt_pid(pid, dec);
+    }
+
+    if (field_is_can_dynamic(slot)) {
+        // No per-sensor live store yet on CAN-direct path; render "--"
+        // until that's wired (separate work — can_bus.cpp keeps adding
+        // values to fixed g_state.obd fields, not a PID-keyed cache).
+        return false;
+    }
+
+    if (slot >= FIELD_AN1 && slot <= FIELD_AN4) {
+        const AnalogChannel &ch = g_state.analog[slot - FIELD_AN1];
+        if (!ch.valid) return false;
+        // Default to 1 decimal — most analog sensors (pressures, voltages)
+        // are intelligible at that precision.
+        snprintf(out, out_size, "%.1f", (double)ch.value);
+        return true;
+    }
+
+    // Built-ins (timing / sectors / delta) are formatted by the timing
+    // screen itself — it has all the LiveTiming context. dash_config
+    // doesn't try to second-guess that. Caller for non-OBD slots should
+    // fall through to its own switch.
+    return false;
 }

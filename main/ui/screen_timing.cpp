@@ -24,6 +24,9 @@
 #include "../timing/lap_timer.h"
 #include "../obd/obd_bt.h"
 #include "../obd/obd_status.h"
+#include "../obd/obd_dynamic.h"
+#include "../obd/obd_pid_cache.h"
+#include "../data/car_profile.h"
 #include "../wifi/wifi_mgr.h"
 #include "../camera_link/cam_link.h"
 #include "../sensors/analog_in.h"
@@ -90,37 +93,11 @@ static const lv_btnmatrix_ctrl_t s_qwertz_ctrl[] = {
 int32_t timing_get_delta_scale() { return (int32_t)g_dash_cfg.delta_scale_ms; }
 
 // ---------------------------------------------------------------------------
-// Field metadata
+// Field metadata — `field_title()` lives in dash_config.cpp now so the
+// picker UI, the slot renderer, BRL Studio, and the Android app all
+// agree on what each slot is called. See dash_config.h for the slot
+// ID layout (built-in / legacy OBD / dynamic OBD / dynamic CAN / analog).
 // ---------------------------------------------------------------------------
-static const char *field_title(uint8_t f) {
-    switch (f) {
-        case FIELD_SPEED:     return tr(TR_SPEED);
-        case FIELD_LAPTIME:   return tr(TR_LAPTIME);
-        case FIELD_BESTLAP:   return tr(TR_BESTLAP);
-        case FIELD_DELTA_NUM: return tr(TR_LIVE_DELTA);
-        case FIELD_LAP_NR:    return tr(TR_LAP);
-        case FIELD_SECTOR1:   return tr(TR_SECTOR1);
-        case FIELD_SECTOR2:   return tr(TR_SECTOR2);
-        case FIELD_SECTOR3:   return tr(TR_SECTOR3);
-        case FIELD_MAP:       return "MAP";
-        case FIELD_RPM:       return tr(TR_RPM);
-        case FIELD_THROTTLE:  return tr(TR_THROTTLE);
-        case FIELD_BOOST:     return tr(TR_BOOST);
-        case FIELD_LAMBDA:    return tr(TR_LAMBDA);
-        case FIELD_BRAKE:     return tr(TR_BRAKE);
-        case FIELD_COOLANT:   return tr(TR_COOLANT);
-        case FIELD_INTAKE:    return tr(TR_INTAKE);
-        case FIELD_STEERING:  return tr(TR_STEERING);
-        case FIELD_BATTERY:   return "Batterie";
-        case FIELD_MAF:       return "MAF";
-        // Analog inputs — title comes from the user-set channel name
-        case FIELD_AN1:       return g_analog_cfg[0].name;
-        case FIELD_AN2:       return g_analog_cfg[1].name;
-        case FIELD_AN3:       return g_analog_cfg[2].name;
-        case FIELD_AN4:       return g_analog_cfg[3].name;
-        default:              return "---";
-    }
-}
 
 // Is this field a time value? (needs more chars → smaller font than pure numerics)
 static bool field_is_time(uint8_t f) {
@@ -306,21 +283,76 @@ static void cb_pick_field(lv_event_t *e) {
     }
 }
 
-// Laptimer-side field list (Zone 1 & 2)
+// Laptimer-side field list (Zone 1 & 2) — fixed set of built-ins.
 static const uint8_t LAPTIME_FIELDS[] = {
     FIELD_SPEED, FIELD_LAPTIME, FIELD_BESTLAP,
     FIELD_LAP_NR, FIELD_SECTOR1, FIELD_SECTOR2, FIELD_SECTOR3,
     FIELD_MAP, FIELD_NONE,
 };
-// OBD field list (Zone 3) — also picker source for analog inputs since
-// they live in the same dashboard zone.
-static const uint8_t OBD_FIELDS[] = {
-    FIELD_RPM, FIELD_THROTTLE, FIELD_BOOST, FIELD_COOLANT,
-    FIELD_INTAKE, FIELD_LAMBDA, FIELD_BRAKE, FIELD_STEERING,
-    FIELD_BATTERY, FIELD_MAF,
-    FIELD_AN1, FIELD_AN2, FIELD_AN3, FIELD_AN4,
-    FIELD_NONE,
-};
+
+// Build the Zone-3 picker list dynamically from whatever data source is
+// active and which sensors actually answered on this car (filtered by
+// the per-VIN PID cache + live-status). The result populates `out` and
+// returns the count. Order: live OBD/CAN sensors first, then analog
+// inputs, then "OFF".
+static int build_z3_fields(uint8_t *out, int max_count, bool include_silent)
+{
+    int n = 0;
+    auto push = [&](uint8_t f) {
+        if (n < max_count - 1) out[n++] = f;
+    };
+
+    if (g_dash_cfg.veh_conn_mode == 0) {
+        // OBD-via-BLE — list /cars/OBD.brl sensors. obd_bt_pid_profile()
+        // returns NULL until first connect populates it; in that case
+        // the picker will only show analog + OFF, which is the correct
+        // pre-connect state.
+        const CarProfile *p = (const CarProfile *)obd_bt_pid_profile();
+        if (p) {
+            for (int i = 0; i < p->sensor_count && i < 64; i++) {
+                if (p->sensors[i].proto != 7) continue;  // OBD2-only
+                uint8_t pid = (uint8_t)(p->sensors[i].can_id & 0xFFu);
+                bool live = obd_dynamic_is_live(pid);
+                bool dead_in_cache = obd_pid_cache_is_dead(pid);
+                // User asked: silent sensors should NOT appear in the
+                // picker so the list isn't full of greyed-out garbage.
+                // But keep "include_silent" as a fallback path for the
+                // "alle anzeigen" toggle later if needed.
+                if (!live && dead_in_cache && !include_silent) continue;
+                push((uint8_t)(DASH_SLOT_OBD_DYN_BASE + i));
+            }
+        }
+    } else {
+        // CAN-direct — list active vehicle profile (motorspezifische .brl).
+        if (g_car_profile.loaded) {
+            for (int i = 0; i < g_car_profile.sensor_count && i < 64; i++) {
+                push((uint8_t)(DASH_SLOT_CAN_DYN_BASE + i));
+            }
+        }
+    }
+
+    // Analog inputs always available (channels are physical).
+    push(FIELD_AN1);
+    push(FIELD_AN2);
+    push(FIELD_AN3);
+    push(FIELD_AN4);
+    // Off slot last
+    push(FIELD_NONE);
+    return n;
+}
+
+// Trigger a fresh PID-availability scan: clear the per-VIN cache and
+// kick off an OBD-BT reconnect. The next connect will start every PID
+// alive again and the cache rebuilds from real responses. Triggered by
+// the "Erneut scannen" button in the picker. The picker is dismissed
+// so the user can reopen it after the reconnect (~2-3 s) to see the
+// fresh availability list.
+static void rescan_obd_pids(void)
+{
+    obd_pid_cache_clear();
+    obd_bt_disconnect();
+    ESP_LOGI("picker", "OBD PID-cache cleared — reconnect will re-learn");
+}
 
 static void open_field_picker(int zone, int slot, uint8_t current_field) {
     if (!s_timing_screen) return;
@@ -360,18 +392,90 @@ static void open_field_picker(int zone, int slot, uint8_t current_field) {
     brl_style_label(ttl, &BRL_FONT_16, BRL_CLR_TEXT);
     lv_obj_align(ttl, LV_ALIGN_TOP_LEFT, 0, 0);
 
-    // Button grid
+    // Data source subtitle for Zone 3 — tells the user where the picker
+    // list comes from and lets them rescan if a sensor they expect
+    // didn't show up (cold engine, ECU was busy at first connect, etc.).
+    if (zone == 3) {
+        char sub[80];
+        if (g_dash_cfg.veh_conn_mode == 0) {
+            const CarProfile *p = (const CarProfile *)obd_bt_pid_profile();
+            int alive = 0;
+            if (p) {
+                for (int i = 0; i < p->sensor_count; i++) {
+                    if (p->sensors[i].proto != 7) continue;
+                    uint8_t pid = (uint8_t)(p->sensors[i].can_id & 0xFFu);
+                    if (!obd_pid_cache_is_dead(pid)) alive++;
+                }
+            }
+            snprintf(sub, sizeof(sub),
+                     i18n_get_language() == 0
+                       ? "Quelle: OBD.brl  ·  %d Sensoren erkannt"
+                       : "Source: OBD.brl  ·  %d sensors detected",
+                     alive);
+        } else if (g_car_profile.loaded) {
+            snprintf(sub, sizeof(sub),
+                     i18n_get_language() == 0
+                       ? "Quelle: %s (CAN-direct)  ·  %d Sensoren"
+                       : "Source: %s (CAN-direct)  ·  %d sensors",
+                     g_car_profile.name, g_car_profile.sensor_count);
+        } else {
+            snprintf(sub, sizeof(sub),
+                     i18n_get_language() == 0
+                       ? "Quelle: kein Profil geladen"
+                       : "Source: no profile loaded");
+        }
+        lv_obj_t *sub_lbl = lv_label_create(card);
+        lv_label_set_text(sub_lbl, sub);
+        brl_style_label(sub_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+        lv_obj_align(sub_lbl, LV_ALIGN_TOP_LEFT, 0, 22);
+
+        // "Erneut scannen" button — clears the per-VIN PID cache and
+        // forces a fresh OBD-BT reconnect. Use case: a sensor was
+        // marked dead because the ECU was cold / busy on the first
+        // connect — user clicks this after the engine has run a bit.
+        lv_obj_t *rescan = lv_button_create(card);
+        lv_obj_set_size(rescan, 180, 36);
+        lv_obj_align(rescan, LV_ALIGN_TOP_RIGHT, 0, 0);
+        brl_style_btn(rescan, BRL_CLR_SURFACE2);
+        lv_obj_add_event_cb(rescan, [](lv_event_t * /*e*/) {
+            rescan_obd_pids();
+            close_picker();
+        }, LV_EVENT_CLICKED, nullptr);
+        lv_obj_t *rl = lv_label_create(rescan);
+        lv_label_set_text(rl, i18n_get_language() == 0
+                              ? "Erneut scannen"
+                              : "Rescan");
+        brl_style_label(rl, &BRL_FONT_14, BRL_CLR_TEXT);
+        lv_obj_center(rl);
+    }
+
+    // Button grid — scrollable since the dynamic OBD list can hit 32+
+    // sensors (full OBD.brl pool) and they won't fit in the 200 px height.
     lv_obj_t *grid = lv_obj_create(card);
-    lv_obj_set_size(grid, 836, 220);
+    lv_obj_set_size(grid, 836, 200);
     lv_obj_align(grid, LV_ALIGN_BOTTOM_MID, 0, 0);
     brl_style_transparent(grid);
     lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_style_pad_column(grid, 6, LV_STATE_DEFAULT);
     lv_obj_set_style_pad_row(grid, 6, LV_STATE_DEFAULT);
-    lv_obj_remove_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(grid, LV_DIR_VER);
 
-    const uint8_t *fields = (zone == 3) ? OBD_FIELDS : LAPTIME_FIELDS;
-    int n_fields = (zone == 3) ? (int)sizeof(OBD_FIELDS) : (int)sizeof(LAPTIME_FIELDS);
+    // Zone-3 picker: build the field list from whatever data source
+    // (OBD-BLE or CAN-direct) the user is on, filtered to sensors that
+    // this specific car actually answers. Zone 1/2 stay on the fixed
+    // built-in list. Buffer needs to accommodate up to 64 .brl sensors
+    // + 4 analog + OFF + slack.
+    static uint8_t z3_fields_buf[80];
+    const uint8_t *fields;
+    int n_fields;
+    if (zone == 3) {
+        n_fields = build_z3_fields(z3_fields_buf, (int)sizeof(z3_fields_buf),
+                                   /*include_silent=*/false);
+        fields   = z3_fields_buf;
+    } else {
+        fields   = LAPTIME_FIELDS;
+        n_fields = (int)sizeof(LAPTIME_FIELDS);
+    }
 
     int token = (zone << 8) | slot;
 
@@ -381,11 +485,11 @@ static void open_field_picker(int zone, int slot, uint8_t current_field) {
         lv_obj_set_size(btn, 186, 54);
         bool active = (fid == current_field);
 
-        // OBD/Analog fields that aren't currently delivering data get a
-        // dimmed style — still tappable so the user can pre-stage a
-        // layout, but the missing-signal status is visible at a glance.
-        bool obd_field = (fid >= 32 && fid < 68) && fid != FIELD_NONE;
-        bool live = !obd_field || obd_status_is_live(fid);
+        // Live-indicator: every sensor in the picker has a freshness
+        // state. Built-in fields (1..31) are always live. Analog inputs
+        // are always live. OBD/CAN dynamic + legacy OBD fields go via
+        // field_is_live() which checks obd_dynamic freshness.
+        bool live = field_is_live(fid) || fid == FIELD_NONE;
 
         if (active) {
             brl_style_btn(btn, BRL_CLR_ACCENT);

@@ -733,6 +733,90 @@ static void dns_process_one(void)
 }
 
 // ---------------------------------------------------------------------------
+// GET /sensors -- exposes the dynamic sensor list (per-VIN OBD.brl + the
+// active CAN-direct car_profile) so Studio + Android can build the same
+// dashboard slot picker as the on-device UI. Each entry carries the slot
+// ID the dash_config knows how to render (DASH_SLOT_OBD_DYN_BASE + index
+// for OBD-BLE, _CAN_DYN_BASE + index for CAN-direct), the human-readable
+// name, the underlying PID/CAN-ID, the unit type hint from the .brl, and
+// a `live` flag drawn from the per-PID freshness cache (same source the
+// firmware picker greys-out by). Keeps the three frontends in lock-step:
+// what the user can pick on the laptimer is also what they see in the
+// app and Studio, no manual sync needed.
+// ---------------------------------------------------------------------------
+#include "../obd/obd_dynamic.h"
+#include "../obd/obd_pid_cache.h"
+#include "../obd/obd_bt.h"
+#include "../data/car_profile.h"
+#include "../ui/dash_config.h"
+
+static esp_err_t handle_sensors(httpd_req_t *req)
+{
+    set_cors_headers(req);
+    httpd_resp_set_type(req, "application/json");
+
+    cJSON *doc = cJSON_CreateObject();
+    cJSON_AddNumberToObject(doc, "veh_conn_mode", g_dash_cfg.veh_conn_mode);
+
+    cJSON *list = cJSON_CreateArray();
+    cJSON_AddItemToObject(doc, "sensors", list);
+
+    if (g_dash_cfg.veh_conn_mode == 0) {
+        // OBD-via-BLE — emit /cars/OBD.brl sensor list.
+        const CarProfile *p = (const CarProfile *)obd_bt_pid_profile();
+        if (p) {
+            cJSON_AddStringToObject(doc, "source", "obd.brl");
+            for (int i = 0; i < p->sensor_count && i < 64; i++) {
+                if (p->sensors[i].proto != 7) continue;
+                uint8_t pid = (uint8_t)(p->sensors[i].can_id & 0xFFu);
+                cJSON *s = cJSON_CreateObject();
+                cJSON_AddNumberToObject(s, "slot_id",
+                                        DASH_SLOT_OBD_DYN_BASE + i);
+                cJSON_AddNumberToObject(s, "pid",  pid);
+                cJSON_AddStringToObject(s, "name", p->sensors[i].name);
+                cJSON_AddNumberToObject(s, "type", p->sensors[i].type);
+                cJSON_AddBoolToObject(s, "live",
+                                      obd_dynamic_is_live(pid));
+                cJSON_AddBoolToObject(s, "cached_dead",
+                                      obd_pid_cache_is_dead(pid));
+                cJSON_AddItemToArray(list, s);
+            }
+        } else {
+            cJSON_AddStringToObject(doc, "source",
+                                    "obd.brl (not loaded yet)");
+        }
+    } else {
+        // CAN-direct — active vehicle profile, all sensors are
+        // hand-curated for this engine so they're treated as live.
+        if (g_car_profile.loaded) {
+            cJSON_AddStringToObject(doc, "source", g_car_profile.name);
+            for (int i = 0; i < g_car_profile.sensor_count && i < 64; i++) {
+                cJSON *s = cJSON_CreateObject();
+                cJSON_AddNumberToObject(s, "slot_id",
+                                        DASH_SLOT_CAN_DYN_BASE + i);
+                cJSON_AddNumberToObject(s, "can_id",
+                                        g_car_profile.sensors[i].can_id);
+                cJSON_AddStringToObject(s, "name",
+                                        g_car_profile.sensors[i].name);
+                cJSON_AddNumberToObject(s, "type",
+                                        g_car_profile.sensors[i].type);
+                cJSON_AddBoolToObject(s, "live", true);
+                cJSON_AddItemToArray(list, s);
+            }
+        } else {
+            cJSON_AddStringToObject(doc, "source",
+                                    "(no car profile loaded)");
+        }
+    }
+
+    char *out = cJSON_PrintUnformatted(doc);
+    esp_err_t r = httpd_resp_send(req, out, strlen(out));
+    free(out);
+    cJSON_Delete(doc);
+    return r;
+}
+
+// ---------------------------------------------------------------------------
 // GET /obd_status -- per-FieldId freshness map for slot pickers in the
 // Android app + Studio. Tiny payload (~256 ints worst case), polled
 // every couple of seconds when a layout editor is open.
@@ -769,6 +853,8 @@ static const httpd_uri_t s_uri_handlers[] = {
     { .uri = "/videos",        .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
     { .uri = "/obd_status",    .method = HTTP_GET,    .handler = handle_obd_status,      .user_ctx = nullptr },
     { .uri = "/obd_status",    .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
+    { .uri = "/sensors",       .method = HTTP_GET,    .handler = handle_sensors,         .user_ctx = nullptr },
+    { .uri = "/sensors",       .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
     { .uri = "/video/*",       .method = HTTP_GET,    .handler = handle_video_get,       .user_ctx = nullptr },
     { .uri = "/video/*",       .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
     { .uri = "/generate_204",  .method = HTTP_GET,    .handler = handle_generate_204,    .user_ctx = nullptr },

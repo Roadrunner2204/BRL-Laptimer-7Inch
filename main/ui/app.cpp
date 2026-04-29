@@ -3761,6 +3761,26 @@ void timer_live_update(lv_timer_t * /*t*/) {
                 break;
             }
             default:
+                // Dynamic OBD/CAN sensor slot — resolve via dash_config's
+                // generic helpers. They look up the .brl sensor by index,
+                // read obd_dynamic[pid] (or g_state.obd field for CAN-direct
+                // until that path grows a per-sensor cache), and format
+                // with the appropriate unit. Keeps this switch from
+                // exploding to 64+ cases as the .brl grows.
+                if (field_is_obd_dynamic(fid) || field_is_can_dynamic(fid)) {
+                    char val[16];
+                    if (!field_format_value(fid, val, sizeof(val))) {
+                        strncpy(buf, "---", sizeof(buf));
+                    } else {
+                        const char *unit = field_unit(fid);
+                        if (unit && unit[0]) {
+                            snprintf(buf, sizeof(buf), "%s %s", val, unit);
+                        } else {
+                            strncpy(buf, val, sizeof(buf));
+                        }
+                    }
+                    break;
+                }
                 return;
         }
         lbl_set(lbl, buf);
