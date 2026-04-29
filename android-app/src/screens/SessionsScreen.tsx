@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
   ActivityIndicator, Alert, RefreshControl,
@@ -38,6 +38,12 @@ export default function SessionsScreen({ navigation, route }: Props) {
   const [selectMode, setSelectMode]   = useState(false);
   const [selected, setSelected]       = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy]       = useState(false);
+  // Hierarchical browser: while null, the screen shows a list of tracks
+  // (one row per unique track, aggregated). After tapping a track, this
+  // holds the track name and the same screen flips to a filtered session
+  // list. Mirrors the Studio + the on-display behaviour so the three UIs
+  // navigate sessions the same way.
+  const [selectedTrack, setSelectedTrack] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
@@ -105,6 +111,11 @@ export default function SessionsScreen({ navigation, route }: Props) {
     setSelected(new Set());
   }
 
+  function backToTracks() {
+    exitSelectMode();
+    setSelectedTrack(null);
+  }
+
   async function bulkDelete() {
     if (selected.size === 0) return;
     const targets = Array.from(selected);
@@ -155,7 +166,7 @@ export default function SessionsScreen({ navigation, route }: Props) {
     downloaded_at?: number;
   };
 
-  const rows: Row[] = showDevice
+  const allRows: Row[] = showDevice
     ? deviceSessions.map(d => {
         const loc = local.find(l => l.id === d.id);
         return {
@@ -182,59 +193,143 @@ export default function SessionsScreen({ navigation, route }: Props) {
         downloaded_at: l.downloaded_at,
       }));
 
+  // Track aggregates for the top-level view
+  type TrackAgg = {
+    name: string;
+    n_sessions: number;
+    n_laps: number;
+    best_ms: number;
+  };
+  const trackAggs: TrackAgg[] = useMemo(() => {
+    const map = new Map<string, TrackAgg>();
+    for (const r of allRows) {
+      const key = r.track || '—';
+      const cur = map.get(key) ?? {
+        name: key, n_sessions: 0, n_laps: 0, best_ms: 0,
+      };
+      cur.n_sessions++;
+      cur.n_laps += r.lap_count;
+      if (r.best_ms > 0 && (cur.best_ms === 0 || r.best_ms < cur.best_ms)) {
+        cur.best_ms = r.best_ms;
+      }
+      map.set(key, cur);
+    }
+    // Sort: tracks with a best lap come first, sorted by best time;
+    // tracks without a best (no completed laps yet) trail by name.
+    return Array.from(map.values()).sort((a, b) => {
+      if (a.best_ms > 0 && b.best_ms === 0) return -1;
+      if (a.best_ms === 0 && b.best_ms > 0) return 1;
+      if (a.best_ms > 0 && b.best_ms > 0) return a.best_ms - b.best_ms;
+      return a.name.localeCompare(b.name);
+    });
+  }, [allRows]);
+
+  // What to render: track aggregates on the top level, sessions of the
+  // selected track once a track is opened.
+  const rows: Row[] = selectedTrack !== null
+    ? allRows.filter(r => (r.track || '—') === selectedTrack)
+    : [];
+
+  // ── Render ─────────────────────────────────────────────────────────
+  const trackView = selectedTrack === null;
+
   return (
     <View style={s.root}>
       <View style={s.toggle}>
         <TouchableOpacity
           style={[s.tab, !showDevice && s.tabActive]}
-          onPress={() => { exitSelectMode(); setShowDevice(false); }}
+          onPress={() => { exitSelectMode(); setSelectedTrack(null); setShowDevice(false); }}
         >
           <Text style={[s.tabTxt, !showDevice && s.tabTxtActive]}>Lokal ({local.length})</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={[s.tab, showDevice && s.tabActive]}
-          onPress={() => { exitSelectMode(); setShowDevice(true); refresh(); }}
+          onPress={() => { exitSelectMode(); setSelectedTrack(null); setShowDevice(true); refresh(); }}
         >
           <Text style={[s.tabTxt, showDevice && s.tabTxtActive]}>Gerät ({deviceSessions.length})</Text>
         </TouchableOpacity>
       </View>
 
-      {/* Select-mode action bar */}
-      <View style={s.selectBar}>
-        {!selectMode ? (
-          <TouchableOpacity style={s.selectStartBtn} onPress={() => setSelectMode(true)}>
-            <Text style={s.selectStartTxt}>Mehrfach auswählen</Text>
-          </TouchableOpacity>
-        ) : (
-          <View style={s.selectActions}>
-            <TouchableOpacity style={s.selectExitBtn} onPress={exitSelectMode}>
-              <Text style={s.selectExitTxt}>✕ Abbrechen</Text>
-            </TouchableOpacity>
-            <Text style={s.selectCount}>{selected.size} ausgewählt</Text>
-            <TouchableOpacity
-              style={[s.selectAllBtn, selected.size === rows.length && s.selectAllBtnActive]}
-              onPress={() => {
-                if (selected.size === rows.length) setSelected(new Set());
-                else setSelected(new Set(rows.map(r => r.id)));
-              }}
-            >
-              <Text style={s.selectAllTxt}>
-                {selected.size === rows.length ? 'Keine' : 'Alle'}
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[s.selectDelBtn, (selected.size === 0 || bulkBusy) && { opacity: 0.4 }]}
-              onPress={bulkDelete}
-              disabled={selected.size === 0 || bulkBusy}
-            >
-              {bulkBusy
-                ? <ActivityIndicator color="#fff" size="small" />
-                : <Text style={s.selectDelTxt}>🗑  Löschen</Text>}
-            </TouchableOpacity>
-          </View>
-        )}
-      </View>
+      {/* Breadcrumb: only when a track is open */}
+      {!trackView && (
+        <TouchableOpacity style={s.crumb} onPress={backToTracks} activeOpacity={0.7}>
+          <Text style={s.crumbBack}>‹ Strecken</Text>
+          <Text style={s.crumbTitle} numberOfLines={1}>{selectedTrack}</Text>
+        </TouchableOpacity>
+      )}
 
+      {/* Select-mode action bar — only inside a track */}
+      {!trackView && (
+        <View style={s.selectBar}>
+          {!selectMode ? (
+            <TouchableOpacity style={s.selectStartBtn} onPress={() => setSelectMode(true)}>
+              <Text style={s.selectStartTxt}>Mehrfach auswählen</Text>
+            </TouchableOpacity>
+          ) : (
+            <View style={s.selectActions}>
+              <TouchableOpacity style={s.selectExitBtn} onPress={exitSelectMode}>
+                <Text style={s.selectExitTxt}>✕ Abbrechen</Text>
+              </TouchableOpacity>
+              <Text style={s.selectCount}>{selected.size} ausgewählt</Text>
+              <TouchableOpacity
+                style={[s.selectAllBtn, selected.size === rows.length && s.selectAllBtnActive]}
+                onPress={() => {
+                  if (selected.size === rows.length) setSelected(new Set());
+                  else setSelected(new Set(rows.map(r => r.id)));
+                }}
+              >
+                <Text style={s.selectAllTxt}>
+                  {selected.size === rows.length ? 'Keine' : 'Alle'}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[s.selectDelBtn, (selected.size === 0 || bulkBusy) && { opacity: 0.4 }]}
+                onPress={bulkDelete}
+                disabled={selected.size === 0 || bulkBusy}
+              >
+                {bulkBusy
+                  ? <ActivityIndicator color="#fff" size="small" />
+                  : <Text style={s.selectDelTxt}>🗑  Löschen</Text>}
+              </TouchableOpacity>
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* Track aggregate list (top of hierarchy) */}
+      {trackView && (
+        <FlatList
+          data={trackAggs}
+          keyExtractor={t => t.name}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={C.accent} />}
+          contentContainerStyle={{ padding: 12, paddingBottom: 32 }}
+          ListEmptyComponent={
+            <Text style={s.empty}>
+              {showDevice ? 'Keine Sessions auf dem Gerät' : 'Noch keine Sessions gespeichert'}
+            </Text>
+          }
+          renderItem={({ item: t }) => (
+            <TouchableOpacity
+              style={s.trackCard}
+              onPress={() => setSelectedTrack(t.name)}
+              activeOpacity={0.7}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={s.trackName} numberOfLines={1}>{t.name}</Text>
+                <Text style={s.trackSub}>
+                  {t.n_sessions} {t.n_sessions === 1 ? 'Session' : 'Sessions'} ·{' '}
+                  {t.n_laps} {t.n_laps === 1 ? 'Runde' : 'Runden'}
+                  {t.best_ms > 0 ? `  ·  Best ${fmtTime(t.best_ms)}` : ''}
+                </Text>
+              </View>
+              <Text style={s.trackChevron}>›</Text>
+            </TouchableOpacity>
+          )}
+        />
+      )}
+
+      {/* Sessions list (one track) */}
+      {!trackView && (
       <FlatList
         data={rows}
         keyExtractor={r => r.id}
@@ -364,6 +459,7 @@ export default function SessionsScreen({ navigation, route }: Props) {
           );
         }}
       />
+      )}
     </View>
   );
 }
@@ -423,4 +519,17 @@ const s = StyleSheet.create({
                       alignItems:'center', justifyContent:'center',
                       backgroundColor: C.bg },
   checkboxMark:     { color: C.accent, fontSize:14, fontWeight:'900', lineHeight:14 },
+
+  // Hierarchical track row
+  crumb:            { flexDirection:'row', alignItems:'center', paddingHorizontal:16,
+                      paddingVertical:10, backgroundColor: C.surface,
+                      marginHorizontal:12, borderRadius:8, marginBottom:8, gap:12 },
+  crumbBack:        { color: C.accent, fontSize:14, fontWeight:'700' },
+  crumbTitle:       { color: C.text, fontSize:14, fontWeight:'600', flex:1 },
+  trackCard:        { flexDirection:'row', alignItems:'center',
+                      backgroundColor: C.surface, borderRadius:12,
+                      padding:18, marginBottom:10 },
+  trackName:        { color: C.text, fontSize:18, fontWeight:'700' },
+  trackSub:         { color: C.dim, fontSize:13, marginTop:4 },
+  trackChevron:     { color: C.accent, fontSize:28, fontWeight:'300', marginLeft:12 },
 });

@@ -102,6 +102,50 @@ export async function deleteVideoOnDevice(id: string): Promise<void> {
   );
 }
 
+// ── OBD live-status ────────────────────────────────────────────────────────
+//
+// Mirror of the firmware's per-FieldId freshness tracker (see
+// main/obd/obd_status.cpp). Schema:
+//
+//   { "now": <ms>, "fields": { "<field_id>": <last_ms>, ... } }
+//
+// Used by future overlay/slot pickers to grey out fields the connected
+// car/adapter isn't actually delivering. The same `is_obd_field` /
+// 5 s-window logic applies as in the Studio's core/obd_status.py — keep
+// the three frontends aligned per the unified-architecture rule.
+
+export interface ObdStatus {
+  now: number;
+  fields: Record<string, number>;
+}
+
+export const OBD_STATUS_LIVE_WINDOW_MS = 5000;
+
+export async function fetchObdStatus(): Promise<ObdStatus> {
+  const url = `${baseUrl}/obd_status`;
+  log('GET', url);
+  const r = await withTimeout(dfetch(url), 5000, 'fetchObdStatus');
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const doc = await r.json();
+  return {
+    now: typeof doc?.now === 'number' ? doc.now : 0,
+    fields: doc?.fields && typeof doc.fields === 'object' ? doc.fields : {},
+  };
+}
+
+/** True if the firmware reported the given FieldId within the live window. */
+export function isFieldLive(status: ObdStatus, fieldId: number): boolean {
+  const last = status.fields[String(fieldId)];
+  if (typeof last !== 'number') return false;
+  return status.now - last < OBD_STATUS_LIVE_WINDOW_MS;
+}
+
+/** OBD/Analog FIELD_IDs (32-47, 64-67); GPS/timing fields are always
+ *  considered "available" and exempt from grey-out. */
+export function isObdField(fieldId: number): boolean {
+  return (fieldId >= 32 && fieldId <= 47) || (fieldId >= 64 && fieldId <= 67);
+}
+
 // ── Tracks API ─────────────────────────────────────────────────────────────
 
 export async function fetchTracks(): Promise<DeviceTrackSummary[]> {

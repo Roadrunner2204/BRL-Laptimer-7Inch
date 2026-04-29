@@ -9,6 +9,9 @@ import { loadSession, saveSession } from '../storage';
 import { Session, Lap } from '../types';
 import { fmtTime, fmtDelta } from '../utils';
 import { C } from '../theme';
+import { isVideoCached, prefetchVideo } from '../videoCache';
+
+type VideoStatus = 'checking' | 'cached' | 'downloading' | 'unavailable';
 
 type Props = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'Detail'>;
@@ -17,10 +20,43 @@ type Props = {
 
 export default function DetailScreen({ navigation, route }: Props) {
   const [session, setSession] = useState<Session | null>(null);
+  const [videoStatus, setVideoStatus] = useState<VideoStatus>('checking');
+  const [dlProgress, setDlProgress] = useState(0);   // 0..1
 
   useEffect(() => {
     loadSession(route.params.sessionId).then(setSession);
   }, [route.params.sessionId]);
+
+  // Auto-prefetch the primary video for this session as soon as the
+  // user lands on the Detail screen — same behaviour as the Studio's
+  // AnalyseView (kicks off a background download in set_laps). On mobile
+  // we only pull the best-lap video; multi-lap prefetch would burn the
+  // hotspot's quota for clips the user may never open.
+  useEffect(() => {
+    if (!session) return;
+    const best = session.laps[session.best_lap_idx];
+    const firstWithVideo = session.laps.find(l => l.video);
+    const videoId = best?.video ?? firstWithVideo?.video ?? session.id;
+    if (!videoId) {
+      setVideoStatus('unavailable'); return;
+    }
+    let cancelled = false;
+    (async () => {
+      if (await isVideoCached(videoId)) {
+        if (!cancelled) setVideoStatus('cached');
+        return;
+      }
+      if (!cancelled) setVideoStatus('downloading');
+      const result = await prefetchVideo(videoId, (p) => {
+        if (cancelled) return;
+        const pct = p.bytesTotal > 0 ? p.bytesWritten / p.bytesTotal : 0;
+        setDlProgress(pct);
+      });
+      if (cancelled) return;
+      setVideoStatus(result ? 'cached' : 'unavailable');
+    })();
+    return () => { cancelled = true; };
+  }, [session]);
 
   if (!session) return (
     <View style={{ flex:1, backgroundColor: C.bg, justifyContent:'center', alignItems:'center' }}>
@@ -108,6 +144,27 @@ export default function DetailScreen({ navigation, route }: Props) {
         <StatCard label="Bestzeit" value={fmtTime(best?.total_ms ?? 0)} accent />
         <StatCard label="Runden" value={String(session.laps.length)} />
         <StatCard label="Durchschnitt" value={fmtTime(avgMs)} />
+      </View>
+
+      {/* Auto-prefetch status badge — same behaviour as Studio's
+          AnalyseView (background download on session open). */}
+      <View style={s.videoBadge}>
+        {videoStatus === 'checking' && (
+          <Text style={s.videoBadgeTxtDim}>🎥  Prüfe Video-Cache…</Text>
+        )}
+        {videoStatus === 'downloading' && (
+          <Text style={s.videoBadgeTxt}>
+            🔄  Video lädt {dlProgress > 0
+              ? `${Math.round(dlProgress * 100)} %`
+              : '…'}
+          </Text>
+        )}
+        {videoStatus === 'cached' && (
+          <Text style={s.videoBadgeOk}>🎥  Video lokal verfügbar</Text>
+        )}
+        {videoStatus === 'unavailable' && (
+          <Text style={s.videoBadgeTxtDim}>🎥  Kein Video für diese Session</Text>
+        )}
       </View>
 
       {/* Ref-lap hint */}
@@ -214,6 +271,12 @@ const s = StyleSheet.create({
   secTxt:     { color: C.dim, fontSize:12 },
   refHint:    { color: C.dim, fontSize:11, paddingHorizontal:14, paddingBottom:8,
                 paddingTop:2, fontStyle:'italic' },
+  videoBadge: { paddingHorizontal:14, paddingVertical:6, marginHorizontal:12,
+                marginBottom:8, borderRadius:8, backgroundColor: C.surface,
+                borderWidth:1, borderColor: C.border, alignSelf:'flex-start' },
+  videoBadgeTxt:    { color: C.accent, fontSize:12, fontWeight:'600' },
+  videoBadgeTxtDim: { color: C.dim,    fontSize:12, fontWeight:'500' },
+  videoBadgeOk:     { color: C.faster ?? '#00CC66', fontSize:12, fontWeight:'700' },
   col0:       { width:28, marginRight:4 },
   col1:       { width:88 },
   col2:       { width:72 },
