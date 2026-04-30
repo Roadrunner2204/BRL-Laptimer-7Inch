@@ -550,10 +550,14 @@ static lv_display_t *bsp_display_lcd_init(const bsp_display_cfg_t *cfg)
         .vres = BSP_LCD_V_RES,
         .monochrome = false,
         /* Rotation values must be same as used in esp_lcd for initial settings of the screen */
+        /* BRL: Waveshare default war mirror_x+y=true (= 180° gedreht).
+         * Im BRL-Gehäuse zeigt das Display dann auf dem Kopf, also drehen
+         * wir es in die native Orientierung zurück (beide false = 0° / nicht
+         * gespiegelt). Touch-Koordinaten flippt lvgl_port automatisch mit. */
         .rotation = {
             .swap_xy = false,
-            .mirror_x = true,
-            .mirror_y = true,
+            .mirror_x = false,
+            .mirror_y = false,
         },
 #if LVGL_VERSION_MAJOR >= 9
 #if CONFIG_BSP_LCD_COLOR_FORMAT_RGB888
