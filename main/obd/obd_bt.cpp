@@ -63,7 +63,22 @@ static const ble_uuid128_t RESP_UUID = BLE_UUID128_INIT(
 #define TARGET_NAME      "BRL OBD Adapter"
 #define SCAN_DURATION_MS 5000
 #define RETRY_INTERVAL   5000   // ms between reconnect attempts
-#define REQ_TIMEOUT_MS   1000   // ms to wait for a PID response
+// Mode-01 multi-PID needs the full second: BMW DDE bundles up to 4 PIDs and
+// the adapter retransmits on flaky BLE links. A flapping link can take ~700 ms
+// to deliver. Single-DID Mode-22 is a different beast — when it works it's
+// back in <100 ms, when the ECU doesn't support a DID it's silence forever.
+// Waiting 1 s per silent DID across 26 unsupported DIDs starves the alive
+// Mode-01 PIDs of polling cycles. 300 ms catches every real response with
+// a 3× safety margin and lets dead DIDs get strucken out fast.
+// [Source: empirical 04-30 — 26 DIDs × 1 s each = 26 s round-robin starvation]
+#define REQ_TIMEOUT_MS   1000   // Mode-01 multi: long, BLE retransmit window
+#define DID_TIMEOUT_MS    300   // Mode-22 single: short, ECU answers fast or not at all
+// Mode-01 multi-PID timeouts must NOT strike — a flaky BLE retransmit would
+// mass-murder 4 valid PIDs at once. Mode-22 single-DID timeouts are safe to
+// strike: only one DID per request, so we strike exactly the silent one.
+// 3 misses is plenty for Mode-22 since it's deterministic per-DID — either
+// the ECU has the DID or it doesn't, no sporadic-response pattern.
+#define DID_DEAD_THRESHOLD 3
 
 // ---------------------------------------------------------------------------
 // Binary protocol enums
@@ -73,6 +88,12 @@ enum OBDCmd : uint8_t {
     CMD_READ_VIN       = 0x02,   // []                     → [VIN 17 chars]
     CMD_READ_MULTI_PID = 0x05,   // [PID1..PID6, max 6]    → [SVC, PID1, d.., PID2, d..]
     CMD_READ_DID_22    = 0x10,   // [DID_hi, DID_lo]       → [SVC=0x62, DID, data...]
+    // BMW F-Series Extended-Addressing (DDE/DME, EGS, DSC). Adapter sendet
+    // an 0x6F1 mit Target-Byte vor PCI, empfängt auf 0x600+TARGET, skipt
+    // Source-Byte (0xF1). Antwort-Format auf BLE: identisch zu CMD 0x10 —
+    // [CMD][STATUS][SVC=0x62][DID_hi][DID_lo][data...]. TARGET=0x12 für
+    // DDE/DME, 0x18 für EGS, 0x29 für DSC.
+    CMD_READ_DID_BMW   = 0x16,   // [TARGET, DID_hi, DID_lo] → [SVC=0x62, DID, data...]
     CMD_PING           = 0xFF,
 };
 enum OBDStatus : uint8_t {
@@ -174,6 +195,8 @@ struct ActivePid {
                                        // (= CarSensor.proto)
     uint8_t          pid;             // Mode 01: PID byte (low 8b of can_id)
     uint16_t         did;             // Mode 22: BMW DID (top 16b of can_id)
+    uint8_t          target;          // Mode 22 only: BMW ECU target byte
+                                       // (low 8b of can_id, default 0x12=DDE)
     const CarSensor *sensor;
     uint8_t          strikes;          // consecutive bad responses
     bool             dead;
@@ -185,8 +208,14 @@ struct ActivePid {
     bool             has_value;        // true once a value has been seen
 };
 #define MAX_ACTIVE_PIDS    64          // up to 32 OBD2 + 32 UDS-DID sensors
-#define DEAD_THRESHOLD     3
-#define REVIVE_INTERVAL_MS 30000
+// BMW DDE / MSD80 routinely drop 1-2 PIDs out of a 4-PID multi-bundle even
+// when those PIDs are perfectly supported. With DEAD_THRESHOLD=3 the pool
+// emptied in ~3 s of polling and live data froze. 8 strikes gives sporadic
+// PIDs enough headroom to ride out a cluster of misses; revive every 5 s
+// so an in-RAM dead PID never stays out of rotation longer than that.
+// [Source: empirical 04-30 — log analysis of N47 freeze symptom]
+#define DEAD_THRESHOLD     8
+#define REVIVE_INTERVAL_MS 5000
 // Adapter firmware accepts up to 6 PIDs per request, but BMW E-series ECUs
 // (DDE/MSD80) frequently drop one or two answers when 6 are bundled — we
 // then strike valid PIDs as missing and they end up dead even though they
@@ -214,6 +243,7 @@ static uint8_t   s_inflight_idx[MULTI_PID_MAX]  = {};
 static uint8_t   s_inflight_count               = 0;
 static uint8_t   s_inflight_proto               = 0;   // 7 or 2; 0 when idle
 static uint16_t  s_inflight_did                 = 0;   // for proto=2
+static uint8_t   s_inflight_target              = 0;   // for proto=2 BMW
 
 // Cache-poisoning guard. We persist a PID as DEAD only after the session
 // has seen at least one *real* response come back. Without this, a stuck
@@ -267,8 +297,9 @@ static void append_sensors_of_proto(const CarProfile *p, uint8_t proto)
         ap.last_seen_ms    = 0;
 
         if (proto == BRL_PROTO_OBD2_MODE1) {
-            ap.pid = (uint8_t)(s->can_id & 0xFFu);
-            ap.did = 0;
+            ap.pid    = (uint8_t)(s->can_id & 0xFFu);
+            ap.did    = 0;
+            ap.target = 0;
             ESP_LOGI(TAG,
                 "  PID 0x%02X '%s'  start=%d len=%d scale=%.6f "
                 "offset=%.3f  unsigned=%d",
@@ -278,12 +309,18 @@ static void append_sensors_of_proto(const CarProfile *p, uint8_t proto)
                 (int)s->is_unsigned);
         } else if (proto == BRL_PROTO_UDS_BMW) {
             // BMW DID is the top 16 bits of can_id.
-            ap.pid = 0;
-            ap.did = (uint16_t)((s->can_id >> 8) & 0xFFFFu);
+            // Target ECU byte is the low 8 bits. Default to 0x12 (DDE/DME)
+            // when the .brl encoded `bank` byte is 0 or 1 (legacy values
+            // that didn't carry meaningful target information). User can
+            // override per-sensor by encoding 0x18 (EGS), 0x29 (DSC), etc.
+            ap.pid    = 0;
+            ap.did    = (uint16_t)((s->can_id >> 8) & 0xFFFFu);
+            uint8_t bank = (uint8_t)(s->can_id & 0xFFu);
+            ap.target = (bank == 0x00 || bank == 0x01) ? 0x12 : bank;
             ESP_LOGI(TAG,
-                "  DID 0x%04X '%s'  start=%d len=%d scale=%.6f "
-                "offset=%.3f  unsigned=%d  (UDS Mode 22)",
-                (unsigned)ap.did, s->name,
+                "  DID 0x%04X '%s'  target=0x%02X  start=%d len=%d "
+                "scale=%.6f offset=%.3f  unsigned=%d  (UDS Mode 22)",
+                (unsigned)ap.did, s->name, (unsigned)ap.target,
                 (int)s->start, (int)s->len,
                 (double)s->scale, (double)s->offset,
                 (int)s->is_unsigned);
@@ -421,25 +458,25 @@ static void rebuild_pid_list(const char *cache_key)
     // valid sensors forever.
     //
     // New strategy: cache-dead PIDs start *alive* but with `strikes` set
-    // to DEAD_THRESHOLD-1 — i.e. one bad response away from being dead
-    // again. So:
-    //   - if the PID really is unsupported by this car, the very first
-    //     no-answer flips it dead and we save the round-trip on every
-    //     subsequent cycle (cache optimisation kept).
-    //   - if the PID actually works (e.g. earlier dead-marking was a
-    //     bug), it answers, strikes reset to 0, alive sticks, cache
-    //     is corrected on the next save.
+    // close to DEAD_THRESHOLD — i.e. only a few bad responses away from
+    // being dead again. We give them 3 chances rather than 1 because BMW
+    // DDE drops PIDs out of multi-bundles intermittently — a single miss
+    // is not proof of unsupported. So:
+    //   - if the PID really is unsupported, 3 no-answers flip it dead and
+    //     we save the round-trip on every subsequent cycle.
+    //   - if the PID actually works, the first answer resets strikes to 0
+    //     and the cache is corrected on the next save.
     int seeded_hint = 0;
     for (int i = 0; i < s_pid_count; i++) {
         if (obd_pid_cache_is_dead(s_pids[i].pid)) {
             s_pids[i].dead    = false;          // start alive
-            s_pids[i].strikes = DEAD_THRESHOLD - 1;  // but on probation
+            s_pids[i].strikes = DEAD_THRESHOLD - 3;  // 3 chances before re-dying
             seeded_hint++;
         }
     }
     if (seeded_hint > 0) {
         ESP_LOGI(TAG, "PID cache: %d previously-dead PIDs on probation "
-                      "(will retry once before re-marking dead)",
+                      "(3 chances before re-marking dead)",
                  seeded_hint);
     }
 }
@@ -696,9 +733,10 @@ static bool apply_profile_sensor_cached(int pid_idx,
 // (RPM is always Mode-01 anyway).
 static uint8_t gather_inflight(void)
 {
-    s_inflight_count = 0;
-    s_inflight_proto = 0;
-    s_inflight_did   = 0;
+    s_inflight_count  = 0;
+    s_inflight_proto  = 0;
+    s_inflight_did    = 0;
+    s_inflight_target = 0;
     if (s_pid_count == 0) return 0;
 
     // Find the first alive sensor — its proto locks the batch flavour.
@@ -725,9 +763,11 @@ static uint8_t gather_inflight(void)
         if (s_inflight_proto == BRL_PROTO_OBD2_MODE1) {
             s_inflight_pids[s_inflight_count] = s_pids[idx].pid;
         } else {
-            // proto=2: only one fits per batch. Stash the DID separately
-            // so the dispatcher can pull it for send_did22_request().
-            s_inflight_did = s_pids[idx].did;
+            // proto=2: only one fits per batch. Stash the DID + target
+            // separately so the dispatcher can pull them for the BMW
+            // Extended-Addressing request.
+            s_inflight_did    = s_pids[idx].did;
+            s_inflight_target = s_pids[idx].target;
         }
         s_inflight_count++;
         last_picked = idx;
@@ -803,27 +843,30 @@ static void send_vin_request(void)
 }
 
 // Send a UDS Mode 22 ReadDataByIdentifier for the given 16-bit DID.
-// Adapter wraps it as `[0x10][DID_hi][DID_lo]` and runs the standard
-// UDS request (default tx/rx 7E0/7E8). For BMW-DDE-specific adressing
-// the user can later send CMD_SET_ECU_DIAG (0x21) — for now the
-// default OBD2-physical addressing reaches the engine ECU which is
-// where ~95% of the .brl DIDs live.
+// Uses CMD_READ_DID_BMW (0x16) with explicit target byte — the adapter
+// puts ID 0x6F1 on the wire with [target][PCI=0x03][0x22][DID_hi][DID_lo]
+// and listens on 0x600+target. Without the target byte BMW DDE/DME on
+// F-Series and late E-Series silently ignores Mode 22 requests on the
+// standard OBD2 0x7E0/0x7E8 pair (only generic Mode 01 PIDs proxy
+// through the gateway there).
 //
-// Response shape from the adapter: `[0x10][STATUS][SVC=0x62][DID_hi][DID_lo][data...]`.
+// Response shape from the adapter: `[0x16][STATUS][SVC=0x62][DID_hi][DID_lo][data...]`.
 // We strip the [DID_hi][DID_lo] echo before passing data to the decoder
 // so the .brl `start` field indexes the same byte as on the Mode-01 path.
-static void send_did22_request(uint16_t did)
+static void send_did22_request(uint16_t did, uint8_t target)
 {
     if (s_cmd_val_handle == 0 || s_conn_handle == BLE_HS_CONN_HANDLE_NONE) return;
-    uint8_t cmd[3] = {
-        CMD_READ_DID_22,
+    uint8_t cmd[4] = {
+        CMD_READ_DID_BMW,
+        target,
         (uint8_t)((did >> 8) & 0xFFu),
         (uint8_t)(did & 0xFFu),
     };
     int rc = ble_gattc_write_no_rsp_flat(s_conn_handle, s_cmd_val_handle,
                                          cmd, sizeof(cmd));
     if (rc != 0) {
-        ESP_LOGW(TAG, "Write DID 0x%04X failed: rc=%d", (unsigned)did, rc);
+        ESP_LOGW(TAG, "Write DID 0x%04X (target 0x%02X) failed: rc=%d",
+                 (unsigned)did, (unsigned)target, rc);
         return;
     }
     s_rx_ready = false;
@@ -1489,7 +1532,7 @@ void obd_bt_poll(void)
                 if (s_inflight_proto == BRL_PROTO_OBD2_MODE1) {
                     send_multi_pid_request(s_inflight_pids, s_inflight_count);
                 } else if (s_inflight_proto == BRL_PROTO_UDS_BMW) {
-                    send_did22_request(s_inflight_did);
+                    send_did22_request(s_inflight_did, s_inflight_target);
                 }
             }
             break;
@@ -1567,7 +1610,8 @@ void obd_bt_poll(void)
                     }
                 } else if (s_inflight_proto == BRL_PROTO_UDS_BMW
                            && s_rx_len >= 5
-                           && s_rx_buf[0] == CMD_READ_DID_22
+                           && (s_rx_buf[0] == CMD_READ_DID_BMW
+                               || s_rx_buf[0] == CMD_READ_DID_22)
                            && s_rx_buf[1] == STATUS_OK
                            && s_rx_buf[2] == 0x62) {
                     // Single-DID Mode 22. [CMD][STATUS][0x62][DID_hi][DID_lo][data...]
@@ -1609,7 +1653,10 @@ void obd_bt_poll(void)
                     if (idx < 0 || idx >= s_pid_count) continue;
                     ActivePid &ap = s_pids[idx];
                     ap.strikes++;
-                    if (ap.strikes >= DEAD_THRESHOLD && !ap.dead) {
+                    uint8_t threshold = (ap.proto == BRL_PROTO_UDS_BMW)
+                                        ? DID_DEAD_THRESHOLD
+                                        : DEAD_THRESHOLD;
+                    if (ap.strikes >= threshold && !ap.dead) {
                         ap.dead = true;
                         if (s_session_had_alive
                             && ap.proto == BRL_PROTO_OBD2_MODE1) {
@@ -1621,24 +1668,58 @@ void obd_bt_poll(void)
                                      (unsigned)ap.pid, DEAD_THRESHOLD);
                         } else {
                             ESP_LOGI(TAG, "DID 0x%04X dead after %d× no-answer",
-                                     (unsigned)ap.did, DEAD_THRESHOLD);
+                                     (unsigned)ap.did, DID_DEAD_THRESHOLD);
                         }
                     }
                 }
                 s_inflight_count = 0;
                 s_inflight_proto = 0;
                 s_state = OBD_CONNECTED;
-            } else if (now - s_req_ts > REQ_TIMEOUT_MS) {
-                // No notification at all. This is almost always a link-side
-                // hiccup (BLE retransmit, adapter busy, ECU briefly slow to
-                // assemble the response) — NOT proof that the PIDs in the
-                // bundle are unsupported. Striking 4 valid PIDs every time
-                // a single request hangs would mass-murder the round-robin.
-                // Just drop the request and try again next tick.
-                ESP_LOGW(TAG, "Multi-PID request timeout — retrying without "
-                              "marking PIDs dead");
-                s_inflight_count = 0;
-                s_state = OBD_CONNECTED;
+            } else {
+                // Per-proto timeout. Mode-01 multi gets the long window
+                // (BLE retransmit can stretch to ~700 ms on a flaky link)
+                // and explicitly does NOT strike — striking 4 valid PIDs
+                // every time a single request hangs would mass-murder the
+                // round-robin. Mode-22 single-DID gets a short window
+                // (when DDE answers it does so in <100 ms; if it didn't
+                // answer in 300 ms it's not coming) and strikes the one
+                // inflight DID. Without this, silent DIDs stay 'alive'
+                // forever and starve real Mode-01 PIDs of polling cycles.
+                bool timed_out = false;
+                if (s_inflight_proto == BRL_PROTO_UDS_BMW) {
+                    if (now - s_req_ts > DID_TIMEOUT_MS) {
+                        timed_out = true;
+                        ESP_LOGW(TAG, "DID 0x%04X timeout — no notify in %d ms",
+                                 (unsigned)s_inflight_did, DID_TIMEOUT_MS);
+                        // Strike the (single) inflight DID so dead Mode-22
+                        // PIDs eventually exit the round-robin.
+                        if (s_inflight_count == 1) {
+                            int idx = s_inflight_idx[0];
+                            if (idx >= 0 && idx < s_pid_count) {
+                                ActivePid &ap = s_pids[idx];
+                                ap.strikes++;
+                                if (ap.strikes >= DID_DEAD_THRESHOLD
+                                    && !ap.dead) {
+                                    ap.dead = true;
+                                    ESP_LOGI(TAG,
+                                        "DID 0x%04X dead after %d× timeout",
+                                        (unsigned)ap.did,
+                                        DID_DEAD_THRESHOLD);
+                                }
+                            }
+                        }
+                    }
+                } else if (now - s_req_ts > REQ_TIMEOUT_MS) {
+                    timed_out = true;
+                    ESP_LOGW(TAG, "Mode-01 multi-PID timeout — no notify in "
+                                  "%d ms (%u PIDs in flight)",
+                             REQ_TIMEOUT_MS, (unsigned)s_inflight_count);
+                }
+                if (timed_out) {
+                    s_inflight_count = 0;
+                    s_inflight_proto = 0;
+                    s_state = OBD_CONNECTED;
+                }
             }
             break;
 
