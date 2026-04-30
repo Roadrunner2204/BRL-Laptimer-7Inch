@@ -1,0 +1,124 @@
+#pragma once
+// =============================================================================
+//  BLE GATT Server – Binärprotokoll zum Display
+//  Ersetzt ELM327 ASCII komplett durch effizientes Binary
+// =============================================================================
+#include <Arduino.h>
+#include <NimBLEDevice.h>
+
+// BLE Service/Characteristic UUIDs (Custom)
+#define OBD_SERVICE_UUID    "0000FFE0-0000-1000-8000-00805F9B34FB"
+#define OBD_CMD_UUID        "0000FFE1-0000-1000-8000-00805F9B34FB"  // Write: Befehle
+#define OBD_RESP_UUID       "0000FFE2-0000-1000-8000-00805F9B34FB"  // Notify: Antworten
+#define OBD_STATUS_UUID     "0000FFE3-0000-1000-8000-00805F9B34FB"  // Notify: Status
+
+// Nordic UART Service (NUS) – ELM327/329 Emulation für Torque Pro etc.
+#define NUS_SERVICE_UUID    "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+#define NUS_RX_UUID         "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"  // Write: AT Befehle
+#define NUS_TX_UUID         "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"  // Notify: Antworten
+
+// ── Binärprotokoll Kommando-Typen ───────────────────────────────────────────
+// Format: [CMD_TYPE] [payload...]
+// Antwort: [CMD_TYPE] [STATUS] [payload...]
+enum class OBDCmd : uint8_t {
+    // OBD2 Standard
+    READ_PID        = 0x01,   // [PID] → [SVC, PID, data...]
+    READ_VIN        = 0x02,   // [] → [17 bytes VIN]
+    READ_DTC        = 0x03,   // [] → [count, DTC1_hi, DTC1_lo, ...]
+    CLEAR_DTC       = 0x04,   // [] → [OK/FAIL]
+    READ_MULTI_PID  = 0x05,   // [PID1,PID2,...PID6] → [SVC, PID1,d..,PID2,d..]
+
+    // UDS BMW
+    READ_DID_22     = 0x10,   // [DID_hi, DID_lo] → [SVC, DID, data...]
+    READ_DID_2C     = 0x11,   // [DID_hi, DID_lo] → [SVC, 10, DID, data...]
+    READ_DTC_UDS    = 0x12,   // [ECU_idx] → [count, DTCs...]
+    CLEAR_DTC_UDS   = 0x13,   // [ECU_idx] → [OK/FAIL]
+    DIAG_SESSION    = 0x14,   // [session_type] → [OK/FAIL]
+
+    // UDS BMW Extended-Addressing (F-Series + späte E-Series N47/N57 DDE,
+    // N54/N55 DME, EGS, DSC). Adapter setzt ISO-TP auf BMW-Mode mit Target-
+    // Byte, sendet auf 0x6F1, empfängt auf 0x600+TARGET (z.B. 0x612 für DDE).
+    // Antwort-Format auf BLE: [CMD][STATUS][SVC=0x62][DID_hi][DID_lo][data...]
+    READ_DID_BMW    = 0x16,   // [TARGET, DID_hi, DID_lo] → [SVC, DID, data...]
+
+    // Multi-ECU
+    SET_ECU         = 0x20,   // [ECU_idx] → setzt aktive ECU (0-7)
+    SET_ECU_DIAG    = 0x21,   // [] → wechselt auf BMW Diag (6F1→612)
+
+    // Adapter-Steuerung
+    GET_STATUS      = 0xF0,   // [] → [version, bus_type, connected]
+    SET_BUS_CAN     = 0xF1,   // [baud_idx] → CAN Bus aktivieren
+    SET_BUS_KLINE   = 0xF2,   // [] → K-Line aktivieren
+    PING            = 0xFF,   // [] → [PONG]
+};
+
+enum class OBDStatus : uint8_t {
+    OK              = 0x00,
+    ERR_TIMEOUT     = 0x01,
+    ERR_NO_RESP     = 0x02,
+    ERR_NEGATIVE    = 0x03,   // UDS Negative Response
+    ERR_BUS         = 0x04,   // CAN/K-Line Busfehler
+    ERR_NOT_INIT    = 0x05,
+};
+
+// ── Callback für eingehende Befehle ─────────────────────────────────────────
+typedef void (*BleCommandCb)(OBDCmd cmd, const uint8_t* data, uint8_t len);
+typedef void (*BleDisconnectCb)();
+
+class BleServer {
+public:
+    void begin(BleCommandCb cmdCallback);
+    void setDisconnectCb(BleDisconnectCb cb) { _disconnectCb = cb; }
+    void sendResponse(OBDCmd cmd, OBDStatus status,
+                      const uint8_t* data = nullptr, uint16_t len = 0);
+    void sendStatus(const char* msg);
+    bool isConnected() const;
+
+    // Command-Queue: BLE-Callback schreibt rein, loop() verarbeitet
+    void processCommandQueue();
+
+    // NUS (ELM327): ASCII-Daten senden + Queue verarbeiten
+    typedef void (*NusDataCb)(const uint8_t* data, uint16_t len);
+    void setNusCallback(NusDataCb cb) { _nusCb = cb; }
+    void nusSend(const char* data, uint16_t len);
+    void processNusQueue();
+
+private:
+    NimBLEServer*         _server  = nullptr;
+    NimBLECharacteristic* _cmdChar = nullptr;
+    NimBLECharacteristic* _respChar = nullptr;
+    NimBLECharacteristic* _statusChar = nullptr;
+    BleCommandCb          _cmdCb   = nullptr;
+    BleDisconnectCb       _disconnectCb = nullptr;
+    bool                  _connected = false;
+
+    // Command-Queue (BLE Callback → Main Loop)
+    static constexpr uint8_t CMD_QUEUE_SIZE = 8;
+    static constexpr uint8_t CMD_MAX_LEN    = 64;
+    struct CmdEntry {
+        uint8_t data[CMD_MAX_LEN];
+        uint8_t len;
+    };
+    CmdEntry         _cmdQueue[CMD_QUEUE_SIZE];
+    volatile uint8_t _cmdHead = 0;
+    volatile uint8_t _cmdTail = 0;
+
+    // NUS (ELM327 emulation)
+    NimBLECharacteristic* _nusTxChar = nullptr;
+    NimBLECharacteristic* _nusRxChar = nullptr;
+    NusDataCb             _nusCb = nullptr;
+
+    static constexpr uint8_t NUS_QUEUE_SIZE = 8;
+    static constexpr uint8_t NUS_MAX_LEN    = 240;
+    struct NusEntry {
+        uint8_t data[NUS_MAX_LEN];
+        uint8_t len;
+    };
+    NusEntry         _nusQueue[NUS_QUEUE_SIZE];
+    volatile uint8_t _nusHead = 0;
+    volatile uint8_t _nusTail = 0;
+
+    friend class ServerCallbacks;
+    friend class CmdCharCallbacks;
+    friend class NusRxCallbacks;
+};
