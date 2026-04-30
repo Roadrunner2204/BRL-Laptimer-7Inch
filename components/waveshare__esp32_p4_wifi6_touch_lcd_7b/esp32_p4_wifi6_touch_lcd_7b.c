@@ -506,9 +506,13 @@ esp_err_t bsp_touch_new(const bsp_touch_config_t *config, esp_lcd_touch_handle_t
             .interrupt = 0,
         },
         .flags = {
+            /* BRL: Touch-Mirror muss synchron zum Display-Mirror laufen.
+             * Display steht jetzt auf 0/0 (siehe bsp_display_lcd_init),
+             * also Touch ebenfalls auf 0/0 — sonst stimmen Tap-Koordinaten
+             * nicht mit dem überein was der User auf dem Bildschirm sieht. */
             .swap_xy = 0,
-            .mirror_x = 1,
-            .mirror_y = 1,
+            .mirror_x = 0,
+            .mirror_y = 0,
         },
     };
     esp_lcd_panel_io_handle_t tp_io_handle = NULL;
