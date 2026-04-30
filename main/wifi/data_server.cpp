@@ -20,6 +20,7 @@
 #include "../storage/session_store.h"
 #include "../data/lap_data.h"
 #include "../data/track_db.h"
+#include "../timing/lap_timer.h"
 #include "../obd/obd_status.h"
 #include "../camera_link/cam_link.h"
 #include "compat.h"
@@ -313,6 +314,137 @@ static esp_err_t handle_track_get_one(httpd_req_t *req)
         cJSON_AddItemToArray(secs, sp);
     }
     cJSON_AddItemToObject(doc, "sectors", secs);
+
+    char *str = cJSON_PrintUnformatted(doc);
+    cJSON_Delete(doc);
+    if (!str) return send_err(req, "500", "oom");
+    set_cors_headers(req);
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t r = httpd_resp_sendstr(req, str);
+    free(str);
+    return r;
+}
+
+// ---------------------------------------------------------------------------
+// POST /track/select  body: {"index":N}
+//   Activate track N for live timing (replaces the old display-only path
+//   `cb_track_select` from app.cpp). Used by the Android app when the
+//   physical touchscreen isn't available.
+// ---------------------------------------------------------------------------
+static esp_err_t handle_track_select(httpd_req_t *req)
+{
+    if (req->content_len <= 0 || req->content_len > 256) {
+        return send_err(req, "400 Bad Request", "body required (<=256 bytes)");
+    }
+    char body[260];
+    int total = 0;
+    while (total < req->content_len) {
+        int r = httpd_req_recv(req, body + total, req->content_len - total);
+        if (r <= 0) return send_err(req, "400 Bad Request", "recv failed");
+        total += r;
+    }
+    body[total] = '\0';
+
+    cJSON *doc = cJSON_Parse(body);
+    if (!doc) return send_err(req, "400 Bad Request", "invalid JSON");
+    cJSON *j = cJSON_GetObjectItem(doc, "index");
+    if (!cJSON_IsNumber(j)) {
+        cJSON_Delete(doc);
+        return send_err(req, "400 Bad Request", "index (number) required");
+    }
+    int idx = (int)j->valuedouble;
+    cJSON_Delete(doc);
+
+    if (idx < 0 || idx >= track_total_count()) {
+        return send_err(req, "404 Not Found", "idx out of range");
+    }
+    const TrackDef *td = track_get(idx);
+    if (!td) return send_err(req, "404 Not Found", "no such track");
+
+    g_state.active_track_idx = idx;
+    lap_timer_set_track(idx);
+    ESP_LOGI(TAG, "POST /track/select idx=%d name=%s", idx, td->name);
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddNumberToObject(resp, "active_track_idx", idx);
+    cJSON_AddStringToObject(resp, "active_track_name", td->name);
+    cJSON_AddBoolToObject(resp, "is_circuit", td->is_circuit);
+    cJSON_AddNumberToObject(resp, "sector_count", td->sector_count);
+    char *out = cJSON_PrintUnformatted(resp);
+    cJSON_Delete(resp);
+    if (!out) return send_err(req, "500", "oom");
+    set_cors_headers(req);
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t r = httpd_resp_sendstr(req, out);
+    free(out);
+    return r;
+}
+
+// ---------------------------------------------------------------------------
+// POST /session/reset
+//   Wipe in-memory laps and start a fresh session file. Equivalent of the
+//   "Session reset" button on the timing screen.
+// ---------------------------------------------------------------------------
+static esp_err_t handle_session_reset(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "POST /session/reset");
+    lap_timer_reset_session();
+
+    // Open a new session file with default name. session_store also picks
+    // up the active track name internally.
+    const TrackDef *td = (g_state.active_track_idx >= 0)
+                         ? track_get(g_state.active_track_idx) : nullptr;
+    char default_name[80];
+    session_store_make_default_name(default_name, sizeof(default_name));
+    session_store_begin(td ? td->name : "", default_name);
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "ok", true);
+    cJSON_AddStringToObject(resp, "session_name", default_name);
+    char *out = cJSON_PrintUnformatted(resp);
+    cJSON_Delete(resp);
+    if (!out) return send_err(req, "500", "oom");
+    set_cors_headers(req);
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t r = httpd_resp_sendstr(req, out);
+    free(out);
+    return r;
+}
+
+// ---------------------------------------------------------------------------
+// GET /status
+//   Snapshot of laptimer state for the Android app's home screen.
+// ---------------------------------------------------------------------------
+static esp_err_t handle_status_get(httpd_req_t *req)
+{
+    cJSON *doc = cJSON_CreateObject();
+    cJSON_AddBoolToObject(doc, "sd_available", g_state.sd_available);
+    cJSON_AddBoolToObject(doc, "obd_connected", g_state.obd_connected);
+    cJSON_AddBoolToObject(doc, "gps_fix",       g_state.gps.valid);
+    cJSON_AddNumberToObject(doc, "gps_sats",    g_state.gps.satellites);
+    cJSON_AddNumberToObject(doc, "speed_kmh",   g_state.gps.speed_kmh);
+
+    int idx = g_state.active_track_idx;
+    cJSON_AddNumberToObject(doc, "active_track_idx", idx);
+    const TrackDef *td = (idx >= 0) ? track_get(idx) : nullptr;
+    cJSON_AddStringToObject(doc, "active_track_name", td ? td->name : "");
+    if (td) {
+        cJSON_AddBoolToObject(doc, "active_track_is_circuit", td->is_circuit);
+        cJSON_AddNumberToObject(doc, "active_track_sector_count",
+                                td->sector_count);
+    }
+
+    cJSON_AddNumberToObject(doc, "lap_count", g_state.session.lap_count);
+    // best_lap_ms: derived from best_lap_idx (LapSession stores the index of
+    // the fastest valid lap, the time itself is in the lap entry).
+    uint32_t best_ms = 0;
+    uint8_t  bli = g_state.session.best_lap_idx;
+    if (g_state.session.lap_count > 0 && bli < g_state.session.lap_count
+        && g_state.session.laps[bli].valid) {
+        best_ms = g_state.session.laps[bli].total_ms;
+    }
+    cJSON_AddNumberToObject(doc, "best_lap_ms", best_ms);
+    cJSON_AddStringToObject(doc, "session_id", g_state.session.session_id);
 
     char *str = cJSON_PrintUnformatted(doc);
     cJSON_Delete(doc);
@@ -862,6 +994,12 @@ static const httpd_uri_t s_uri_handlers[] = {
     { .uri = "/",              .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
     { .uri = "/sessions",      .method = HTTP_GET,    .handler = handle_sessions,        .user_ctx = nullptr },
     { .uri = "/sessions",      .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
+    // /session/reset MUST be registered before the /session/<wildcard>
+    // entries — the wildcard would otherwise swallow the path and route
+    // it through the GET-by-id handler. esp_http_server matches in
+    // registration order.
+    { .uri = "/session/reset", .method = HTTP_POST,   .handler = handle_session_reset,   .user_ctx = nullptr },
+    { .uri = "/session/reset", .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
     { .uri = "/session/*",     .method = HTTP_GET,    .handler = handle_session_get,     .user_ctx = nullptr },
     { .uri = "/session/*",     .method = HTTP_DELETE, .handler = handle_session_delete,  .user_ctx = nullptr },
     { .uri = "/session/*",     .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
@@ -869,8 +1007,12 @@ static const httpd_uri_t s_uri_handlers[] = {
     { .uri = "/tracks",        .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
     { .uri = "/track",         .method = HTTP_POST,   .handler = handle_track_post,      .user_ctx = nullptr },
     { .uri = "/track",         .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
+    { .uri = "/track/select",  .method = HTTP_POST,   .handler = handle_track_select,    .user_ctx = nullptr },
+    { .uri = "/track/select",  .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
     { .uri = "/track/*",       .method = HTTP_GET,    .handler = handle_track_get_one,   .user_ctx = nullptr },
     { .uri = "/track/*",       .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
+    { .uri = "/status",        .method = HTTP_GET,    .handler = handle_status_get,      .user_ctx = nullptr },
+    { .uri = "/status",        .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
     { .uri = "/videos",        .method = HTTP_GET,    .handler = handle_videos,          .user_ctx = nullptr },
     { .uri = "/videos",        .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
     { .uri = "/obd_status",    .method = HTTP_GET,    .handler = handle_obd_status,      .user_ctx = nullptr },
