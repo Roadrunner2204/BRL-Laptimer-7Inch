@@ -20,7 +20,7 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../App';
 import { C } from '../theme';
 import { DeviceTrackSummary } from '../types';
-import { fetchTracks, fetchTrackDetails } from '../api';
+import { fetchTracks, fetchTrackDetails, selectTrack, fetchStatus } from '../api';
 
 type Props = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'Tracks'>;
@@ -33,6 +33,7 @@ export default function TracksScreen({ navigation }: Props) {
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState('');
   const [loadingIdx, setLoadingIdx] = useState<number | null>(null);
+  const [activeIdx, setActiveIdx] = useState<number | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -49,6 +50,13 @@ export default function TracksScreen({ navigation }: Props) {
         ...t,
         index: typeof t.index === 'number' ? t.index : i,
       })));
+      // Pull current active-track marker so the row highlights. Failure is
+      // non-fatal — it just means the device runs older firmware without
+      // /status, in which case we just skip the badge.
+      try {
+        const st = await fetchStatus();
+        setActiveIdx(st.active_track_idx >= 0 ? st.active_track_idx : null);
+      } catch {/* older firmware, no /status — fine */}
     } catch (e: any) {
       Alert.alert('Konnte Streckenliste nicht laden',
         e?.message ?? String(e));
@@ -58,6 +66,22 @@ export default function TracksScreen({ navigation }: Props) {
   }, []);
 
   useFocusEffect(useCallback(() => { refresh(); }, [refresh]));
+
+  async function activate(row: Row) {
+    setLoadingIdx(row.index);
+    try {
+      const resp = await selectTrack(row.index);
+      setActiveIdx(resp.active_track_idx);
+      Alert.alert('Strecke aktiv',
+        `${resp.active_track_name} ist jetzt aktiv.\n${resp.is_circuit ? 'Rundkurs' : 'A-B'}, ${resp.sector_count} Sektoren.`,
+        [{ text: 'OK', onPress: () => navigation.navigate('Home') }]);
+    } catch (e: any) {
+      Alert.alert('Konnte Strecke nicht aktivieren',
+        e?.message ?? String(e));
+    } finally {
+      setLoadingIdx(null);
+    }
+  }
 
   async function openForEdit(row: Row) {
     setLoadingIdx(row.index);
@@ -72,6 +96,19 @@ export default function TracksScreen({ navigation }: Props) {
     }
   }
 
+  // Tap = activate (with confirm), long-press = open editor.
+  function onRowPress(row: Row) {
+    Alert.alert(
+      row.name,
+      'Diese Strecke aktivieren?\nDas Display zeigt danach den Timing-Bildschirm.',
+      [
+        { text: 'Abbrechen', style: 'cancel' },
+        { text: 'Bearbeiten', onPress: () => openForEdit(row) },
+        { text: 'Aktivieren', style: 'default', onPress: () => activate(row) },
+      ],
+    );
+  }
+
   const filtered = query.trim().length === 0
     ? tracks
     : tracks.filter(t => {
@@ -82,26 +119,34 @@ export default function TracksScreen({ navigation }: Props) {
   const userTracks = filtered.filter(t => t.user_created);
   const dbTracks   = filtered.filter(t => !t.user_created);
 
-  const renderItem = ({ item }: { item: Row }) => (
-    <TouchableOpacity
-      style={[s.row, loadingIdx === item.index && { opacity: 0.5 }]}
-      onPress={() => openForEdit(item)}
-      disabled={loadingIdx !== null}
-    >
-      <View style={{ flex: 1 }}>
-        <Text style={s.rowName} numberOfLines={1}>{item.name}</Text>
-        <Text style={s.rowSub}>
-          {item.country || '—'}
-          {item.length_km > 0 ? `  ·  ${item.length_km.toFixed(2)} km` : ''}
-          {'  ·  '}{item.is_circuit ? 'Rundkurs' : 'A-B'}
-          {item.sector_count > 0 ? `  ·  ${item.sector_count} Sektoren` : ''}
-        </Text>
-      </View>
-      {loadingIdx === item.index
-        ? <ActivityIndicator color={C.accent} size="small" />
-        : <Text style={s.chev}>›</Text>}
-    </TouchableOpacity>
-  );
+  const renderItem = ({ item }: { item: Row }) => {
+    const isActive = activeIdx === item.index;
+    return (
+      <TouchableOpacity
+        style={[s.row,
+                isActive && { borderColor: C.accent, borderWidth: 2 },
+                loadingIdx === item.index && { opacity: 0.5 }]}
+        onPress={() => onRowPress(item)}
+        disabled={loadingIdx !== null}
+      >
+        <View style={{ flex: 1 }}>
+          <Text style={s.rowName} numberOfLines={1}>
+            {isActive ? '● ' : ''}{item.name}
+          </Text>
+          <Text style={s.rowSub}>
+            {item.country || '—'}
+            {item.length_km > 0 ? `  ·  ${item.length_km.toFixed(2)} km` : ''}
+            {'  ·  '}{item.is_circuit ? 'Rundkurs' : 'A-B'}
+            {item.sector_count > 0 ? `  ·  ${item.sector_count} Sektoren` : ''}
+            {isActive ? '  ·  AKTIV' : ''}
+          </Text>
+        </View>
+        {loadingIdx === item.index
+          ? <ActivityIndicator color={C.accent} size="small" />
+          : <Text style={s.chev}>›</Text>}
+      </TouchableOpacity>
+    );
+  };
 
   return (
     <View style={s.root}>

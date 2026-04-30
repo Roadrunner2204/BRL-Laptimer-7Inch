@@ -7,7 +7,7 @@
  * One-tap to anywhere the user wants to go.
  */
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   ActivityIndicator, RefreshControl, Alert,
@@ -21,7 +21,8 @@ import {
   listLocalTracks, markTrackUploaded, deleteLocalTrack, LocalTrack,
 } from '../storage';
 import { SessionSummary } from '../types';
-import { fetchDeviceInfo, postTrack, setBaseUrl } from '../api';
+import { fetchDeviceInfo, postTrack, setBaseUrl, fetchStatus, resetSession,
+         DeviceStatus } from '../api';
 import { fmtTime, fmtDate } from '../utils';
 
 type Props = {
@@ -44,6 +45,8 @@ export default function HomeScreen({ navigation }: Props) {
   const [ip, setIp] = useState('192.168.4.1');
   const [pendingTracks, setPendingTracks] = useState<LocalTrack[]>([]);
   const [syncingTracks, setSyncingTracks] = useState(false);
+  const [status, setStatus] = useState<DeviceStatus | null>(null);
+  const [resettingSession, setResettingSession] = useState(false);
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
@@ -59,8 +62,15 @@ export default function HomeScreen({ navigation }: Props) {
       try {
         const info = await fetchDeviceInfo();
         setDeviceInfo(info);
+        // Live-Status-Karte: Track + Lap-Count + GPS/OBD + new-session-button.
+        // Older firmware doesn't have /status, then we just hide the card.
+        try {
+          const st = await fetchStatus();
+          setStatus(st);
+        } catch { setStatus(null); }
       } catch {
         setDeviceInfo(null);
+        setStatus(null);
       } finally {
         setChecking(false);
       }
@@ -68,6 +78,37 @@ export default function HomeScreen({ navigation }: Props) {
       setRefreshing(false);
     }
   }, []);
+
+  // Poll status every 3s while focused + connected, so user sees lap count
+  // tick up + GPS go from "kein Fix" to "Fix" without manual pull-to-refresh.
+  useEffect(() => {
+    if (!deviceInfo) return;
+    const t = setInterval(async () => {
+      try { setStatus(await fetchStatus()); }
+      catch {/* ignore — pull-to-refresh resets card state */}
+    }, 3000);
+    return () => clearInterval(t);
+  }, [deviceInfo]);
+
+  async function handleResetSession() {
+    Alert.alert('Neue Session starten?',
+      'Alle nicht gespeicherten Runden der aktuellen Session werden verworfen.',
+      [
+        { text: 'Abbrechen', style: 'cancel' },
+        { text: 'Neu starten', style: 'destructive', onPress: async () => {
+          setResettingSession(true);
+          try {
+            const r = await resetSession();
+            try { setStatus(await fetchStatus()); } catch {}
+            Alert.alert('Session zurückgesetzt', `Neue Session: ${r.session_name}`);
+          } catch (e: any) {
+            Alert.alert('Fehler', e?.message ?? String(e));
+          } finally {
+            setResettingSession(false);
+          }
+        } },
+      ]);
+  }
 
   async function syncPendingTracks() {
     if (pendingTracks.length === 0) return;
@@ -155,6 +196,62 @@ export default function HomeScreen({ navigation }: Props) {
           </>
         )}
       </View>
+
+      {/* Live status card — only shown when connected AND firmware exposes /status */}
+      {deviceInfo && status && (
+        <View style={s.liveCard}>
+          <View style={s.liveHead}>
+            <Text style={s.liveTitle}>Live-Status</Text>
+            <View style={s.liveBadges}>
+              <View style={[s.badge, status.gps_fix ? s.badgeOk : s.badgeOff]}>
+                <Text style={s.badgeTxt}>GPS {status.gps_fix
+                  ? `${status.gps_sats}` : '—'}</Text>
+              </View>
+              <View style={[s.badge, status.obd_connected ? s.badgeOk : s.badgeOff]}>
+                <Text style={s.badgeTxt}>OBD</Text>
+              </View>
+              <View style={[s.badge, status.sd_available ? s.badgeOk : s.badgeOff]}>
+                <Text style={s.badgeTxt}>HDD</Text>
+              </View>
+            </View>
+          </View>
+
+          <Text style={s.liveTrack} numberOfLines={1}>
+            {status.active_track_idx >= 0
+              ? `🏁  ${status.active_track_name}`
+              : 'Keine Strecke aktiv'}
+          </Text>
+          <Text style={s.liveStats}>
+            {status.lap_count > 0
+              ? `${status.lap_count} Runden${status.best_lap_ms > 0
+                  ? `  ·  Best ${fmtTime(status.best_lap_ms)}` : ''}`
+              : status.active_track_idx >= 0
+                ? 'Noch keine Runden in dieser Session'
+                : '— '}
+          </Text>
+
+          <View style={s.liveActions}>
+            <TouchableOpacity
+              style={s.liveBtn}
+              onPress={() => navigation.navigate('Tracks')}
+            >
+              <Text style={s.liveBtnTxt}>
+                {status.active_track_idx >= 0 ? 'Strecke wechseln' : 'Strecke wählen'}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[s.liveBtn,
+                      status.active_track_idx < 0 && { opacity: 0.4 }]}
+              onPress={handleResetSession}
+              disabled={status.active_track_idx < 0 || resettingSession}
+            >
+              {resettingSession
+                ? <ActivityIndicator color={C.text} size="small" />
+                : <Text style={s.liveBtnTxt}>Neue Session</Text>}
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
 
       {/* Quick actions row */}
       <View style={s.quickRow}>
@@ -296,6 +393,27 @@ const s = StyleSheet.create({
   primaryBtn:   { backgroundColor: C.accent, borderRadius: 8, paddingVertical: 12,
                   alignItems: 'center', marginTop: 6 },
   primaryBtnTxt:{ color: '#000', fontSize: 15, fontWeight: '700' },
+
+  liveCard:     { backgroundColor: C.surface, borderRadius: 12, padding: 14,
+                  marginBottom: 14, borderWidth: 1, borderColor: C.border },
+  liveHead:     { flexDirection: 'row', alignItems: 'center',
+                  justifyContent: 'space-between', marginBottom: 10 },
+  liveTitle:    { color: C.dim, fontSize: 11, fontWeight: '700',
+                  textTransform: 'uppercase', letterSpacing: 1 },
+  liveBadges:   { flexDirection: 'row', gap: 6 },
+  badge:        { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
+  badgeOk:      { backgroundColor: C.accent + '22', borderWidth: 1,
+                  borderColor: C.accent },
+  badgeOff:     { backgroundColor: C.surface2, borderWidth: 1,
+                  borderColor: C.border },
+  badgeTxt:     { color: C.text, fontSize: 10, fontWeight: '700' },
+  liveTrack:    { color: C.text, fontSize: 16, fontWeight: '700', marginBottom: 4 },
+  liveStats:    { color: C.dim, fontSize: 12, marginBottom: 12 },
+  liveActions:  { flexDirection: 'row', gap: 8 },
+  liveBtn:      { flex: 1, backgroundColor: C.surface2, borderRadius: 8,
+                  paddingVertical: 10, alignItems: 'center',
+                  borderWidth: 1, borderColor: C.border },
+  liveBtnTxt:   { color: C.text, fontSize: 13, fontWeight: '700' },
 
   quickRow:     { flexDirection: 'row', gap: 10, marginBottom: 18 },
   quickCard:    { flex: 1, backgroundColor: C.surface, borderRadius: 12, padding: 14,

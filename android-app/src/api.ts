@@ -246,6 +246,74 @@ export async function postTrack(track: Track): Promise<{ ok: boolean; name: stri
   return json;
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Remote control endpoints (used when the device touchscreen is broken /
+// inaccessible). All three were added to the firmware on 2026-04-30.
+// ───────────────────────────────────────────────────────────────────────────
+
+export interface DeviceStatus {
+  sd_available: boolean;
+  obd_connected: boolean;
+  gps_fix: boolean;
+  gps_sats: number;
+  speed_kmh: number;
+  active_track_idx: number;            // -1 = none selected
+  active_track_name: string;           // empty when none
+  active_track_is_circuit?: boolean;
+  active_track_sector_count?: number;
+  lap_count: number;
+  best_lap_ms: number;                 // 0 when no valid lap yet
+  session_id: string;
+}
+
+export async function fetchStatus(): Promise<DeviceStatus> {
+  const url = `${baseUrl}/status`;
+  const r = await withTimeout(dfetch(url), 8000, 'fetchStatus');
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export interface SelectTrackResp {
+  active_track_idx: number;
+  active_track_name: string;
+  is_circuit: boolean;
+  sector_count: number;
+}
+
+/** Activate a track for live timing on the device. */
+export async function selectTrack(index: number): Promise<SelectTrackResp> {
+  const url = `${baseUrl}/track/select`;
+  log('POST', url, 'index=', index);
+  const r = await withTimeout(
+    dfetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ index }),
+    }),
+    10000, 'selectTrack');
+  const json = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const msg = (json as any).error ?? `HTTP ${r.status}`;
+    throw new Error(msg);
+  }
+  return json;
+}
+
+/** Wipe in-memory laps and start a fresh session file. */
+export async function resetSession(): Promise<{ session_name: string }> {
+  const url = `${baseUrl}/session/reset`;
+  log('POST', url);
+  const r = await withTimeout(
+    dfetch(url, { method: 'POST' }),
+    10000, 'resetSession');
+  const json = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const msg = (json as any).error ?? `HTTP ${r.status}`;
+    throw new Error(msg);
+  }
+  return json;
+}
+
 /** Compute best_lap_idx and attach downloaded_at */
 export function enrichSession(raw: { id: string; name?: string; track: string; laps: Lap[] }): Session {
   const laps = raw.laps ?? [];
