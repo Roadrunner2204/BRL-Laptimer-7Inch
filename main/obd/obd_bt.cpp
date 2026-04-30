@@ -245,6 +245,11 @@ static uint8_t   s_inflight_proto               = 0;   // 7 or 2; 0 when idle
 static uint16_t  s_inflight_did                 = 0;   // for proto=2
 static uint8_t   s_inflight_target              = 0;   // for proto=2 BMW
 
+// One-shot diagnostics flags for BMW Mode-22. Reset on disconnect so each
+// new connect produces fresh "first request / first success" logs.
+static bool      s_bmw_first_req_logged          = false;
+static bool      s_bmw_first_ok_logged           = false;
+
 // Cache-poisoning guard. We persist a PID as DEAD only after the session
 // has seen at least one *real* response come back. Without this, a stuck
 // CAN bus or a transient adapter problem during the first 3 round-trips
@@ -862,6 +867,19 @@ static void send_did22_request(uint16_t did, uint8_t target)
         (uint8_t)((did >> 8) & 0xFFu),
         (uint8_t)(did & 0xFFu),
     };
+
+    // Erste BMW-Anfrage einer Session loggen — bestätigt dass der neue
+    // 0x16-Pfad benutzt wird und nicht das alte 0x10. Wenn diese Zeile
+    // gar nicht im Log auftaucht aber die DIDs trotzdem stumm bleiben,
+    // wird der Mode-22-Pool gar nicht erreicht (z.B. weil .brl keine
+    // proto=2-Sensoren hat).
+    if (!s_bmw_first_req_logged) {
+        s_bmw_first_req_logged = true;
+        ESP_LOGI(TAG, "First BMW Mode-22 request: DID 0x%04X target=0x%02X "
+                      "(via CMD_READ_DID_BMW=0x16)",
+                 (unsigned)did, (unsigned)target);
+    }
+
     int rc = ble_gattc_write_no_rsp_flat(s_conn_handle, s_cmd_val_handle,
                                          cmd, sizeof(cmd));
     if (rc != 0) {
@@ -1216,6 +1234,8 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
             s_resp_val_handle  = 0;
             s_resp_cccd_handle = 0;
             s_svc_found = false;
+            s_bmw_first_req_logged = false;
+            s_bmw_first_ok_logged  = false;
             g_state.obd.connected = false;
             g_state.obd_connected = false;
             s_state    = OBD_ERROR;
@@ -1637,6 +1657,18 @@ void obd_bt_poll(void)
                                 ESP_LOGI(TAG, "DID 0x%04X is alive again",
                                          (unsigned)ap.did);
                             }
+                            // Erste erfolgreiche BMW-Mode-22-Antwort einer
+                            // Session laut loggen — bestätigt End-to-End-
+                            // Funktion (Adapter → ECU → Adapter → Laptimer).
+                            if (!s_bmw_first_ok_logged) {
+                                s_bmw_first_ok_logged = true;
+                                ESP_LOGI(TAG,
+                                    "First BMW Mode-22 response: DID 0x%04X "
+                                    "target=0x%02X '%s' (%u data bytes)",
+                                    (unsigned)ap.did, (unsigned)ap.target,
+                                    ap.sensor ? ap.sensor->name : "?",
+                                    (unsigned)data_len);
+                            }
                             s_session_had_alive = true;
                             // DIDs don't share the 8-bit PID-cache key
                             // space — DEAD-state for DIDs is in-RAM only
@@ -1644,6 +1676,51 @@ void obd_bt_poll(void)
                             // need its own NVS namespace; deferred.
                         }
                     }
+                } else if (s_inflight_proto == BRL_PROTO_UDS_BMW
+                           && s_rx_len >= 3
+                           && (s_rx_buf[0] == CMD_READ_DID_BMW
+                               || s_rx_buf[0] == CMD_READ_DID_22)
+                           && s_rx_buf[1] == STATUS_NEGATIVE) {
+                    // Negative response from the ECU. Adapter format:
+                    // [CMD][STATUS=0x03][NRC]. Common NRCs:
+                    //   0x11 serviceNotSupported
+                    //   0x12 subFunctionNotSupported
+                    //   0x22 conditionsNotCorrect (e.g. engine not running)
+                    //   0x31 requestOutOfRange (DID not supported)
+                    //   0x33 securityAccessDenied
+                    //   0x7E subFunctionNotSupportedInActiveSession
+                    //   0x7F serviceNotSupportedInActiveSession
+                    //     → either of these means we need extended session
+                    //       (0x10 0x03) before the DID is readable
+                    uint8_t nrc = (s_rx_len >= 3) ? s_rx_buf[2] : 0;
+                    if (s_inflight_count == 1) {
+                        int idx = s_inflight_idx[0];
+                        if (idx >= 0 && idx < s_pid_count) {
+                            ActivePid &ap = s_pids[idx];
+                            ESP_LOGW(TAG,
+                                "DID 0x%04X target=0x%02X NRC 0x%02X (%s)",
+                                (unsigned)ap.did, (unsigned)ap.target,
+                                (unsigned)nrc,
+                                ap.sensor ? ap.sensor->name : "?");
+                            // NRC counts as a strike — DDE clearly heard
+                            // us, just refuses the DID. 3 strikes and it
+                            // exits the round-robin so we don't keep
+                            // burning cycles on it.
+                            ap.strikes++;
+                            if (ap.strikes >= DID_DEAD_THRESHOLD && !ap.dead) {
+                                ap.dead = true;
+                                ESP_LOGI(TAG,
+                                    "DID 0x%04X dead after %d× NRC",
+                                    (unsigned)ap.did, DID_DEAD_THRESHOLD);
+                            }
+                        }
+                    }
+                    // Don't fall through to the strike-everything-not-seen
+                    // loop — we already handled this DID above.
+                    s_inflight_count = 0;
+                    s_inflight_proto = 0;
+                    s_state = OBD_CONNECTED;
+                    break;
                 }
 
                 // Strike everything we asked for that didn't come back.

@@ -160,21 +160,64 @@ static void handleBleCommand(OBDCmd cmd, const uint8_t* data, uint8_t len) {
 
             // CAN muss aktiv sein; Mode-22 braucht D-CAN/PT-CAN @ 500k.
             if (activeBus == BusType::NONE || activeBus == BusType::KLINE) {
+                Serial.printf("[BMW] DID 0x%04X target=0x%02X — REJECTED (no CAN bus)\n",
+                              did, target);
                 ble.sendResponse(cmd, OBDStatus::ERR_NOT_INIT);
                 break;
             }
 
             uint32_t txId  = BMW_TESTER_ADDR;          // 0x6F1
             uint32_t rxId  = 0x600 + target;           // 0x612 DDE/DME, 0x618 EGS, 0x629 DSC, ...
+
+            // Erste BMW-Anfrage einer Session laut loggen — wenn diese Zeile
+            // gar nicht erst kommt, schickt der Laptimer keine 0x16 Frames
+            // und der Patch greift nicht.
+            static bool s_bmw_first = true;
+            if (s_bmw_first) {
+                s_bmw_first = false;
+                Serial.printf("[BMW] First Mode-22 request: DID 0x%04X "
+                              "target=0x%02X (TX 0x%03X → RX 0x%03X)\n",
+                              did, target, txId, rxId);
+            }
+
             isotp.setBmwExtended(true, target);
+            uint32_t t0 = millis();
             bool ok = uds.readDid(did, resp, txId, rxId);
+            uint32_t dt = millis() - t0;
             isotp.setBmwExtended(false);               // immer zurückstellen!
 
             if (ok) {
                 ble.sendResponse(cmd, OBDStatus::OK, resp.data, resp.len);
+                // Nur erste erfolgreiche Antwort laut loggen pro Boot —
+                // sonst spammt das bei 5 Hz Polling.
+                static bool s_first_ok = true;
+                if (s_first_ok) {
+                    s_first_ok = false;
+                    Serial.printf("[BMW] First successful DID response: "
+                                  "0x%04X target=0x%02X, %d bytes in %ums\n",
+                                  did, target, (int)resp.len, (unsigned)dt);
+                }
+            } else if (resp.negative) {
+                // NRC = Negative Response Code. Häufige Codes:
+                //   0x10 generalReject, 0x11 serviceNotSupported,
+                //   0x12 subFunctionNotSupported, 0x22 conditionsNotCorrect,
+                //   0x31 requestOutOfRange, 0x33 securityAccessDenied,
+                //   0x7E subFunctionNotSupportedInActiveSession,
+                //   0x7F serviceNotSupportedInActiveSession.
+                Serial.printf("[BMW] NRC 0x%02X for DID 0x%04X target=0x%02X "
+                              "(took %ums)\n",
+                              (unsigned)resp.nrc, did, target, (unsigned)dt);
+                ble.sendResponse(cmd, OBDStatus::ERR_NEGATIVE,
+                                 &resp.nrc, 1);
             } else {
-                OBDStatus st = resp.negative ? OBDStatus::ERR_NEGATIVE : OBDStatus::ERR_TIMEOUT;
-                ble.sendResponse(cmd, st, &resp.nrc, resp.negative ? 1 : 0);
+                // Timeout — DDE hat innerhalb UDS_RESP_TIMEOUT_MS nicht geantwortet.
+                // In den ersten 1-2 Tries pro Session normal (DDE muss aufwachen).
+                // Wenn das durchgehend kommt: TX-Frame geht raus aber kein RX
+                // → entweder falscher target, falsche RX-ID, oder DDE schläft.
+                Serial.printf("[BMW] Timeout DID 0x%04X target=0x%02X "
+                              "(no response in %ums)\n",
+                              did, target, (unsigned)dt);
+                ble.sendResponse(cmd, OBDStatus::ERR_TIMEOUT);
             }
             break;
         }
