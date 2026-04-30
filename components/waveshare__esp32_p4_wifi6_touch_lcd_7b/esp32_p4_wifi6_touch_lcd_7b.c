@@ -506,13 +506,9 @@ esp_err_t bsp_touch_new(const bsp_touch_config_t *config, esp_lcd_touch_handle_t
             .interrupt = 0,
         },
         .flags = {
-            /* BRL: Touch-Mirror muss synchron zum Display-Mirror laufen.
-             * Display steht jetzt auf 0/0 (siehe bsp_display_lcd_init),
-             * also Touch ebenfalls auf 0/0 — sonst stimmen Tap-Koordinaten
-             * nicht mit dem überein was der User auf dem Bildschirm sieht. */
             .swap_xy = 0,
-            .mirror_x = 0,
-            .mirror_y = 0,
+            .mirror_x = 1,
+            .mirror_y = 1,
         },
     };
     esp_lcd_panel_io_handle_t tp_io_handle = NULL;
@@ -554,14 +550,10 @@ static lv_display_t *bsp_display_lcd_init(const bsp_display_cfg_t *cfg)
         .vres = BSP_LCD_V_RES,
         .monochrome = false,
         /* Rotation values must be same as used in esp_lcd for initial settings of the screen */
-        /* BRL: Waveshare default war mirror_x+y=true (= 180° gedreht).
-         * Im BRL-Gehäuse zeigt das Display dann auf dem Kopf, also drehen
-         * wir es in die native Orientierung zurück (beide false = 0° / nicht
-         * gespiegelt). Touch-Koordinaten flippt lvgl_port automatisch mit. */
         .rotation = {
             .swap_xy = false,
-            .mirror_x = false,
-            .mirror_y = false,
+            .mirror_x = true,
+            .mirror_y = true,
         },
 #if LVGL_VERSION_MAJOR >= 9
 #if CONFIG_BSP_LCD_COLOR_FORMAT_RGB888

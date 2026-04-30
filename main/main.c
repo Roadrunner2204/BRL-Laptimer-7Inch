@@ -113,7 +113,14 @@ void app_main(void)
         .double_buffer = BSP_LCD_DRAW_BUFF_DOUBLE,
         .flags = {
             .buff_dma = false,
-            .sw_rotate = false,
+            /* sw_rotate=true ist nötig damit lv_display_set_rotation
+             * tatsächlich Pixel rotiert. Bei MIPI-DSI ignoriert das
+             * Panel den MADCTL-Mirror-Befehl — Hardware-Flip via BSP
+             * Rotation-Flags greift NICHT. Software-Rotation auf
+             * Flush-Ebene ist der einzig zuverlässige Weg. Für 180°
+             * (im Gegensatz zu 90°/270°) braucht's keinen extra
+             * Rotation-Buffer, nur Scanline-Reverse beim Flush. */
+            .sw_rotate = true,
         }
     };
     /* Pin LVGL to Core 1 so it never competes with USB/SD/GPS on Core 0.
@@ -123,7 +130,7 @@ void app_main(void)
     bsp_display_start_with_config(&cfg);
     bsp_display_backlight_on();
 
-    /* Dark theme */
+    /* Dark theme + 180° Rotation für BRL-Gehäuse-Orientierung */
     lv_display_t *disp = lv_display_get_default();
     if (disp) {
         bsp_display_lock(0);
@@ -133,8 +140,11 @@ void app_main(void)
             true,                      /* dark mode */
             &lv_font_montserrat_14);
         lv_display_set_theme(disp, theme);
-        /* Rotation disabled — requires too much RAM for rotation buffer.
-         * If display is upside-down, mount the board differently. */
+        /* Display steht im BRL-Gehäuse physisch auf dem Kopf,
+         * also drehen wir die LVGL-Ausgabe 180°. lvgl_port liest
+         * die Rotation und transformiert auch Touch-Koordinaten
+         * mit, sodass Tap-Koordinaten weiterhin mit dem UI matchen. */
+        lv_display_set_rotation(disp, LV_DISPLAY_ROTATION_180);
         bsp_display_unlock();
     }
 
