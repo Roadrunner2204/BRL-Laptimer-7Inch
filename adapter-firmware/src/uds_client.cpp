@@ -57,7 +57,9 @@ bool UdsClient::_sendAndReceive(const uint8_t* req, uint16_t reqLen,
 bool UdsClient::readPid(uint8_t pid, UdsResponse& resp,
                          uint32_t txId, uint32_t rxId) {
     uint8_t req[2] = { OBD2_CURRENT_DATA, pid };
-    return _sendAndReceive(req, 2, resp, txId, rxId, 150);  // OBD2 Single-Frame: ~5-50ms
+    // ECU antwortet typisch in 5-50ms. 80ms Timeout = großzügig genug für
+    // langsame ECUs, aber dead-PID-Recovery ist schnell statt 150ms blocked.
+    return _sendAndReceive(req, 2, resp, txId, rxId, 80);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -72,7 +74,10 @@ bool UdsClient::readMultiPid(const uint8_t* pids, uint8_t count,
     uint8_t req[7];  // 1 Service + max 6 PIDs
     req[0] = OBD2_CURRENT_DATA;
     memcpy(req + 1, pids, count);
-    return _sendAndReceive(req, 1 + count, resp, txId, rxId, 200);
+    // Multi-PID: ECU braucht etwas länger weil bis zu 6 PIDs in einem
+    // Request, plus die Antwort ist ISO-TP-Multi-Frame (FF + CFs + FC).
+    // 100ms ist immer noch defensiv — typisch ~20-60ms Antwort.
+    return _sendAndReceive(req, 1 + count, resp, txId, rxId, 100);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

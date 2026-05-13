@@ -26,13 +26,18 @@ static uint32_t   activeRxId   = OBD2_DME_RESP;
 static bool       canInstalled = false;
 
 // ── Diagnose-Session ────────────────────────────────────────────────────────
+// Standard-OBD2 Extended Diagnostic Session (0x10 0x03). Wird vor Mode-22
+// DID-Reads (z.B. Mode-09 Vehicle-Info-DIDs) automatisch gesetzt und für
+// 4 Sekunden gecacht — solange schickt der Caller weiter Anfragen ohne
+// dass jedes Mal eine neue Session etabliert werden muss.
 static uint32_t   diagSessionTxId  = 0;
 static uint32_t   diagSessionTime  = 0;
 static const uint32_t DIAG_SESSION_REFRESH_MS = 4000;
 
 static bool ensureDiagSession(uint32_t txId, uint32_t rxId) {
     uint32_t now = millis();
-    if (txId == diagSessionTxId && (now - diagSessionTime) < DIAG_SESSION_REFRESH_MS)
+    if (txId == diagSessionTxId
+        && (now - diagSessionTime) < DIAG_SESSION_REFRESH_MS)
         return true;
     if (uds.startDiagSession(0x03, txId, rxId)) {
         diagSessionTxId = txId;
@@ -78,6 +83,7 @@ static bool canInit(uint32_t baudRate) {
     return true;
 }
 
+
 // ── BLE Kommando-Handler ────────────────────────────────────────────────────
 static void handleBleCommand(OBDCmd cmd, const uint8_t* data, uint8_t len) {
     UdsResponse resp;
@@ -111,6 +117,54 @@ static void handleBleCommand(OBDCmd cmd, const uint8_t* data, uint8_t len) {
                 else
                     ble.sendResponse(cmd, OBDStatus::ERR_TIMEOUT);
             }
+            break;
+        }
+
+        case OBDCmd::DISCOVER_PIDS: {
+            // Mode-01 PIDs 0x00, 0x20, 0x40, 0x60, 0x80, 0xA0, 0xC0 sind die
+            // "supported PIDs" Anker-Bytes — jeder gibt eine 4-byte Bitmap der
+            // nächsten 32 PIDs zurück (MSB = niedrigster PID in dieser Gruppe).
+            //
+            // Resulting 28-byte Output-Bitmap (PIDs 0x01..0xE0, MSB-first):
+            //   byte[0]: bit7=PID 0x01, bit6=PID 0x02, ..., bit0=PID 0x08
+            //   byte[3]: bit7=PID 0x19, ..., bit0=PID 0x20  ← anchor 0x20
+            //   byte[27]: bit7=PID 0xD9, ..., bit0=PID 0xE0
+            //
+            // Wenn das Auto auf 0x00 nicht antwortet → keine OBD2-Unterstützung.
+            // Wenn 0x00 antwortet aber bit für 0x20 = 0 → keine PIDs in 0x21+.
+            // → wir hören dann auf weiter zu fragen (spart ~1 Sekunde).
+            if (activeBus == BusType::NONE || activeBus == BusType::KLINE) {
+                ble.sendResponse(cmd, OBDStatus::ERR_NOT_INIT);
+                break;
+            }
+            uint8_t bitmap[28] = {0};
+            uint8_t anchors[7] = {0x00, 0x20, 0x40, 0x60, 0x80, 0xA0, 0xC0};
+            uint8_t found_groups = 0;
+            for (int g = 0; g < 7; g++) {
+                if (g > 0) {
+                    // Vorheriger Anchor muss gesagt haben dass dieser hier supported ist
+                    // (bit 0 des letzten Bytes der vorherigen Gruppe).
+                    int prev_byte = (g - 1) * 4 + 3;   // Index des Anchor-Bits im Bitmap
+                    if ((bitmap[prev_byte] & 0x01) == 0) break;
+                }
+                if (uds.readPid(anchors[g], resp, activeTxId, activeRxId)
+                    && resp.len >= 6
+                    && resp.data[0] == 0x41
+                    && resp.data[1] == anchors[g]) {
+                    // 4 Daten-Bytes ab Position 2
+                    bitmap[g * 4 + 0] = resp.data[2];
+                    bitmap[g * 4 + 1] = resp.data[3];
+                    bitmap[g * 4 + 2] = resp.data[4];
+                    bitmap[g * 4 + 3] = resp.data[5];
+                    found_groups++;
+                } else {
+                    break;   // ECU antwortet nicht mehr → fertig
+                }
+            }
+            Serial.printf("[DISCOVER] %d Gruppen gefüllt — Bitmap: ", (int)found_groups);
+            for (int i = 0; i < 28; i++) Serial.printf("%02X ", bitmap[i]);
+            Serial.println();
+            ble.sendResponse(cmd, OBDStatus::OK, bitmap, sizeof(bitmap));
             break;
         }
 
@@ -150,90 +204,6 @@ static void handleBleCommand(OBDCmd cmd, const uint8_t* data, uint8_t len) {
             break;
         }
 
-        case OBDCmd::READ_DID_BMW: {
-            // [TARGET][DID_hi][DID_lo]
-            // BMW F-Series Style: TX-ID 0x6F1, Daten = [TARGET][PCI=0x03][0x22][DID_hi][DID_lo]
-            // ECU antwortet auf 0x600+TARGET mit [SOURCE=0xF1][PCI][0x62][DID_hi][DID_lo][data]
-            if (len < 3) { ble.sendResponse(cmd, OBDStatus::ERR_NO_RESP); return; }
-            uint8_t  target = data[0];
-            uint16_t did    = ((uint16_t)data[1] << 8) | data[2];
-
-            // CAN muss aktiv sein; Mode-22 braucht D-CAN/PT-CAN @ 500k.
-            if (activeBus == BusType::NONE || activeBus == BusType::KLINE) {
-                Serial.printf("[BMW] DID 0x%04X target=0x%02X — REJECTED (no CAN bus)\n",
-                              did, target);
-                ble.sendResponse(cmd, OBDStatus::ERR_NOT_INIT);
-                break;
-            }
-
-            uint32_t txId  = BMW_TESTER_ADDR;          // 0x6F1
-            uint32_t rxId  = 0x600 + target;           // 0x612 DDE/DME, 0x618 EGS, 0x629 DSC, ...
-
-            // Erste BMW-Anfrage einer Session laut loggen — wenn diese Zeile
-            // gar nicht erst kommt, schickt der Laptimer keine 0x16 Frames
-            // und der Patch greift nicht.
-            static bool s_bmw_first = true;
-            if (s_bmw_first) {
-                s_bmw_first = false;
-                Serial.printf("[BMW] First Mode-22 request: DID 0x%04X "
-                              "target=0x%02X (TX 0x%03X → RX 0x%03X)\n",
-                              did, target, txId, rxId);
-            }
-
-            isotp.setBmwExtended(true, target);
-            uint32_t t0 = millis();
-            bool ok = uds.readDid(did, resp, txId, rxId);
-            uint32_t dt = millis() - t0;
-            isotp.setBmwExtended(false);               // immer zurückstellen!
-
-            if (ok) {
-                ble.sendResponse(cmd, OBDStatus::OK, resp.data, resp.len);
-                // Nur erste erfolgreiche Antwort laut loggen pro Boot —
-                // sonst spammt das bei 5 Hz Polling.
-                static bool s_first_ok = true;
-                if (s_first_ok) {
-                    s_first_ok = false;
-                    Serial.printf("[BMW] First successful DID response: "
-                                  "0x%04X target=0x%02X, %d bytes in %ums\n",
-                                  did, target, (int)resp.len, (unsigned)dt);
-                }
-            } else if (resp.negative) {
-                // NRC = Negative Response Code. Häufige Codes:
-                //   0x10 generalReject, 0x11 serviceNotSupported,
-                //   0x12 subFunctionNotSupported, 0x22 conditionsNotCorrect,
-                //   0x31 requestOutOfRange, 0x33 securityAccessDenied,
-                //   0x7E subFunctionNotSupportedInActiveSession,
-                //   0x7F serviceNotSupportedInActiveSession.
-                Serial.printf("[BMW] NRC 0x%02X for DID 0x%04X target=0x%02X "
-                              "(took %ums)\n",
-                              (unsigned)resp.nrc, did, target, (unsigned)dt);
-                ble.sendResponse(cmd, OBDStatus::ERR_NEGATIVE,
-                                 &resp.nrc, 1);
-            } else {
-                // Timeout — DDE hat innerhalb UDS_RESP_TIMEOUT_MS nicht geantwortet.
-                // In den ersten 1-2 Tries pro Session normal (DDE muss aufwachen).
-                // Wenn das durchgehend kommt: TX-Frame geht raus aber kein RX
-                // → entweder falscher target, falsche RX-ID, oder DDE schläft.
-                Serial.printf("[BMW] Timeout DID 0x%04X target=0x%02X "
-                              "(no response in %ums)\n",
-                              did, target, (unsigned)dt);
-                ble.sendResponse(cmd, OBDStatus::ERR_TIMEOUT);
-            }
-            break;
-        }
-
-        case OBDCmd::READ_DID_2C: {
-            if (len < 2) { ble.sendResponse(cmd, OBDStatus::ERR_NO_RESP); return; }
-            uint16_t did = ((uint16_t)data[0] << 8) | data[1];
-            ensureDiagSession(BMW_TESTER_ADDR, BMW_DME_RESP);
-            if (uds.readDid2C(did, resp, BMW_TESTER_ADDR, BMW_DME_RESP))
-                ble.sendResponse(cmd, OBDStatus::OK, resp.data, resp.len);
-            else {
-                OBDStatus st = resp.negative ? OBDStatus::ERR_NEGATIVE : OBDStatus::ERR_TIMEOUT;
-                ble.sendResponse(cmd, st, &resp.nrc, resp.negative ? 1 : 0);
-            }
-            break;
-        }
 
         case OBDCmd::READ_DTC_UDS:
             ensureDiagSession(activeTxId, activeRxId);
@@ -259,23 +229,6 @@ static void handleBleCommand(OBDCmd cmd, const uint8_t* data, uint8_t len) {
                 ble.sendResponse(cmd, OBDStatus::ERR_TIMEOUT);
             break;
         }
-
-        case OBDCmd::SET_ECU: {
-            if (len < 1 || data[0] >= BMW_ECU_COUNT) {
-                ble.sendResponse(cmd, OBDStatus::ERR_NO_RESP); return;
-            }
-            activeTxId = BMW_ECUS[data[0]].txId;
-            activeRxId = BMW_ECUS[data[0]].rxId;
-            Serial.printf("[CMD] ECU → %s\n", BMW_ECUS[data[0]].name);
-            ble.sendResponse(cmd, OBDStatus::OK);
-            break;
-        }
-
-        case OBDCmd::SET_ECU_DIAG:
-            activeTxId = BMW_TESTER_ADDR;
-            activeRxId = BMW_DME_RESP;
-            ble.sendResponse(cmd, OBDStatus::OK);
-            break;
 
         case OBDCmd::SET_BUS_CAN: {
             uint32_t baud = (len >= 1 && data[0] == 1) ? CAN_BAUD_KCAN : CAN_BAUD_DCAN;
@@ -327,7 +280,8 @@ void setup() {
 
     Serial.println();
     Serial.println("==================================");
-    Serial.println("  BRL OBD Adapter v1.0");
+    Serial.println("  BRL OBD Adapter v1.1");
+    Serial.println("  Universal OBD-II (Mode 01/03/09)");
     Serial.println("  ESP32-S3 Super Mini");
     Serial.println("==================================");
     Serial.flush();
@@ -351,8 +305,8 @@ void setup() {
 
     ble.setDisconnectCb([]() {
         diagSessionTxId = 0;
-        activeTxId = OBD2_DME_REQ;
-        activeRxId = OBD2_DME_RESP;
+        activeTxId      = OBD2_DME_REQ;
+        activeRxId      = OBD2_DME_RESP;
     });
 
     // ELM327/329 Emulator: NUS → ELM Parser → CAN → NUS
@@ -368,14 +322,12 @@ void setup() {
 
     Serial.println("[MAIN] ELM327/329 Emulator bereit (NUS Service)");
 
-    // Auto-Init D-CAN @ 500k. Der BRL-Laptimer schickt kein SET_BUS_CAN —
-    // ohne diesen Block würde Mode-22-BMW gar nicht erst rauskommen weil
-    // der TWAI-Treiber nicht installiert ist. Mode-01 funktionierte bisher
-    // nur, weil der ELM-Emulator-Pfad (NUS) intern canInit() angetriggert
-    // hat. Für unseren Binary-Pfad setzen wir den Standard-Bus jetzt fix
-    // beim Boot — D-CAN/PT-CAN @ 500 kBit/s ist der Bus auf dem 99% aller
-    // BMW-Diagnose-Daten liegen (E-Series ab ca. 2007, alle F/G-Series).
-    Serial.println("[BOOT] Auto-Init D-CAN @ 500k...");
+    // Auto-Init CAN @ 500k beim Boot. Der BRL-Laptimer schickt kein
+    // SET_BUS_CAN — ohne diese Zeile wäre der TWAI-Treiber nicht
+    // installiert wenn die erste Mode-01-Anfrage kommt. 500 kBit/s deckt
+    // den OBD-II-Diagnose-Bus von ~99% aller Autos ab Modelljahr 2008 ab
+    // (CAN-OBD ist seit 2008 in EU/USA Pflicht).
+    Serial.println("[BOOT] Auto-Init CAN @ 500k...");
     if (canInit(CAN_BAUD_DCAN)) {
         activeBus = BusType::CAN_500K;
         Serial.println("[BOOT] CAN ready");

@@ -21,29 +21,25 @@
 // Format: [CMD_TYPE] [payload...]
 // Antwort: [CMD_TYPE] [STATUS] [payload...]
 enum class OBDCmd : uint8_t {
-    // OBD2 Standard
+    // OBD2 Standard (ISO 15031 / SAE J1979)
     READ_PID        = 0x01,   // [PID] → [SVC, PID, data...]
     READ_VIN        = 0x02,   // [] → [17 bytes VIN]
     READ_DTC        = 0x03,   // [] → [count, DTC1_hi, DTC1_lo, ...]
     CLEAR_DTC       = 0x04,   // [] → [OK/FAIL]
     READ_MULTI_PID  = 0x05,   // [PID1,PID2,...PID6] → [SVC, PID1,d..,PID2,d..]
 
-    // UDS BMW
-    READ_DID_22     = 0x10,   // [DID_hi, DID_lo] → [SVC, DID, data...]
-    READ_DID_2C     = 0x11,   // [DID_hi, DID_lo] → [SVC, 10, DID, data...]
-    READ_DTC_UDS    = 0x12,   // [ECU_idx] → [count, DTCs...]
-    CLEAR_DTC_UDS   = 0x13,   // [ECU_idx] → [OK/FAIL]
+    // PID-Discovery: Adapter pollt intern Mode-01 PIDs 0x00, 0x20, 0x40, 0x60,
+    // 0x80, 0xA0, 0xC0 (jeder gibt 4-byte Bitmap der nächsten 32 supporteten
+    // PIDs). Antwort: 28 byte Bitmap aller PIDs 0x01..0xE0.
+    // Display ruft das einmal pro Connect/Auto auf und pollt danach nur die
+    // PIDs die das Auto wirklich unterstützt — wie Torque Pro.
+    DISCOVER_PIDS   = 0x06,   // [] → [28 byte bitmap, MSB-first per byte]
+
+    // UDS-universal (jedes Auto mit UDS-fähigem ECU, NICHT BMW-spezifisch)
+    READ_DID_22     = 0x10,   // [DID_hi, DID_lo] → [SVC=0x62, DID, data...]
+    READ_DTC_UDS    = 0x12,   // [] → [count, DTCs...]
+    CLEAR_DTC_UDS   = 0x13,   // [] → [OK/FAIL]
     DIAG_SESSION    = 0x14,   // [session_type] → [OK/FAIL]
-
-    // UDS BMW Extended-Addressing (F-Series + späte E-Series N47/N57 DDE,
-    // N54/N55 DME, EGS, DSC). Adapter setzt ISO-TP auf BMW-Mode mit Target-
-    // Byte, sendet auf 0x6F1, empfängt auf 0x600+TARGET (z.B. 0x612 für DDE).
-    // Antwort-Format auf BLE: [CMD][STATUS][SVC=0x62][DID_hi][DID_lo][data...]
-    READ_DID_BMW    = 0x16,   // [TARGET, DID_hi, DID_lo] → [SVC, DID, data...]
-
-    // Multi-ECU
-    SET_ECU         = 0x20,   // [ECU_idx] → setzt aktive ECU (0-7)
-    SET_ECU_DIAG    = 0x21,   // [] → wechselt auf BMW Diag (6F1→612)
 
     // Adapter-Steuerung
     GET_STATUS      = 0xF0,   // [] → [version, bus_type, connected]
