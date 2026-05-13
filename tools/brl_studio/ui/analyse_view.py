@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -46,15 +47,18 @@ from PyQt6.QtWidgets import (
 from core.analysis import LapChannels, delta_vs_reference, derive_channels
 from core.export import export_lap_csv
 from core.http_client import CamClient, Endpoint
+from core.nominatim import NominatimWorker, SearchHit
 from core.session import Lap, Session
 from core.telemetry import Telemetry, load_telemetry_file, parse_telemetry
 from core.tile_server import TileBounds
 from core.video_dl import FileDownloadWorker, cache_dir
 from ui.widgets.chart import LAP_COLORS, TelemetryChart, Trace
+from ui.widgets.cursor_readout import CursorReadout
 from ui.widgets.hud_overlay import HudOverlay
 from ui.widgets.map import LeafletMap
 from ui.widgets.sector_bars import SectorBars
 from ui.widgets.tile_prefetch_dialog import TilePrefetchDialog
+from ui.widgets.timeline_strip import TimelineStrip
 from ui.widgets.video_player import VideoPlayer, VideoStage
 
 
@@ -309,11 +313,87 @@ class AnalyseView(QWidget):
         # ── Chart + map (top half), video (lower half) ─────────────────
         self.chart = TelemetryChart()
         self.chart.cursor_moved.connect(self._on_cursor_moved)
+        self.chart.x_range_changed.connect(self._on_chart_x_range_changed)
         self.map = LeafletMap()
+        self.map.bridge.position_received.connect(self._on_position_received)
+        self.map.bridge.geolocation_error.connect(self._on_geolocation_error)
+        # Map-cursor drag → chart cursor. Maps the dragged lat/lon back to
+        # the closest point on the REFERENCE lap and uses its cumulative
+        # distance to drive the chart, which then re-broadcasts to the
+        # readout, the timeline strip, and any video players.
+        self.map.bridge.cursor_dragged.connect(self._on_map_cursor_dragged)
+
+        # Search row + "My position" button above the map -- mirrors the
+        # TrackCreator pattern so the analyse map has the same orientation
+        # tools (find a place by name, jump to the user's GPS spot).
+        self.map_search = QLineEdit()
+        self.map_search.setPlaceholderText("Adresse / Track / Ort suchen…")
+        self.map_search.returnPressed.connect(self._do_map_search)
+        self.btn_map_search = QPushButton("🔍"); self.btn_map_search.setFixedWidth(36)
+        self.btn_map_search.clicked.connect(self._do_map_search)
+        self.btn_map_pos = QPushButton("📍 Mein Standort")
+        self.btn_map_pos.clicked.connect(self.map.request_position)
+
+        map_search_row = QHBoxLayout()
+        map_search_row.setContentsMargins(0, 0, 0, 0)
+        map_search_row.setSpacing(4)
+        map_search_row.addWidget(self.map_search, stretch=1)
+        map_search_row.addWidget(self.btn_map_search)
+        map_search_row.addWidget(self.btn_map_pos)
+
+        self.map_search_results = QListWidget()
+        self.map_search_results.setMaximumHeight(140)
+        self.map_search_results.itemClicked.connect(self._on_map_search_hit)
+        self.map_search_results.setVisible(False)
+        self._map_search_hits: list[SearchHit] = []
+        self._map_search_worker: NominatimWorker | None = None
+
+        map_col_w = QWidget()
+        map_col = QVBoxLayout(map_col_w)
+        map_col.setContentsMargins(0, 0, 0, 0)
+        map_col.setSpacing(4)
+        map_col.addLayout(map_search_row)
+        map_col.addWidget(self.map_search_results)
+        map_col.addWidget(self.map, stretch=1)
+
+        # Timeline strip + zoom buttons (Variante 3): the strip lives
+        # directly under the chart and shows the full lap as a band with
+        # the current zoom window as a draggable rect; the buttons give
+        # discrete zoom in/out + pan + reset for precise navigation.
+        self.timeline = TimelineStrip()
+        self.timeline.range_changed.connect(self._on_timeline_range_changed)
+
+        self.btn_zoom_in    = QPushButton("+");   self.btn_zoom_in.setFixedWidth(32)
+        self.btn_zoom_out   = QPushButton("−");   self.btn_zoom_out.setFixedWidth(32)
+        self.btn_pan_left   = QPushButton("◀");   self.btn_pan_left.setFixedWidth(32)
+        self.btn_pan_right  = QPushButton("▶");   self.btn_pan_right.setFixedWidth(32)
+        self.btn_zoom_reset = QPushButton("Reset"); self.btn_zoom_reset.setFixedWidth(58)
+        self.btn_zoom_in.clicked.connect(lambda: self._zoom_chart(0.6))
+        self.btn_zoom_out.clicked.connect(lambda: self._zoom_chart(1.7))
+        self.btn_pan_left.clicked.connect(lambda: self._pan_chart(-0.3))
+        self.btn_pan_right.clicked.connect(lambda: self._pan_chart(+0.3))
+        self.btn_zoom_reset.clicked.connect(self._reset_chart_zoom)
+
+        zoom_row = QHBoxLayout()
+        zoom_row.setContentsMargins(0, 0, 0, 0)
+        zoom_row.setSpacing(4)
+        zoom_row.addWidget(self.btn_pan_left)
+        zoom_row.addWidget(self.btn_zoom_out)
+        zoom_row.addWidget(self.btn_zoom_in)
+        zoom_row.addWidget(self.btn_pan_right)
+        zoom_row.addWidget(self.btn_zoom_reset)
+        zoom_row.addWidget(self.timeline, stretch=1)
+
+        chart_w = QWidget()
+        chart_v = QVBoxLayout(chart_w)
+        chart_v.setContentsMargins(0, 0, 0, 0)
+        chart_v.setSpacing(4)
+        chart_v.addWidget(self.chart, stretch=1)
+        chart_v.addLayout(zoom_row)
 
         chart_map = QSplitter(Qt.Orientation.Horizontal)
-        chart_map.addWidget(self.chart)
-        chart_map.addWidget(self.map)
+        chart_map.addWidget(chart_w)
+        chart_map.addWidget(map_col_w)
         chart_map.setStretchFactor(0, 3)
         chart_map.setStretchFactor(1, 2)
 
@@ -334,13 +414,15 @@ class AnalyseView(QWidget):
         center.setStretchFactor(0, 3)
         center.setStretchFactor(1, 2)
 
-        # ── Bottom — sector bars ────────────────────────────────────────
+        # ── Bottom — cursor readout + sector bars ──────────────────────
         self.sector_bars = SectorBars()
+        self.cursor_readout = CursorReadout()
 
         right = QVBoxLayout()
         right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(6)
         right.addWidget(center, stretch=1)
+        right.addWidget(self.cursor_readout)
         right.addWidget(self.sector_bars)
 
         right_w = QWidget()
@@ -422,6 +504,148 @@ class AnalyseView(QWidget):
         if total <= 0:
             return
         self._nudge_cursor(total * pct)
+
+    # ── Timeline / zoom plumbing ───────────────────────────────────────
+
+    def _on_chart_x_range_changed(self, lo: float, hi: float) -> None:
+        """Mouse-wheel / drag inside the chart updates the strip."""
+        self.timeline.set_view_range(lo, hi)
+
+    def _on_timeline_range_changed(self, lo: float, hi: float) -> None:
+        """Strip drag updates the chart -- one-way; chart's own
+        sigXRangeChanged handler doesn't ping back because we suppress
+        the signal inside set_x_range."""
+        self.chart.set_x_range(lo, hi)
+
+    def _zoom_chart(self, factor: float) -> None:
+        """factor > 1 zooms out, < 1 zooms in. Anchored on the cursor
+        if present, otherwise on the centre of the current view."""
+        cur = self.chart.get_x_range()
+        if not cur:
+            return
+        full_lo, full_hi = self.chart.get_x_full_range()
+        lo, hi = cur
+        span = hi - lo
+        new_span = max((full_hi - full_lo) / 200.0,
+                       min(full_hi - full_lo, span * factor))
+        anchor = self._current_cursor_distance() or (lo + hi) / 2
+        new_lo = anchor - new_span / 2
+        new_hi = anchor + new_span / 2
+        if new_lo < full_lo:
+            new_hi += (full_lo - new_lo); new_lo = full_lo
+        if new_hi > full_hi:
+            new_lo -= (new_hi - full_hi); new_hi = full_hi
+        self.chart.set_x_range(max(full_lo, new_lo), min(full_hi, new_hi))
+        self.timeline.set_view_range(*self.chart.get_x_range())   # type: ignore[misc]
+
+    def _pan_chart(self, frac: float) -> None:
+        """Shift the view by `frac` of its current width. Negative = left."""
+        cur = self.chart.get_x_range()
+        if not cur:
+            return
+        full_lo, full_hi = self.chart.get_x_full_range()
+        lo, hi = cur
+        d = (hi - lo) * frac
+        new_lo, new_hi = lo + d, hi + d
+        if new_lo < full_lo:
+            new_hi += (full_lo - new_lo); new_lo = full_lo
+        if new_hi > full_hi:
+            new_lo -= (new_hi - full_hi); new_hi = full_hi
+        self.chart.set_x_range(new_lo, new_hi)
+        self.timeline.set_view_range(new_lo, new_hi)
+
+    def _reset_chart_zoom(self) -> None:
+        full_lo, full_hi = self.chart.get_x_full_range()
+        self.chart.set_x_range(full_lo, full_hi)
+        self.timeline.set_view_range(full_lo, full_hi)
+
+    # ── Map search + geolocation ──────────────────────────────────────
+
+    def _do_map_search(self) -> None:
+        q = self.map_search.text().strip()
+        if not q:
+            self.map_search_results.setVisible(False)
+            return
+        self.btn_map_search.setEnabled(False)
+        self._mw.set_status(f"Suche '{q}'…")
+        self._map_search_worker = NominatimWorker(q)
+        self._map_search_worker.finished_ok.connect(self._on_map_search_ok)
+        self._map_search_worker.finished_err.connect(self._on_map_search_err)
+        self._map_search_worker.finished.connect(
+            lambda: self.btn_map_search.setEnabled(True)
+        )
+        self._map_search_worker.start()
+
+    def _on_map_search_ok(self, hits: list) -> None:
+        self._map_search_hits = list(hits)
+        self.map_search_results.clear()
+        if not hits:
+            self.map_search_results.setVisible(False)
+            self._mw.set_status("Keine Treffer")
+            return
+        for h in self._map_search_hits:
+            self.map_search_results.addItem(QListWidgetItem(h.display))
+        self.map_search_results.setVisible(True)
+        self._mw.set_status(f"{len(hits)} Treffer")
+
+    def _on_map_search_err(self, msg: str) -> None:
+        QMessageBox.warning(self, "Suche", msg)
+        self._mw.set_status("Suche fehlgeschlagen")
+
+    def _on_map_search_hit(self, item: QListWidgetItem) -> None:
+        idx = self.map_search_results.row(item)
+        if not (0 <= idx < len(self._map_search_hits)):
+            return
+        h = self._map_search_hits[idx]
+        self.map.goto(h.lat, h.lon, 14)
+        self._mw.set_status(f"→ {h.display}")
+        self.map_search_results.setVisible(False)
+
+    def _on_position_received(self, lat: float, lon: float) -> None:
+        self._mw.set_status(f"Position: {lat:.5f}, {lon:.5f}")
+
+    def _on_geolocation_error(self, msg: str) -> None:
+        QMessageBox.information(
+            self, "Geolocation",
+            f"Keine Position verfügbar:\n{msg}\n\n"
+            "Standortdienste in Windows aktiv? "
+            "Manche Hardware hat keinen GPS-Sensor — dann nutzt Windows "
+            "WiFi-Triangulation, was offline nicht klappt."
+        )
+
+    def _on_map_cursor_dragged(self, lat: float, lon: float) -> None:
+        """Drag of the cursor circle on the map → chart cursor.
+
+        Find the nearest point on the REFERENCE lap (since that's the
+        spatial axis the chart's distance is measured along), grab its
+        cumulative distance, and steer the chart cursor to that x value.
+        Chart's set_cursor doesn't re-emit, so we manually call the
+        downstream sync (map.set_cursor + readout + timeline + video).
+        """
+        if not self._cache or not (0 <= self._ref_idx < len(self._cache)):
+            return
+        ref = self._cache[self._ref_idx]
+        if not ref.lap.points:
+            return
+        # Find nearest point. Squared-degrees is fine here -- the loop is
+        # comparative and the points are within a single lap (small area).
+        best_i = 0
+        best_d2 = float("inf")
+        for i, p in enumerate(ref.lap.points):
+            dy = p.lat - lat
+            dx = p.lon - lon
+            d2 = dx * dx + dy * dy
+            if d2 < best_d2:
+                best_d2 = d2
+                best_i = i
+        if best_i >= len(ref.channels.distance_m):
+            return
+        dist = ref.channels.distance_m[best_i]
+        self.chart.set_cursor(dist)
+        # Drive the rest of the analyse pipeline (map cursor will jump to
+        # the nearest-point lat/lon, NOT the dragged spot — gives the user
+        # a "snap to track" feel).
+        self._on_cursor_moved(dist)
 
     # ── public API ──────────────────────────────────────────────────────
 
@@ -616,6 +840,16 @@ class AnalyseView(QWidget):
                 channels.append(("Delta", "s", traces))
 
         self.chart.set_channels(channels)
+
+        # Update the timeline-strip + cursor-readout to match the chart's
+        # new data range and lap selection. Doing it here keeps everything
+        # in lock-step with whatever _rebuild_chart() decided to draw.
+        full_lo, full_hi = self.chart.get_x_full_range()
+        self.timeline.set_full_range(full_lo, full_hi)
+        cur = self.chart.get_x_range()
+        if cur:
+            self.timeline.set_view_range(*cur)
+        self.cursor_readout.set_layout(sel, self._ref_idx, self._delta_for)
 
     def _rebuild_map_traces(self) -> None:
         traces = []
@@ -879,6 +1113,10 @@ class AnalyseView(QWidget):
             return
         p = ref.lap.points[idx]
         self.map.set_cursor(p.lat, p.lon)
+        # Sync the timeline overview cursor + the per-lap readout values
+        # so the user always sees raw v / G / Δ / time at the cursor.
+        self.timeline.set_cursor(distance_m)
+        self.cursor_readout.set_cursor(distance_m)
         # Drive each loaded video to the same on-track distance. We map
         # distance_m → lap_ms in *that player's* lap (not the reference)
         # so two laps of different speed land at the same physical spot

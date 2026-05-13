@@ -160,17 +160,32 @@ _HTML_TEMPLATE = r"""
         map.fitBounds(bounds, { padding: [20, 20] });
       }
     };
+    // Cursor marker. Uses a real L.marker (not circleMarker) so we can
+    // make it draggable -- Leaflet only supports drag on marker layers.
+    // Custom DivIcon = circle styled like the old circleMarker.
+    var cursorIcon = L.divIcon({
+      className: 'brl-cursor',
+      html: '<div style="width:14px;height:14px;border-radius:50%;'
+          + 'background:#2d6cdf;border:2px solid #fff;box-sizing:border-box;'
+          + 'box-shadow:0 0 4px rgba(0,0,0,.6);cursor:grab;"></div>',
+      iconSize: [14, 14], iconAnchor: [7, 7],
+    });
+    var cursorDragSuppress = false;   // stop set_cursor from echoing during drag
     window.brl_set_cursor = function(lat, lon) {
       if (lat === null || lon === null) {
         if (cursor) { map.removeLayer(cursor); cursor = null; }
         return;
       }
       if (!cursor) {
-        cursor = L.circleMarker([lat, lon], {
-          radius: 7, color: '#ffffff', weight: 2,
-          fillColor: '#2d6cdf', fillOpacity: 1.0,
-        }).addTo(map);
-      } else {
+        cursor = L.marker([lat, lon], { icon: cursorIcon, draggable: true,
+                                        zIndexOffset: 1000 }).addTo(map);
+        cursor.on('dragstart', function() { cursorDragSuppress = true; });
+        cursor.on('drag', function(e) {
+          var ll = e.target.getLatLng();
+          if (bridge) bridge.on_cursor_dragged(ll.lat, ll.lng);
+        });
+        cursor.on('dragend', function() { cursorDragSuppress = false; });
+      } else if (!cursorDragSuppress) {
         cursor.setLatLng([lat, lon]);
       }
     };
@@ -274,10 +289,15 @@ class MapBridge(QObject):
     sf_dragged = pyqtSignal(int, float, float)
     position_received = pyqtSignal(float, float)
     geolocation_error = pyqtSignal(str)
+    cursor_dragged = pyqtSignal(float, float)   # analyse: marker drag → chart
 
     @pyqtSlot(float, float)
     def on_map_click(self, lat: float, lon: float) -> None:
         self.map_clicked.emit(lat, lon)
+
+    @pyqtSlot(float, float)
+    def on_cursor_dragged(self, lat: float, lon: float) -> None:
+        self.cursor_dragged.emit(lat, lon)
 
     @pyqtSlot(int, float, float)
     def on_sector_dragged(self, idx: int, lat: float, lon: float) -> None:
@@ -316,6 +336,21 @@ class LeafletMap(QWebEngineView):
             # with manual user permission, just less seamless.
             pass
 
+        # Boot the local tile + Leaflet proxy and load the map HTML. This
+        # MUST run unconditionally in __init__ -- when this block was
+        # mis-indented inside _on_feature_permission_requested the HTML
+        # only loaded after the user explicitly requested Geolocation,
+        # which is why the analyse map stayed white until then.
+        start_tile_server()
+        base = server_url() or "http://127.0.0.1:0"
+        bg = get_palette().get("bg", "#16181d")
+        html = _HTML_TEMPLATE.replace("%SERVER%", base).replace("%BG%", bg)
+        self._ready = False
+        self._pending: list[str] = []
+        self.loadFinished.connect(self._on_load_finished)
+        self.setHtml(html, baseUrl=QUrl(base + "/"))
+        theme_bus().theme_changed.connect(self._on_theme_changed)
+
     def _on_feature_permission_requested(self, origin,  # noqa: ANN001
                                          feature) -> None:
         if feature == QWebEnginePage.Feature.Geolocation:
@@ -323,18 +358,6 @@ class LeafletMap(QWebEngineView):
                 origin, feature,
                 QWebEnginePage.PermissionPolicy.PermissionGrantedByUser,
             )
-
-        # Make sure the proxy is live before we point Leaflet at it.
-        # start_tile_server is idempotent.
-        start_tile_server()
-        base = server_url() or "http://127.0.0.1:0"
-        bg = get_palette().get("bg", "#16181d")
-        html = _HTML_TEMPLATE.replace("%SERVER%", base).replace("%BG%", bg)
-        self.setHtml(html, baseUrl=QUrl(base + "/"))
-        self._ready = False
-        self.loadFinished.connect(self._on_load_finished)
-        self._pending: list[str] = []
-        theme_bus().theme_changed.connect(self._on_theme_changed)
 
     def _on_theme_changed(self, palette: dict) -> None:
         bg = palette.get("bg", "#16181d")

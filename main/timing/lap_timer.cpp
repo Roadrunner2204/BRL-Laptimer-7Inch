@@ -318,6 +318,14 @@ static void start_lap(uint32_t cross_ms) {
     lt.live_delta_ms   = 0;
     lt.lap_number++;
     alloc_lap_buf();
+    // Reset point-recording throttle to NOW (millis()), not cross_ms.
+    // session_store_save_lap may have blocked logic_task for hundreds of
+    // ms before getting here -- starting from cross_ms would let the
+    // very next loop iteration record a stale GPS sample. Pacing from
+    // wall-clock now ensures gps_poll has a full POINT_INTERVAL_MS to
+    // refresh cur_lat/cur_lon before the first point of the new lap is
+    // captured.
+    s_last_point_ms = millis();
     log_i("Start lap %d", lt.lap_number);
 }
 
@@ -541,15 +549,29 @@ void lap_timer_poll() {
 
     if (lt.in_lap && s_cur_buf && s_cur_count < MAX_TRACK_POINTS) {
         if (now_ms - s_last_point_ms >= POINT_INTERVAL_MS) {
-            s_cur_buf[s_cur_count++] = { cur_lat, cur_lon,
-                                         now_ms - lt.lap_start_ms };
+            // Skip if GPS hasn't actually moved since the last stored
+            // sample. Without this, after session_store_save_lap blocks
+            // logic_task for ~500 ms (PSRAM read + cJSON re-serialize +
+            // SD write of the growing session file), gps_poll has been
+            // starved -- cur_lat/cur_lon are STALE from the lap-line
+            // cross. Recording a stale point at lap_ms=500 then a fresh
+            // one at lap_ms=600 produces a 5× speed spike. Bumping the
+            // throttle without recording lets the next iteration grab
+            // a fresh GPS fix instead.
+            bool moved = (s_cur_count == 0) ||
+                (fabsf((float)(cur_lat - s_cur_buf[s_cur_count - 1].lat)) > 1e-5f ||
+                 fabsf((float)(cur_lon - s_cur_buf[s_cur_count - 1].lon)) > 1e-5f);
+            if (moved) {
+                s_cur_buf[s_cur_count++] = { cur_lat, cur_lon,
+                                             now_ms - lt.lap_start_ms };
+                // Update live delta — reference lap is whatever was last
+                // set via live_delta_set_ref (current pick, saved pick,
+                // or auto-loaded all-time best). live_delta_update is a
+                // no-op internally when no reference is active.
+                live_delta_update(cur_lat, cur_lon,
+                                  now_ms - lt.lap_start_ms);
+            }
             s_last_point_ms = now_ms;
-
-            // Update live delta — reference lap is whatever was last set
-            // via live_delta_set_ref (current session pick, saved-session
-            // pick, or auto-loaded all-time best). live_delta_update is a
-            // no-op internally when no reference is active.
-            live_delta_update(cur_lat, cur_lon, now_ms - lt.lap_start_ms);
         }
     }
 

@@ -189,9 +189,10 @@ void session_store_save_lap(uint8_t lap_idx)
     if (!rl.valid) { log_w("save_lap %d: lap not valid", lap_idx + 1); return; }
 
     // Working buffer in PSRAM — must be large enough for the entire growing
-    // JSON. Each lap's track_points (~90 pts × ~50 B JSON = 4.5 KB) means
-    // 8 KB overflows after 2 laps. 64 KB headroom = ~12 laps with full track.
-    const size_t WORK_BUF_SIZE = 64 * 1024;
+    // JSON. With full-rate GPS recording (every point at ~10 Hz), a 90 s
+    // lap = ~900 points × ~50 B JSON ≈ 45 KB. 384 KB gives ~8 such laps
+    // before truncation. PSRAM is plentiful so the headroom is cheap.
+    const size_t WORK_BUF_SIZE = 384 * 1024;
     char *work_buf = (char *)heap_caps_malloc(WORK_BUF_SIZE, MALLOC_CAP_SPIRAM);
     if (!work_buf) { log_e("save_lap %d: PSRAM alloc failed", lap_idx + 1); return; }
 
@@ -226,18 +227,26 @@ void session_store_save_lap(uint8_t lap_idx)
     cJSON_AddNumberToObject(lap_obj, "lap", lap_idx + 1);
     cJSON_AddNumberToObject(lap_obj, "total_ms", rl.total_ms);
 
-    // Sectors
+    // Sectors. `sectors_used` is the COUNT of valid entries (1-based), so
+    // the loop must use `<` not `<=` -- the previous `<=` wrote one
+    // extra entry past the valid range, which was uninitialised memory
+    // (typically 0). Studio's SectorBars then drew an extra "Sektor N+1"
+    // bar with a junk value and visually pushed the real sectors out
+    // of alignment, so the user lost track of which bar = which sector.
     cJSON *sectors = cJSON_CreateArray();
-    for (uint8_t i = 0; i <= rl.sectors_used && i < MAX_SECTORS; i++) {
+    for (uint8_t i = 0; i < rl.sectors_used && i < MAX_SECTORS; i++) {
         cJSON_AddItemToArray(sectors, cJSON_CreateNumber(rl.sector_ms[i]));
     }
     cJSON_AddItemToObject(lap_obj, "sectors", sectors);
 
-    // Track points: compact array of [lat, lon, ms]
+    // Track points: compact array of [lat, lon, ms]. Save EVERY point so
+    // analysis (Studio + app) sees the full ~10 Hz GPS stream -- the
+    // previous "every 5th point" decimation made the map line jagged
+    // and triggered speed spikes when two stored points happened to land
+    // close in lap_ms (small dt + normal d → huge km/h).
     if (rl.points && rl.point_count > 0) {
         cJSON *pts = cJSON_CreateArray();
-        // Limit to every 5th point to save space (~2 Hz)
-        for (uint16_t i = 0; i < rl.point_count; i += 5) {
+        for (uint16_t i = 0; i < rl.point_count; i++) {
             cJSON *pt = cJSON_CreateArray();
             cJSON_AddItemToArray(pt, cJSON_CreateNumber(rl.points[i].lat));
             cJSON_AddItemToArray(pt, cJSON_CreateNumber(rl.points[i].lon));
