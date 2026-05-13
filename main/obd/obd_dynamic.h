@@ -11,8 +11,8 @@
  * sensor to a Z3 slot.
  *
  * Replaces the old "fixed FIELD_RPM/THROTTLE/... struct fields" model
- * so any sensor in /cars/OBD.brl can be picked, not just the eight
- * hard-coded slots.
+ * so any sensor from the Universal-OBD2-Liste (universal_obd_pids.h)
+ * can be picked, not just the eight hard-coded slots.
  *
  * Per-PID freshness tracking lets the picker UI show a green "live"
  * badge on sensors that are currently producing data and grey out the

@@ -19,7 +19,7 @@
 #include "../data/car_profile.h"
 #include "../obd/obd_dynamic.h"
 #include "../obd/obd_bt.h"
-#include "../sensors/analog_in.h"
+#include "../obd/computed_pids.h"
 
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -56,6 +56,7 @@ static const DashConfig DEFAULT_CFG = {
 
     .veh_conn_mode = 0,  // OBD BLE default
     .show_obd      = 1,  // engine-data widgets visible by default
+    .brightness    = 100,
 };
 
 // ---------------------------------------------------------------------------
@@ -79,6 +80,10 @@ void dash_config_load()
     nvs_get_u16(h, "dscale", &g_dash_cfg.delta_scale_ms);
     nvs_get_u8(h, "vconn", &g_dash_cfg.veh_conn_mode);
     nvs_get_u8(h, "shobd", &g_dash_cfg.show_obd);
+    nvs_get_u8(h, "bright", &g_dash_cfg.brightness);
+    if (g_dash_cfg.brightness < 10 || g_dash_cfg.brightness > 100) {
+        g_dash_cfg.brightness = 100;
+    }
 
     size_t len;
 
@@ -119,6 +124,7 @@ void dash_config_save()
     nvs_set_u16(h, "dscale", g_dash_cfg.delta_scale_ms);
     nvs_set_u8(h, "vconn", g_dash_cfg.veh_conn_mode);
     nvs_set_u8(h, "shobd", g_dash_cfg.show_obd);
+    nvs_set_u8(h, "bright", g_dash_cfg.brightness);
     nvs_set_blob(h, "z1", g_dash_cfg.z1, sizeof(g_dash_cfg.z1));
     nvs_set_blob(h, "z2", g_dash_cfg.z2, sizeof(g_dash_cfg.z2));
     nvs_set_blob(h, "z3", g_dash_cfg.z3, sizeof(g_dash_cfg.z3));
@@ -140,22 +146,23 @@ void dash_config_save()
 // dispatch:
 //   - hardcoded built-ins (laptime/sector/...)
 //   - legacy FIELD_RPM..MAF (resolved through their well-known PID)
-//   - dynamic OBD (128+N) — looks up OBD.brl[N], reads obd_dynamic[pid]
+//   - dynamic OBD (128+N) — looks up Universal-OBD2[N], reads obd_dynamic[pid]
 //   - dynamic CAN (192+N) — looks up g_car_profile.sensors[N] (currently
 //                            decoded into g_state.obd by can_bus.cpp; until
 //                            that grows a per-sensor cache, we reuse the
 //                            sensor name to map back into legacy fields)
-//   - analog (AN1..4)
 // ===========================================================================
 
 // PID byte that backs each legacy FIELD_X. -1 if no direct PID mapping
-// (e.g. FIELD_BRAKE/STEERING come from analog or external inputs, not a PID).
+// (e.g. FIELD_BRAKE/STEERING come from external inputs, not a PID).
 static int legacy_field_pid(uint8_t f)
 {
     switch (f) {
         case FIELD_RPM:      return 0x0C;
         case FIELD_THROTTLE: return 0x11;
-        case FIELD_BOOST:    return 0x0B;  // PID 0x0B = MAP, often labelled "Boost"
+        // FIELD_BOOST wurde entfernt — MAP-Baro Berechnung läuft über
+        // computed_boost_kpa() in field_format_value, damit der angezeigte
+        // Wert wirklich relativer Ladedruck ist (nicht absoluter MAP).
         case FIELD_COOLANT:  return 0x05;
         case FIELD_INTAKE:   return 0x0F;
         case FIELD_LAMBDA:   return 0x24;
@@ -197,10 +204,10 @@ const char *field_title(uint8_t slot)
         case FIELD_STEERING:  return tr(TR_STEERING);
         case FIELD_BATTERY:   return "Batterie";
         case FIELD_MAF:       return "MAF";
-        case FIELD_AN1:       return g_analog_cfg[0].name;
-        case FIELD_AN2:       return g_analog_cfg[1].name;
-        case FIELD_AN3:       return g_analog_cfg[2].name;
-        case FIELD_AN4:       return g_analog_cfg[3].name;
+        case FIELD_AFR:       return "AFR";
+        case FIELD_POWER_KW:  return "Power";
+        case FIELD_POWER_PS:  return "Power";
+        case FIELD_TORQUE_NM: return (i18n_get_language() == 0) ? "Drehmoment" : "Torque";
         default: break;
     }
 
@@ -239,13 +246,11 @@ const char *field_unit(uint8_t slot)
     if (slot == FIELD_LAMBDA)    return "λ";
     if (slot == FIELD_BATTERY)   return "V";
     if (slot == FIELD_MAF)       return "g/s";
+    if (slot == FIELD_AFR)       return ":1";   // AFR ist Massenverhältnis (z.B. 14.7:1 stoich Benzin)
+    if (slot == FIELD_POWER_KW)  return "kW";
+    if (slot == FIELD_POWER_PS)  return "PS";
+    if (slot == FIELD_TORQUE_NM) return "Nm";
     if (slot == FIELD_SPEED)     return (g_dash_cfg.units == 0) ? "km/h" : "mph";
-    if (slot >= FIELD_AN1 && slot <= FIELD_AN4) {
-        // AnalogChannelCfg has no unit field — caller's name (e.g. "Oilpres")
-        // typically encodes the unit. Return empty so the dash doesn't
-        // duplicate it.
-        return "";
-    }
     if (field_is_obd_dynamic(slot)) {
         uint8_t idx = field_obd_dyn_index(slot);
         const CarProfile *obd_p = obd_brl_profile();
@@ -313,9 +318,6 @@ bool field_is_live(uint8_t slot)
         return g_car_profile.loaded && idx < g_car_profile.sensor_count;
     }
 
-    // Analog channels — analog_in_poll always runs, so they're always live.
-    if (slot >= FIELD_AN1 && slot <= FIELD_AN4) return true;
-
     return false;
 }
 
@@ -323,6 +325,35 @@ bool field_format_value(uint8_t slot, char *out, int out_size)
 {
     if (!out || out_size < 2) return false;
     out[0] = '\0';
+
+    // Computed Live-Values (berechnet aus mehreren PIDs).
+    // FIELD_BOOST geht hier auch durch — der "richtige" Boost ist MAP-Baro,
+    // nicht der direkte Wert von PID 0x0B (das ist absoluter MAP).
+    auto fmt_computed = [&](float v, int decimals) {
+        if (decimals <= 0) snprintf(out, out_size, "%.0f", (double)v);
+        else               snprintf(out, out_size, "%.*f", decimals, (double)v);
+    };
+    {
+        float v;
+        switch (slot) {
+            case FIELD_BOOST:
+                if (computed_boost_kpa(&v))   { fmt_computed(v, 0); return true; }
+                return false;
+            case FIELD_AFR:
+                if (computed_afr(&v))         { fmt_computed(v, 1); return true; }
+                return false;
+            case FIELD_POWER_KW:
+                if (computed_power_kw(&v))    { fmt_computed(v, 0); return true; }
+                return false;
+            case FIELD_POWER_PS:
+                if (computed_power_ps(&v))    { fmt_computed(v, 0); return true; }
+                return false;
+            case FIELD_TORQUE_NM:
+                if (computed_torque_nm(&v))   { fmt_computed(v, 0); return true; }
+                return false;
+            default: break;
+        }
+    }
 
     // Legacy / dynamic OBD → resolve PID + read obd_dynamic.
     auto fmt_pid = [&](uint8_t pid, int decimals) -> bool {
@@ -397,15 +428,6 @@ bool field_format_value(uint8_t slot, char *out, int out_size)
         // safe (slot renders "--") and the legacy obd.* fields still
         // populate via the FIELD_RPM/FIELD_THROTTLE etc. shortcut.
         return false;
-    }
-
-    if (slot >= FIELD_AN1 && slot <= FIELD_AN4) {
-        const AnalogChannel &ch = g_state.analog[slot - FIELD_AN1];
-        if (!ch.valid) return false;
-        // Default to 1 decimal — most analog sensors (pressures, voltages)
-        // are intelligible at that precision.
-        snprintf(out, out_size, "%.1f", (double)ch.value);
-        return true;
     }
 
     // Built-ins (timing / sectors / delta) are formatted by the timing

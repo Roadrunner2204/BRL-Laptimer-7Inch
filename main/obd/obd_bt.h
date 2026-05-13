@@ -29,7 +29,8 @@ typedef enum {
     OBD_SCANNING,
     OBD_FOUND,
     OBD_CONNECTING,
-    OBD_FINGERPRINTING,   // post-subscribe, reading PID 0x00 to ID the ECU
+    OBD_FINGERPRINTING,   // post-subscribe, reading VIN for the cache key
+    OBD_DISCOVERING,      // post-VIN, reading the supported-PIDs bitmap
     OBD_CONNECTED,
     OBD_REQUESTING,
     OBD_ERROR
@@ -61,11 +62,11 @@ void       obd_bt_disconnect(void);
 void       obd_bt_pause(bool paused);
 
 /**
- * Access to the cached /cars/OBD.brl profile for the dashboard slot
+ * Access to the cached Universal-OBD2 profile for the dashboard slot
  * picker. Returns an opaque pointer (cast to `const CarProfile *` —
  * we don't include car_profile.h here to keep this header free of
- * C++/extern-"C" entanglement). NULL until OBD.brl was parsed at
- * least once on the first OBD-BT connect. The picker walks
+ * C++/extern-"C" entanglement). NULL until the Universal-Liste was
+ * loaded once on the first OBD-BT connect. The picker walks
  * `sensors[0..sensor_count-1]` and lets the user assign sensor
  * index N to a Z3 slot via slot ID `128 + N` (see dash_config.h
  * slot ranges).
@@ -75,7 +76,7 @@ const void *obd_bt_pid_profile(void);
 /**
  * Same for the active vehicle profile (e.g. /cars/N47F.brl) — sourced
  * from car_profile_get_active() at every reconnect. Carries proto=2
- * BMW UDS DIDs that the Mode-01-only OBD.brl doesn't have, plus any
+ * BMW UDS DIDs that the Universal-OBD2-Liste doesn't have, plus any
  * vehicle-specific extra Mode-01 PIDs. NULL when no active profile is
  * configured or the file isn't on the SD.
  */
@@ -103,6 +104,29 @@ const void *obd_bt_vehicle_profile(void);
 bool obd_bt_get_sensor_value(const void *sensor,
                              float       *out_value,
                              uint32_t    *out_age_ms);
+
+/**
+ * Mode-01 PID-Discovery (CMD_DISCOVER_PIDS = 0x06 im Adapter ab v1.1).
+ *
+ * Beim BLE-Connect fragt der Adapter intern die Mode-01 PIDs 0x00, 0x20,
+ * 0x40, 0x60, 0x80, 0xA0, 0xC0 ab — jede Antwort ist eine 4-byte Bitmap
+ * der nächsten 32 PIDs die das Auto unterstützt. Der Adapter kombiniert
+ * das zu einer 28-byte Gesamt-Bitmap und schickt sie ans Display.
+ *
+ * Das Display nutzt diese Bitmap um:
+ *   1. nicht-supportete PIDs gar nicht erst zu pollen (wie Torque Pro)
+ *   2. den Sensor-Picker auf nur tatsächlich verfügbare PIDs zu filtern
+ *
+ * obd_pid_is_supported(pid) gibt true zurück wenn die DISCOVER-Bitmap
+ * das Bit für diesen PID gesetzt hat. Vor dem ersten erfolgreichen
+ * Connect (oder wenn der Adapter die Discovery nicht beantwortet) gibt
+ * die Funktion immer true zurück — dann fällt das System auf das
+ * traditionelle Try-and-Cache-Verhalten zurück.
+ *
+ * obd_pid_discovery_complete() sagt ob die Bitmap überhaupt vorliegt.
+ */
+bool obd_pid_is_supported(uint8_t pid);
+bool obd_pid_discovery_complete(void);
 
 #ifdef __cplusplus
 }

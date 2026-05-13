@@ -299,6 +299,80 @@ export async function selectTrack(index: number): Promise<SelectTrackResp> {
   return json;
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Screen-mirror endpoints (added 2026-05-01).
+//
+//   - The MJPEG stream lives on a SEPARATE httpd instance on port 8081 so
+//     the streaming handler can block freely without stalling /touch and
+//     /status on port 80. esp_http_server is single-threaded; this is the
+//     simplest way to have one long-lived stream + many short requests.
+//   - /touch takes display logical coords (0..1023, 0..599). The phone
+//     scales its on-screen pixel coords to that range before posting.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Display logical resolution -- matches BSP_LCD_H_RES x BSP_LCD_V_RES. */
+export const MIRROR_W = 1024;
+export const MIRROR_H = 600;
+
+/** URL of the live MJPEG stream. Use inside a WebView <img src=...>. */
+export function mirrorMjpegUrl(): string {
+  // Strip http(s):// from baseUrl, splice in the mirror port. The host
+  // includes scheme already (http://192.168.4.1) so we just swap :80 -> :8081.
+  const host = baseUrl.replace(/^https?:\/\//, '').split(':')[0];
+  return `http://${host}:8081/mirror.mjpeg`;
+}
+
+/** Single-frame JPEG URL -- fallback for clients that can't display MJPEG. */
+export function screenJpgUrl(): string {
+  const host = baseUrl.replace(/^https?:\/\//, '').split(':')[0];
+  return `http://${host}:8081/screen.jpg`;
+}
+
+/** Phone-keyboard relay: append text and/or backspace from the textarea
+ *  bound to the visible LVGL keyboard. Returns whether a textarea was
+ *  actually targeted (hit: false means no keyboard is on screen, so the
+ *  user has to tap a text field on the laptimer first). */
+export async function postTextEdit(args: { add?: string; bs?: number }): Promise<{ hit: boolean }> {
+  const url = `${baseUrl}/text`;
+  const r = await withTimeout(
+    dfetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(args),
+      connectTimeoutMs: 2000,
+      readTimeoutMs: 2000,
+    }),
+    3000,
+    'postTextEdit',
+  );
+  const json = await r.json().catch(() => ({}));
+  return { hit: !!(json as any).hit };
+}
+
+/** Inject a touch event into LVGL on the laptimer.
+ *  x/y are in display logical pixels (0..1023, 0..599). down=false ends
+ *  the gesture; LVGL needs the explicit release to fire click events. */
+export async function postTouch(x: number, y: number, down: boolean): Promise<void> {
+  const url = `${baseUrl}/touch`;
+  // Round + clamp here so the firmware never sees fractional or out-of-range
+  // values; saves a parser branch on every drag-move event.
+  const ix = Math.max(0, Math.min(MIRROR_W - 1, Math.round(x)));
+  const iy = Math.max(0, Math.min(MIRROR_H - 1, Math.round(y)));
+  await withTimeout(
+    dfetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ x: ix, y: iy, down }),
+      // Tight timeouts: a touch event that misses by 2s is useless anyway,
+      // and we don't want a backed-up queue if WiFi briefly stalls.
+      connectTimeoutMs: 2000,
+      readTimeoutMs: 2000,
+    }),
+    3000,
+    'postTouch',
+  );
+}
+
 /** Wipe in-memory laps and start a fresh session file. */
 export async function resetSession(): Promise<{ session_name: string }> {
   const url = `${baseUrl}/session/reset`;

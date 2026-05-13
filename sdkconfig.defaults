@@ -149,5 +149,16 @@ CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=4096
 # LVGL TJPGD — built-in JPEG decoder for camera preview & logo
 CONFIG_LV_USE_TJPGD=y
 
+# LVGL snapshot API — used by main/wifi/mirror.cpp to grab the active
+# screen for the Android remote-control mirror stream. Adds ~5 KB code.
+CONFIG_LV_USE_SNAPSHOT=y
+
+# Two httpd instances (port 80 + mirror on 8081) + DNS captive responder
+# + WiFi/BLE internals together exceed the default LWIP socket pool of 10.
+# Symptom under bursty touch load: "httpd_accept_conn: error in accept (23)"
+# (ENFILE) and the touch POST occasionally never lands. 20 gives headroom
+# for the 16-ish steady-state usage.
+CONFIG_LWIP_MAX_SOCKETS=20
+
 # Enable experimental features (required for ESP32-P4 MIPI DSI)
 CONFIG_IDF_EXPERIMENTAL_FEATURES=y

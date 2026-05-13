@@ -7,8 +7,8 @@
  * obd_status — per-FieldId "freshness" tracker.
  *
  * Whenever `route_sensor()` (in obd_bt.cpp) successfully routes a value
- * into a g_state.obd.* slot, OR analog_in_poll() updates an enabled AN
- * channel, the originating FieldId is stamped here with millis().
+ * into a g_state.obd.* slot, the originating FieldId is stamped here
+ * with millis().
  *
  * The Display-, App- and Studio-side slot pickers consult this tracker
  * to grey out fields the car/adapter never actually delivers, so the

@@ -3,14 +3,16 @@
 #include <stdbool.h>
 
 /**
- * can_bus -- Direct CAN bus interface via SN65HVD230 transceiver
+ * can_bus -- Direct CAN bus interface via the on-board TJA1051T/3/1J
  *
  * Uses the ESP32-P4 TWAI (Two-Wire Automotive Interface) peripheral
- * connected to an SN65HVD230 CAN transceiver module.
+ * wired to the TJA1051 CAN transceiver that's already populated on the
+ * Waveshare ESP32-P4-WIFI6-Touch-LCD-7B (no external module required).
+ * CANH/CANL come out on the on-board CAN header.
  *
- * Pin assignment (directly adjacent to GPS header pins):
- *   CAN TX = GPIO 23  (ESP32 -> SN65HVD230 D pin)
- *   CAN RX = GPIO 24  (SN65HVD230 R pin -> ESP32)
+ * Pin assignment (per Waveshare schematic, fixed by board layout):
+ *   CAN TX = GPIO 22  (ESP32 -> TJA1051 TXD)
+ *   CAN RX = GPIO 21  (TJA1051 RXD -> ESP32)
  *
  * The active car profile (.brl) defines which CAN IDs to listen to,
  * how to extract signals (byte position, length, scale/offset), and
@@ -26,8 +28,8 @@
 extern "C" {
 #endif
 
-#define CAN_TX_PIN  5       // ESP32 -> SN65HVD230 D pin  (Header IO5)
-#define CAN_RX_PIN  28      // SN65HVD230 R pin -> ESP32  (Header IO28)
+#define CAN_TX_PIN  22      // ESP32 -> TJA1051 TXD  (on-board)
+#define CAN_RX_PIN  21      // TJA1051 RXD -> ESP32  (on-board)
 
 /// Initialize and start TWAI driver using bitrate from active car profile.
 /// Returns true if driver started successfully.

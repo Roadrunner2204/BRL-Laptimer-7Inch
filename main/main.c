@@ -33,6 +33,7 @@
 #include "obd/obd_bt.h"
 #include "wifi/wifi_mgr.h"
 #include "wifi/data_server.h"
+#include "wifi/mirror.h"
 #include "storage/sd_mgr.h"
 #include "storage/session_store.h"
 #include "timing/lap_timer.h"
@@ -40,7 +41,6 @@
 #include "data/lap_data.h"
 #include "data/car_profile.h"
 #include "can/can_bus.h"
-#include "sensors/analog_in.h"
 #include "camera_link/cam_link.h"
 #include "esp_timer.h"
 
@@ -58,7 +58,6 @@ extern void lv_my_setup(void);
 static void logic_task(void *param)
 {
     (void)param;
-    uint32_t last_analog_ms = 0;
     for (;;) {
         xSemaphoreTake(g_state_mutex, portMAX_DELAY);
         gps_poll();
@@ -74,13 +73,6 @@ static void logic_task(void *param)
         data_server_poll();
         cam_link_poll();
         cam_link_pump_telemetry();
-
-        /* Analog inputs sampled at ~10 Hz — no need to read 200x/s */
-        uint32_t now = esp_timer_get_time() / 1000;
-        if (now - last_analog_ms >= 100) {
-            last_analog_ms = now;
-            analog_in_poll();
-        }
 
         vTaskDelay(pdMS_TO_TICKS(5));
     }
@@ -188,11 +180,6 @@ void app_main(void)
     ESP_LOGI(TAG, "lap_timer_init");
     lap_timer_init();
 
-    /* ── Analog inputs (ADC1 channels 4..7 on GPIO 20/21/22/23) ─ */
-    ESP_LOGI(TAG, "analog_in_init");
-    analog_in_init();
-    analog_in_load_config();
-
     /* ── WiFi (ESP32-C6 co-processor via SDIO / esp_hosted) ─── */
     ESP_LOGI(TAG, "wifi_mgr_init");
     wifi_mgr_init();
@@ -212,6 +199,13 @@ void app_main(void)
     lv_my_setup();
     bsp_display_unlock();
     ESP_LOGI(TAG, "lv_my_setup DONE");
+
+    /* ── Screen-mirror: virtual touch indev for the Android remote.
+     * Must run AFTER lv_my_setup so the default display + active screen
+     * exist. The HW JPEG encoder is allocated lazily on the first stream
+     * so this call is cheap (just creates an indev + queue). */
+    ESP_LOGI(TAG, "mirror_init");
+    mirror_init();
 
     /* ── CAN bus auto-start (config loaded by lv_my_setup → dash_config_load) */
     if (g_state.veh_conn_mode == VEH_CONN_CAN_DIRECT && g_car_profile.loaded) {

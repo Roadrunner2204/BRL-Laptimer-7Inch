@@ -40,6 +40,7 @@ typedef struct {
     int16_t   delta_bar_h;
     // Status bar labels
     lv_obj_t *sb_gps_lbl, *sb_obd_lbl;
+    lv_obj_t *sb_ref_lbl;     // small "● Ref" / "○ no Ref" status indicator
     // Header
     lv_obj_t *track_name_lbl;
     // GPS map widget (shown when a slot has FIELD_MAP)

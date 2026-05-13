@@ -27,6 +27,8 @@
 #include "obd_dynamic.h"
 #include "../data/lap_data.h"
 #include "../data/car_profile.h"
+#include "universal_obd_pids.h"
+#include "computed_pids.h"
 #include "../ui/dash_config.h"
 #include "compat.h"
 
@@ -87,6 +89,7 @@ enum OBDCmd : uint8_t {
     CMD_READ_PID       = 0x01,   // [PID]                  → [SVC, PID, data...]
     CMD_READ_VIN       = 0x02,   // []                     → [VIN 17 chars]
     CMD_READ_MULTI_PID = 0x05,   // [PID1..PID6, max 6]    → [SVC, PID1, d.., PID2, d..]
+    CMD_DISCOVER_PIDS  = 0x06,   // []                     → [28 byte bitmap PIDs 0x01..0xE0]
     CMD_READ_DID_22    = 0x10,   // [DID_hi, DID_lo]       → [SVC=0x62, DID, data...]
     // BMW F-Series Extended-Addressing (DDE/DME, EGS, DSC). Adapter sendet
     // an 0x6F1 mit Target-Byte vor PCI, empfängt auf 0x600+TARGET, skipt
@@ -221,7 +224,7 @@ struct ActivePid {
 // then strike valid PIDs as missing and they end up dead even though they
 // work fine. 4 PIDs per request is the sweet spot that BMW reliably
 // returns; only ~50 ms slower than 6 per round-trip.
-#define MULTI_PID_MAX      4
+#define MULTI_PID_MAX      6   // Adapter erlaubt 6, Antwort wird ISO-TP-Multi-Frame
 
 // CarSensor.proto values we care about (CAN-Checked .brl convention):
 #define BRL_PROTO_PT_CAN     0   // 11-bit broadcast (only via CAN-Direct)
@@ -259,9 +262,11 @@ static bool      s_bmw_first_ok_logged           = false;
 // trustworthy.
 static bool      s_session_had_alive             = false;
 
-// Secondary profile loaded from /cars/OBD.brl. Only populated when the main
-// car profile doesn't contain OBD2 (proto=7DF) sensors, so that users with
-// a PT-CAN hardwire profile still get OBD2 data via the BLE adapter.
+// Universal-OBD2-Liste — fest einkompiliert (universal_obd_pids.h), eine
+// einzige Quelle der Wahrheit für OBD-BLE. Wird beim ersten rebuild_pid_list
+// einmal in s_obd_profile_fallback kopiert und dann immer wiederverwendet.
+// Vehicle-spezifische Profile (BMW UDS, motor-specific Mode-01 Extras) leben
+// daneben in s_vehicle_profile.
 static CarProfile s_obd_profile_fallback = {};
 static bool       s_obd_profile_tried    = false;
 
@@ -282,7 +287,7 @@ static int count_obd2_sensors(const CarProfile *p)
 //                                 DID = top 16 bits, bank = 0x01 (DDE)
 // PT-CAN broadcast (proto=0) is intentionally skipped — that lives on
 // the passive bus side and is only reachable when the user runs the
-// laptimer in CAN-Direct mode (SN65HVD230 hardwired to PT-CAN).
+// laptimer in CAN-Direct mode (on-board TJA1051 hardwired to PT-CAN).
 static void append_sensors_of_proto(const CarProfile *p, uint8_t proto)
 {
     if (!p || !p->loaded) return;
@@ -305,23 +310,43 @@ static void append_sensors_of_proto(const CarProfile *p, uint8_t proto)
             ap.pid    = (uint8_t)(s->can_id & 0xFFu);
             ap.did    = 0;
             ap.target = 0;
-            ESP_LOGI(TAG,
-                "  PID 0x%02X '%s'  start=%d len=%d scale=%.6f "
-                "offset=%.3f  unsigned=%d",
-                (unsigned)ap.pid, s->name,
-                (int)s->start, (int)s->len,
-                (double)s->scale, (double)s->offset,
-                (int)s->is_unsigned);
+            // Discovery-Filter: wenn die Bitmap vom Adapter sagt dass das
+            // Auto diesen PID nicht unterstützt, gleich tot markieren — wir
+            // verschwenden keine Polling-Round-Trips auf 8 Strikes Lernphase.
+            // Wenn keine Discovery vorliegt (Adapter v1.0 oder Discovery-
+            // Antwort timeout-te), liefert obd_pid_is_supported immer true →
+            // Verhalten unverändert, nur try-and-cache.
+            if (!obd_pid_is_supported(ap.pid)) {
+                ap.dead    = true;
+                ap.strikes = DEAD_THRESHOLD;
+                ESP_LOGI(TAG,
+                    "  PID 0x%02X '%s'  → SKIP (nicht in Discovery-Bitmap)",
+                    (unsigned)ap.pid, s->name);
+            } else {
+                ESP_LOGI(TAG,
+                    "  PID 0x%02X '%s'  start=%d len=%d scale=%.6f "
+                    "offset=%.3f  unsigned=%d",
+                    (unsigned)ap.pid, s->name,
+                    (int)s->start, (int)s->len,
+                    (double)s->scale, (double)s->offset,
+                    (int)s->is_unsigned);
+            }
         } else if (proto == BRL_PROTO_UDS_BMW) {
-            // BMW DID is the top 16 bits of can_id.
-            // Target ECU byte is the low 8 bits. Default to 0x12 (DDE/DME)
-            // when the .brl encoded `bank` byte is 0 or 1 (legacy values
-            // that didn't carry meaningful target information). User can
-            // override per-sensor by encoding 0x18 (EGS), 0x29 (DSC), etc.
+            // BMW DID is the top 16 bits of can_id, target byte is low 8 bits.
+            //
+            // 2026-05-04: Bug-Fix. CANchecked Original-TRX (N47F.TRX) hat
+            // für ALLE DDE-DIDs target=0x01 — das ist die korrekte Adresse
+            // für den N47-DDE auf F-Series. Die alte Heuristik
+            // "0x00/0x01 = legacy → ersetze durch 0x12" hat das auf
+            // 0x12 (E-Series-DDE) überschrieben und damit die DDE komplett
+            // unhörbar gemacht. Im F20-Test 2026-05-03 kamen 0/180 Antworten.
+            //
+            // Jetzt: target = bank byte, 1:1 wie in CANchecked. Nur 0x00
+            // (echtes "leer") fällt auf 0x12 als E-Series-Default zurück.
             ap.pid    = 0;
             ap.did    = (uint16_t)((s->can_id >> 8) & 0xFFFFu);
             uint8_t bank = (uint8_t)(s->can_id & 0xFFu);
-            ap.target = (bank == 0x00 || bank == 0x01) ? 0x12 : bank;
+            ap.target = (bank == 0x00) ? 0x12 : bank;
             ESP_LOGI(TAG,
                 "  DID 0x%04X '%s'  target=0x%02X  start=%d len=%d "
                 "scale=%.6f offset=%.3f  unsigned=%d  (UDS Mode 22)",
@@ -336,8 +361,9 @@ static void append_sensors_of_proto(const CarProfile *p, uint8_t proto)
 
 // Build the active sensor list. The BLE adapter handles two protocols:
 //   - OBD2 Mode 01 (proto=7) — universal, decoder uses CMD_READ_PID /
-//                              CMD_READ_MULTI_PID, sourced from
-//                              /cars/OBD.brl
+//                              CMD_READ_MULTI_PID, sourced from the
+//                              einkompilierten Universal-OBD-Liste
+//                              (universal_obd_pids.h)
 //   - UDS BMW Mode 22 (proto=2) — vehicle-specific, decoder uses
 //                                  CMD_READ_DID_22, sourced from the
 //                                  active vehicle profile (e.g.
@@ -347,10 +373,10 @@ static void append_sensors_of_proto(const CarProfile *p, uint8_t proto)
 // PT-CAN broadcast (proto=0) sensors are intentionally not selectable
 // over the adapter — the adapter has no passive-listen command. Those
 // only become visible when the user runs the laptimer in CAN-Direct
-// mode (SN65HVD230 hardwired to PT-CAN).
+// mode (on-board TJA1051 hardwired to PT-CAN).
 //
 // Order:
-//   1. /cars/OBD.brl                                — generic OBD2 baseline
+//   1. Universal-OBD2-Liste (einkompiliert)         — generic OBD2 baseline
 //   2. /cars/<active>.brl proto=7 (extra OBD2-PIDs) — vehicle-specific
 //   3. /cars/<active>.brl proto=2 (UDS DIDs)        — vehicle-specific
 //   4. fallback DEFAULT_PIDS if nothing else loaded
@@ -367,22 +393,40 @@ static void rebuild_pid_list(const char *cache_key)
 
     obd_pid_cache_load(cache_key);
 
-    // 1. Load /cars/OBD.brl lazily — once per session.
+    // 1. Universal-OBD-Liste fest einkompiliert (universal_obd_pids.h).
+    //    Eine einzige Quelle der Wahrheit — kein SD-Override, kein Server-
+    //    Download. OBD-BLE-Mode ist generisch genug dass alle Autos vom
+    //    selben PID-Pool bedient werden; die Discovery-Bitmap filtert
+    //    runter auf das was das jeweilige Auto wirklich antwortet.
+    //    Vehicle-spezifische Sensoren (BMW UDS DIDs etc.) leben weiter
+    //    im aktiven Vehicle-Profile (N47F.brl etc., siehe Schritt 2+3).
     if (!s_obd_profile_tried) {
         s_obd_profile_tried = true;
-        if (car_profile_load_into("OBD.brl", &s_obd_profile_fallback)) {
-            ESP_LOGI(TAG, "Loaded /cars/OBD.brl: %d sensors (%d OBD2-flagged)",
-                     s_obd_profile_fallback.sensor_count,
-                     count_obd2_sensors(&s_obd_profile_fallback));
-        } else {
-            ESP_LOGW(TAG, "/cars/OBD.brl not found — using built-in 5-PID fallback");
+        memset(&s_obd_profile_fallback, 0, sizeof(s_obd_profile_fallback));
+        strncpy(s_obd_profile_fallback.name,   "Universal OBD2",
+                sizeof(s_obd_profile_fallback.name)   - 1);
+        strncpy(s_obd_profile_fallback.engine, "Generic",
+                sizeof(s_obd_profile_fallback.engine) - 1);
+        int n = UNIVERSAL_OBD_SENSOR_COUNT;
+        if (n > CAR_MAX_SENSORS) n = CAR_MAX_SENSORS;
+        for (int i = 0; i < n; i++) {
+            s_obd_profile_fallback.sensors[i] = UNIVERSAL_OBD_SENSORS[i];
         }
+        s_obd_profile_fallback.sensor_count = n;
+        s_obd_profile_fallback.loaded       = true;
+        ESP_LOGI(TAG, "Universal-OBD-Liste eingebaut geladen: %d Sensoren", n);
     }
 
     // 2+3. Load the user-selected vehicle profile so we can emit its
-    //      Mode-22 DIDs (and any extra Mode-01 PIDs not in OBD.brl).
+    //      Mode-22 DIDs (and any extra Mode-01 PIDs not in the Universal-
+    //      Liste). Defensive: ignore stale "OBD.brl" entries from old NVS
+    //      configs — the Universal-Liste is already loaded above and a
+    //      duplicate OBD.brl on SD would just double the dead-cache.
     char active_name[32];
     car_profile_get_active(active_name, sizeof(active_name));
+    if (strcasecmp(active_name, "OBD.brl") == 0) {
+        active_name[0] = '\0';
+    }
     if (active_name[0]
         && (!s_vehicle_tried || strcmp(active_name, s_vehicle_name) != 0)) {
         s_vehicle_tried = true;
@@ -407,35 +451,22 @@ static void rebuild_pid_list(const char *cache_key)
         }
     }
 
-    // Append in priority order. OBD.brl first so generic PIDs always
+    // Append in priority order. Universal-OBD2 first so generic PIDs always
     // populate; vehicle-specific overrides come second (sensors with
     // duplicate PIDs end up in s_pids[] twice but that's fine — both
     // get polled, dynamic slots can pick whichever they reference by
     // name/index).
     if (count_obd2_sensors(&s_obd_profile_fallback) > 0) {
         append_sensors_of_proto(&s_obd_profile_fallback, BRL_PROTO_OBD2_MODE1);
-        ESP_LOGI(TAG, "OBD.brl: %d Mode-01 PIDs active",
+        ESP_LOGI(TAG, "Universal OBD2: %d Mode-01 PIDs active",
                  s_pid_count);
     }
     if (s_vehicle_profile.loaded) {
-        // Skip the vehicle-profile pass when the user has accidentally
-        // pointed the active profile at /cars/OBD.brl itself — that's
-        // already loaded as the fallback, doubling its 30+ Mode-01
-        // PIDs into s_pids[] just inflates the dead-cache and hides
-        // the fact that no UDS DIDs are coming. Tell the user clearly.
-        if (strcasecmp(s_vehicle_name, "OBD.brl") == 0) {
-            ESP_LOGW(TAG,
-                "Active vehicle profile is OBD.brl — that's the generic "
-                "OBD2 baseline, not a car-specific profile. Pick e.g. "
-                "N47F.brl (or your engine's .brl) in Settings → Vehicle "
-                "to enable BMW UDS DIDs.");
-        } else {
-            int before = s_pid_count;
-            append_sensors_of_proto(&s_vehicle_profile, BRL_PROTO_OBD2_MODE1);
-            append_sensors_of_proto(&s_vehicle_profile, BRL_PROTO_UDS_BMW);
-            ESP_LOGI(TAG, "Vehicle profile: +%d sensors (Mode-01 + UDS)",
-                     s_pid_count - before);
-        }
+        int before = s_pid_count;
+        append_sensors_of_proto(&s_vehicle_profile, BRL_PROTO_OBD2_MODE1);
+        append_sensors_of_proto(&s_vehicle_profile, BRL_PROTO_UDS_BMW);
+        ESP_LOGI(TAG, "Vehicle profile: +%d sensors (Mode-01 + UDS)",
+                 s_pid_count - before);
     }
     if (s_pid_count == 0) {
         // Last resort — hardcoded defaults (RPM/TPS/MAP/Coolant/Intake)
@@ -701,6 +732,9 @@ static bool apply_profile_sensor_cached(int pid_idx,
     if (ap->proto == BRL_PROTO_OBD2_MODE1) {
         obd_dynamic_set(ap->pid, value);
     }
+    // Computed-PIDs füttern (Boost-Calc, AFR, Power, Torque). Hinkt 0 ms
+    // hinter dem Live-Wert hinterher — wird beim nächsten Render abgefragt.
+    computed_update(s->name, value);
     return route_sensor(s->name, value);
 }
 
@@ -841,6 +875,53 @@ static void send_vin_request(void)
                                          cmd, sizeof(cmd));
     if (rc != 0) {
         ESP_LOGW(TAG, "Write VIN failed: rc=%d", rc);
+        return;
+    }
+    s_rx_ready = false;
+    s_req_ts   = millis();
+}
+
+// 28-byte Bitmap supporteter Mode-01 PIDs (vom Adapter via CMD_DISCOVER_PIDS).
+// Layout MSB-first: byte[0] bit7 = PID 0x01 ... byte[27] bit0 = PID 0xE0.
+// s_pid_disc_complete = true sobald die Antwort erfolgreich verarbeitet wurde.
+// Vor dem ersten Connect (oder wenn Adapter v1.0 = ohne Discovery): false →
+// is_supported() liefert immer true und wir fallen aufs alte Lernverhalten
+// zurück (try-and-mark-dead).
+static uint8_t s_supported_pids[28] = {0};
+static bool    s_pid_disc_complete  = false;
+
+// Brücke zwischen OBD_FINGERPRINTING (VIN-Read fertig) und OBD_DISCOVERING
+// (Bitmap-Antwort empfangen): wir brauchen den Cache-Key (von VIN abgeleitet
+// oder Profil-Fallback) erst NACH der Discovery wieder, weil rebuild_pid_list
+// die Bitmap nutzt um nicht-supportete PIDs sofort dead zu markieren.
+static char s_pending_cache_key[16] = {0};
+
+bool obd_pid_discovery_complete(void) { return s_pid_disc_complete; }
+
+bool obd_pid_is_supported(uint8_t pid)
+{
+    if (!s_pid_disc_complete) return true;   // unbekannt → nicht filtern
+    if (pid == 0x00 || pid == 0x20 || pid == 0x40 || pid == 0x60
+        || pid == 0x80 || pid == 0xA0 || pid == 0xC0)
+        return true;                          // Anchor-PIDs sind per Definition probierbar
+    if (pid < 0x01 || pid > 0xE0) return false;
+    uint8_t bit_idx  = (uint8_t)(pid - 1);    // PID 0x01 → bit 0
+    uint8_t byte_idx = bit_idx / 8;
+    uint8_t bit_pos  = 7 - (bit_idx % 8);     // MSB-first innerhalb des Bytes
+    return (s_supported_pids[byte_idx] & (1u << bit_pos)) != 0;
+}
+
+// Adapter ≥ v1.1 antwortet auf CMD_DISCOVER_PIDS mit der 28-byte Bitmap.
+// v1.0 antwortet mit ERR_NO_RESP / ERR_NOT_INIT — wir akzeptieren das und
+// laufen ohne Filter weiter (s_pid_disc_complete bleibt false).
+static void send_discover_request(void)
+{
+    if (s_cmd_val_handle == 0 || s_conn_handle == BLE_HS_CONN_HANDLE_NONE) return;
+    uint8_t cmd[1] = { CMD_DISCOVER_PIDS };
+    int rc = ble_gattc_write_no_rsp_flat(s_conn_handle, s_cmd_val_handle,
+                                         cmd, sizeof(cmd));
+    if (rc != 0) {
+        ESP_LOGW(TAG, "Write DISCOVER_PIDS failed: rc=%d", rc);
         return;
     }
     s_rx_ready = false;
@@ -1204,6 +1285,27 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
                          event->connect.conn_handle);
                 s_conn_handle = event->connect.conn_handle;
 
+                // Connection-Interval auf Minimum drücken — wir wollen
+                // Torque-Pro-Geschwindigkeit. Default war 30-50ms, das macht
+                // jeden BLE-Roundtrip langsam. 7.5-15ms = ~6× schneller.
+                //   itvl_min/max in 1.25 ms units → 6 = 7.5 ms, 12 = 15 ms
+                //   latency=0 (Slave muss jeden Slot aktiv sein)
+                //   supervision_timeout=400 (= 4 s)
+                struct ble_gap_upd_params cp = {};
+                cp.itvl_min            = 6;
+                cp.itvl_max            = 12;
+                cp.latency             = 0;
+                cp.supervision_timeout = 400;
+                cp.min_ce_len          = 0;
+                cp.max_ce_len          = 0;
+                int up = ble_gap_update_params(s_conn_handle, &cp);
+                if (up == 0) {
+                    ESP_LOGI(TAG, "Conn-Interval-Update angefragt: 7.5-15ms");
+                } else {
+                    ESP_LOGW(TAG, "Conn-Interval-Update failed rc=%d "
+                             "(läuft mit Default ~30-50ms weiter)", up);
+                }
+
                 // Reset discovery state
                 s_svc_found = false;
                 s_cmd_val_handle  = 0;
@@ -1236,6 +1338,13 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
             s_svc_found = false;
             s_bmw_first_req_logged = false;
             s_bmw_first_ok_logged  = false;
+            // Discovery-Bitmap verfällt mit der Connection — bei Reconnect
+            // ggf. anderes Auto, da darf eine alte Bitmap nicht stehenbleiben.
+            s_pid_disc_complete = false;
+            memset(s_supported_pids, 0, sizeof(s_supported_pids));
+            // Computed-Werte (AFR-Stoich, MAP, Lambda etc.) auch invalidieren
+            // — beim nächsten Connect kommt evtl. ein anderes Auto/Fuel-Type.
+            computed_reset();
             g_state.obd.connected = false;
             g_state.obd_connected = false;
             s_state    = OBD_ERROR;
@@ -1528,9 +1637,60 @@ void obd_bt_poll(void)
                     strncpy(key, "default", sizeof(key) - 1);
                 }
             }
-            rebuild_pid_list(key);
+            // Cache-Key für später aufheben — rebuild_pid_list passiert erst
+            // nach DISCOVERING (sonst weiß der List-Builder nicht welche PIDs
+            // zu skippen). s_pending_cache_key ist File-scope (oben deklariert).
+            strncpy(s_pending_cache_key, key, sizeof(s_pending_cache_key) - 1);
+            s_pending_cache_key[sizeof(s_pending_cache_key) - 1] = '\0';
+
+            // PID-Discovery anstoßen — Adapter pollt die supported-PIDs-Bitmap.
+            // Adapter v1.0 (ohne Discovery) antwortet ERR_NO_RESP → wir laufen
+            // ohne Filter weiter, das wird in OBD_DISCOVERING abgefangen.
+            ESP_LOGI(TAG, "VIN done, querying supported PIDs (DISCOVER_PIDS)");
+            s_pid_disc_complete = false;
+            memset(s_supported_pids, 0, sizeof(s_supported_pids));
+            send_discover_request();
+            s_state = OBD_DISCOVERING;
+            break;
+        }
+
+        case OBD_DISCOVERING: {
+            // Adapter-Antwort: [CMD_DISCOVER_PIDS][STATUS][28 byte bitmap]
+            // = 30 byte. Bei v1.0-Adapter (ohne Discovery): [CMD][NICHT_OK].
+            // Bei Bus-Fehler: ERR_NOT_INIT. Bei 1.5s Timeout: einfach weiter
+            // ohne Bitmap — alte try-and-cache Pollerei greift dann wieder.
+            bool proceed = false;
+            if (s_rx_ready) {
+                if (s_rx_len >= 30 && s_rx_buf[0] == CMD_DISCOVER_PIDS
+                    && s_rx_buf[1] == STATUS_OK) {
+                    memcpy(s_supported_pids, s_rx_buf + 2, 28);
+                    s_pid_disc_complete = true;
+                    int n_supp = 0;
+                    for (int i = 0; i < 28; i++) {
+                        for (int b = 0; b < 8; b++) {
+                            if (s_supported_pids[i] & (1u << b)) n_supp++;
+                        }
+                    }
+                    ESP_LOGI(TAG, "PID-Discovery: %d supportete PIDs", n_supp);
+                } else {
+                    ESP_LOGW(TAG, "PID-Discovery deklined (len=%d, status=0x%02X) — "
+                             "fallback auf try-and-cache",
+                             (int)s_rx_len,
+                             s_rx_len >= 2 ? s_rx_buf[1] : 0xFF);
+                }
+                s_rx_ready = false;
+                proceed = true;
+            } else if (now - s_req_ts > 1500) {
+                ESP_LOGW(TAG, "PID-Discovery timeout — Adapter v1.0? "
+                         "fallback auf try-and-cache");
+                proceed = true;
+            }
+            if (!proceed) break;
+
+            rebuild_pid_list(s_pending_cache_key);
             s_state = OBD_CONNECTED;
-            ESP_LOGI(TAG, "Connected to BRL OBD Adapter (cache key: %s)", key);
+            ESP_LOGI(TAG, "Connected to BRL OBD Adapter (cache key: %s)",
+                     s_pending_cache_key);
             for (int i = 0; i < s_pid_count; i++) {
                 if (!s_pids[i].dead) { s_pid_idx = i; break; }
             }

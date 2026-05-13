@@ -272,11 +272,6 @@ bool cam_link_send_obd(const CamTelemetryObd *t)
     return t ? send_frame(CAM_FRAME_TELE_OBD, t, sizeof(*t)) : false;
 }
 
-bool cam_link_send_analog(const CamTelemetryAnalog *t)
-{
-    return t ? send_frame(CAM_FRAME_TELE_ANALOG, t, sizeof(*t)) : false;
-}
-
 bool cam_link_send_lap_marker(const CamLapMarker *m)
 {
     return m ? send_frame(CAM_FRAME_LAP_MARKER, m, sizeof(*m)) : false;

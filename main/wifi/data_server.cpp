@@ -23,6 +23,7 @@
 #include "../timing/lap_timer.h"
 #include "../obd/obd_status.h"
 #include "../camera_link/cam_link.h"
+#include "mirror.h"
 #include "compat.h"
 
 #include <string.h>
@@ -32,7 +33,10 @@
 
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "cJSON.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
@@ -56,6 +60,53 @@ static esp_err_t set_cors_headers(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Content-Type");
     httpd_resp_set_hdr(req, "Connection", "close");
     return ESP_OK;
+}
+
+// ---------------------------------------------------------------------------
+// JSON-escape a string into a fixed buffer. Escapes per RFC 8259: quote,
+// backslash, and control chars 0x00..0x1F. Truncates if the destination
+// is too small. Returns number of bytes written (excluding NUL).
+//
+// Used by the snprintf-built JSON in handle_sessions / handle_tracks_get
+// where strings come from user-controlled fields (session name, track
+// name) that may contain newlines after a phone-keyboard mishap.
+// ---------------------------------------------------------------------------
+static size_t json_escape(char *dst, size_t dst_sz, const char *src)
+{
+    if (!dst || dst_sz == 0) return 0;
+    size_t o = 0;
+    if (!src) { dst[0] = '\0'; return 0; }
+    for (size_t i = 0; src[i]; i++) {
+        unsigned char c = (unsigned char)src[i];
+        const char *esc = nullptr;
+        char ubuf[8] = {};
+        switch (c) {
+            case '"':  esc = "\\\""; break;
+            case '\\': esc = "\\\\"; break;
+            case '\b': esc = "\\b";  break;
+            case '\f': esc = "\\f";  break;
+            case '\n': esc = "\\n";  break;
+            case '\r': esc = "\\r";  break;
+            case '\t': esc = "\\t";  break;
+            default:
+                if (c < 0x20) {
+                    snprintf(ubuf, sizeof(ubuf), "\\u%04x", (unsigned)c);
+                    esc = ubuf;
+                }
+                break;
+        }
+        if (esc) {
+            size_t el = strlen(esc);
+            if (o + el + 1 > dst_sz) break;
+            memcpy(dst + o, esc, el);
+            o += el;
+        } else {
+            if (o + 1 + 1 > dst_sz) break;
+            dst[o++] = (char)c;
+        }
+    }
+    dst[o] = '\0';
+    return o;
 }
 
 // ---------------------------------------------------------------------------
@@ -139,16 +190,21 @@ static esp_err_t handle_sessions(httpd_req_t *req)
     int n = session_store_list_summaries(summaries, MAX_LAPS_PER_SESSION);
 
     httpd_resp_send_chunk(req, "[", 1);
-    char entry[256];
+    char entry[384];
+    char esc_id[96], esc_name[160], esc_track[160];
     for (int i = 0; i < n; i++) {
         const SessionSummary &s = summaries[i];
-        // JSON-escape minimal: we control the strings, but track names could
-        // contain quotes — be safe and skip entries with non-printable chars.
+        // Escape user-controlled strings. Without this a stray newline in a
+        // session name (entered via the phone-keyboard relay) makes the
+        // whole list unparseable for any spec-compliant JSON parser.
+        json_escape(esc_id,    sizeof(esc_id),    s.id);
+        json_escape(esc_name,  sizeof(esc_name),  s.name);
+        json_escape(esc_track, sizeof(esc_track), s.track);
         int elen = snprintf(entry, sizeof(entry),
             "%s{\"id\":\"%s\",\"name\":\"%s\",\"track\":\"%s\","
             "\"lap_count\":%u,\"best_ms\":%lu}",
             (i == 0) ? "" : ",",
-            s.id, s.name, s.track,
+            esc_id, esc_name, esc_track,
             (unsigned)s.lap_count, (unsigned long)s.best_ms);
         if (elen > 0) httpd_resp_send_chunk(req, entry, elen);
     }
@@ -463,19 +519,22 @@ static esp_err_t handle_tracks_get(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
 
     httpd_resp_send_chunk(req, "[", 1);
-    char entry[224];
+    char entry[320];
+    char esc_name[128], esc_country[64];
     int total = track_total_count();
     bool first = true;
     for (int i = 0; i < total; i++) {
         const TrackDef *td = track_get(i);
         if (!td) continue;
         if (track_is_shadowed(i)) continue;   // hide dup-name bundle entries
+        json_escape(esc_name,    sizeof(esc_name),    td->name);
+        json_escape(esc_country, sizeof(esc_country), td->country);
         int elen = snprintf(entry, sizeof(entry),
             "%s{\"index\":%d,\"name\":\"%s\",\"country\":\"%s\","
             "\"is_circuit\":%s,\"user_created\":%s,"
             "\"sector_count\":%u,\"length_km\":%.3f}",
             first ? "" : ",", i,
-            td->name, td->country,
+            esc_name, esc_country,
             td->is_circuit ? "true" : "false",
             td->user_created ? "true" : "false",
             (unsigned)td->sector_count, td->length_km);
@@ -902,10 +961,10 @@ static esp_err_t handle_sensors(httpd_req_t *req)
         const CarProfile *p_obd = (const CarProfile *)obd_bt_pid_profile();
         const CarProfile *p_veh = (const CarProfile *)obd_bt_vehicle_profile();
 
-        char src[64] = "obd.brl (not loaded)";
+        char src[64] = "Universal OBD2 (not loaded)";
         if (p_obd && p_veh)
-            snprintf(src, sizeof(src), "obd.brl + %s", p_veh->name);
-        else if (p_obd) snprintf(src, sizeof(src), "obd.brl");
+            snprintf(src, sizeof(src), "Universal OBD2 + %s", p_veh->name);
+        else if (p_obd) snprintf(src, sizeof(src), "Universal OBD2");
         else if (p_veh) snprintf(src, sizeof(src), "%s", p_veh->name);
         cJSON_AddStringToObject(doc, "source", src);
 
@@ -971,6 +1030,209 @@ static esp_err_t handle_sensors(httpd_req_t *req)
 }
 
 // ---------------------------------------------------------------------------
+// Screen-mirror endpoints
+//
+// The phone shows a live MJPEG of the laptimer display and forwards taps
+// back as logical-pixel touch events. Used when the physical touchscreen
+// is unreachable (case closed, phone-only setup workflow). One streaming
+// client at a time -- the ESP32-P4 has a single hardware JPEG encoder.
+//
+// /mirror.mjpeg + /screen.jpg run on a SECOND httpd instance bound to
+// port 8081. esp_http_server is single-threaded; if the streaming
+// handler blocks on the main port-80 server it would stall every other
+// endpoint (touch POSTs, status polls). Splitting the streaming server
+// onto its own port lets it block freely while /touch on port 80 keeps
+// servicing taps. The phone uses both URLs concurrently.
+// ---------------------------------------------------------------------------
+#define MIRROR_HTTPD_PORT  8081
+static httpd_handle_t s_httpd_mirror = nullptr;
+
+// Boundary "frame" must match the literal used in the Content-Type
+// header below and in the MJPEG_PART_HEADER prefix.
+static const char *MJPEG_PART_HEADER =
+    "\r\n--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
+
+// GET /mirror.mjpeg -- multipart/x-mixed-replace stream, frames at ~10 fps.
+static esp_err_t handle_mirror_mjpeg(httpd_req_t *req)
+{
+    if (!mirror_acquire_stream()) {
+        return send_err(req, "503 Service Unavailable", "stream busy");
+    }
+
+    set_cors_headers(req);
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, private");
+    // Boundary string is fixed (matches MJPEG_PART_HEADER) so we can use
+    // a static literal; httpd_resp_set_type stores the pointer rather
+    // than copying the string.
+    httpd_resp_set_type(req, "multipart/x-mixed-replace; boundary=frame");
+
+    char part_hdr[96];
+    int  frame = 0;
+    int64_t t0 = esp_timer_get_time();
+    esp_err_t r = ESP_OK;
+    ESP_LOGI(TAG, "GET /mirror.mjpeg -- stream open");
+
+    while (true) {
+        uint8_t *jpg = nullptr;
+        size_t jpg_n = 0;
+        esp_err_t err = mirror_capture_jpeg(&jpg, &jpg_n);
+        if (err != ESP_OK || !jpg || jpg_n == 0) {
+            ESP_LOGW(TAG, "mjpeg: capture err=%s n=%u",
+                     esp_err_to_name(err), (unsigned)jpg_n);
+            r = ESP_FAIL;
+            break;
+        }
+        int hn = snprintf(part_hdr, sizeof(part_hdr),
+                          MJPEG_PART_HEADER, (unsigned)jpg_n);
+        if (httpd_resp_send_chunk(req, part_hdr, hn) != ESP_OK) {
+            r = ESP_FAIL; break;
+        }
+        if (httpd_resp_send_chunk(req, (const char *)jpg, jpg_n) != ESP_OK) {
+            r = ESP_FAIL; break;
+        }
+
+        frame++;
+        if ((frame & 31) == 0) {
+            int64_t now = esp_timer_get_time();
+            float fps = 32.0f * 1e6f / (float)(now - t0);
+            ESP_LOGI(TAG, "mjpeg: %d frames, ~%.1f fps, last=%u B",
+                     frame, fps, (unsigned)jpg_n);
+            t0 = now;
+        }
+        // Pace ourselves so the encoder + WiFi don't starve the rest of the
+        // system. ~10 fps is plenty for a remote-control mirror.
+        vTaskDelay(pdMS_TO_TICKS(60));
+    }
+
+    mirror_release_stream();
+    ESP_LOGI(TAG, "mjpeg: stream closed after %d frames (rc=%d)", frame, r);
+    return r;
+}
+
+// GET /screen.jpg -- single-frame JPEG. Useful for poll-based UIs and
+// for verifying the encoder without setting up a multipart client.
+static esp_err_t handle_screen_jpg(httpd_req_t *req)
+{
+    if (!mirror_acquire_stream()) {
+        return send_err(req, "503 Service Unavailable", "encoder busy");
+    }
+    uint8_t *jpg = nullptr;
+    size_t jpg_n = 0;
+    esp_err_t err = mirror_capture_jpeg(&jpg, &jpg_n);
+    if (err != ESP_OK) {
+        mirror_release_stream();
+        return send_err(req, "500", "capture failed");
+    }
+    set_cors_headers(req);
+    httpd_resp_set_type(req, "image/jpeg");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    esp_err_t r = httpd_resp_send(req, (const char *)jpg, jpg_n);
+    mirror_release_stream();
+    return r;
+}
+
+// POST /touch  body: {"x":<0..1023>,"y":<0..599>,"down":true|false}
+//   Inject a touch event into LVGL in display logical coordinates. The
+//   phone is expected to scale its own normalised tap coordinates to the
+//   1024x600 logical canvas before posting. Body is small and sent at up
+//   to ~30 Hz during a drag, so we keep the parser tight and skip cJSON.
+static esp_err_t handle_touch_post(httpd_req_t *req)
+{
+    if (req->content_len <= 0 || req->content_len > 128) {
+        return send_err(req, "400 Bad Request", "body 1..128 bytes");
+    }
+    char body[132];
+    int total = 0;
+    while (total < req->content_len) {
+        int r = httpd_req_recv(req, body + total, req->content_len - total);
+        if (r <= 0) return send_err(req, "400 Bad Request", "recv failed");
+        total += r;
+    }
+    body[total] = '\0';
+
+    // Tiny ad-hoc parser -- avoids a cJSON_Parse per drag-event. Expected
+    // shape is {"x":N,"y":N,"down":true|false} with optional whitespace.
+    int  x = -1, y = -1;
+    bool down = false;
+    const char *px = strstr(body, "\"x\"");
+    const char *py = strstr(body, "\"y\"");
+    const char *pd = strstr(body, "\"down\"");
+    if (px) { px = strchr(px, ':'); if (px) x = atoi(px + 1); }
+    if (py) { py = strchr(py, ':'); if (py) y = atoi(py + 1); }
+    if (pd) { down = (strstr(pd, "true") != nullptr); }
+
+    if (x < 0 || y < 0) {
+        return send_err(req, "400 Bad Request", "x/y required");
+    }
+
+    // Log EVERY event while we're still debugging the touch path. Once
+    // it's confirmed working we can demote moves to LOG_DEBUG.
+    ESP_LOGI(TAG, "POST /touch x=%d y=%d %s",
+             x, y, down ? "DOWN" : "UP");
+
+    mirror_inject_touch((int16_t)x, (int16_t)y, down);
+
+    set_cors_headers(req);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
+// POST /text  body: {"add":"<utf8>", "bs":<n>}
+//   Phone-keyboard relay: appends utf8 text to (and/or backspaces from)
+//   the textarea bound to the currently visible LVGL keyboard. Both
+//   fields optional; firmware applies backspaces first, then add. Returns
+//   {"ok":true,"hit":true} when a textarea was found, hit:false otherwise
+//   so the app can show "kein Textfeld aktiv" feedback.
+static esp_err_t handle_text_post(httpd_req_t *req)
+{
+    if (req->content_len <= 0 || req->content_len > 1024) {
+        return send_err(req, "400 Bad Request", "body 1..1024 bytes");
+    }
+    char *body = (char *)malloc(req->content_len + 1);
+    if (!body) return send_err(req, "500", "oom");
+    int total = 0;
+    while (total < req->content_len) {
+        int r = httpd_req_recv(req, body + total, req->content_len - total);
+        if (r <= 0) { free(body); return send_err(req, "400 Bad Request", "recv"); }
+        total += r;
+    }
+    body[total] = '\0';
+
+    cJSON *doc = cJSON_Parse(body);
+    free(body);
+    if (!doc) return send_err(req, "400 Bad Request", "invalid JSON");
+
+    cJSON *bs  = cJSON_GetObjectItem(doc, "bs");
+    cJSON *add = cJSON_GetObjectItem(doc, "add");
+
+    bool hit = false;
+    if (cJSON_IsNumber(bs)) {
+        int n = (int)bs->valuedouble;
+        if (n > 256) n = 256;          // cap so a misbehaving client can't loop us
+        for (int i = 0; i < n; i++) {
+            if (mirror_inject_backspace()) hit = true;
+            else break;                // no textarea -> stop
+        }
+    }
+    if (cJSON_IsString(add) && add->valuestring && *add->valuestring) {
+        if (mirror_inject_text(add->valuestring)) hit = true;
+        ESP_LOGI(TAG, "POST /text add=\"%s\" hit=%d",
+                 add->valuestring, hit ? 1 : 0);
+    } else if (cJSON_IsNumber(bs)) {
+        ESP_LOGI(TAG, "POST /text bs=%d hit=%d",
+                 (int)bs->valuedouble, hit ? 1 : 0);
+    }
+    cJSON_Delete(doc);
+
+    set_cors_headers(req);
+    httpd_resp_set_type(req, "application/json");
+    char buf[64];
+    int n = snprintf(buf, sizeof(buf), "{\"ok\":true,\"hit\":%s}",
+                     hit ? "true" : "false");
+    return httpd_resp_send(req, buf, n);
+}
+
+// ---------------------------------------------------------------------------
 // GET /obd_status -- per-FieldId freshness map for slot pickers in the
 // Android app + Studio. Tiny payload (~256 ints worst case), polled
 // every couple of seconds when a layout editor is open.
@@ -1019,6 +1281,10 @@ static const httpd_uri_t s_uri_handlers[] = {
     { .uri = "/obd_status",    .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
     { .uri = "/sensors",       .method = HTTP_GET,    .handler = handle_sensors,         .user_ctx = nullptr },
     { .uri = "/sensors",       .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
+    { .uri = "/touch",         .method = HTTP_POST,   .handler = handle_touch_post,      .user_ctx = nullptr },
+    { .uri = "/touch",         .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
+    { .uri = "/text",          .method = HTTP_POST,   .handler = handle_text_post,       .user_ctx = nullptr },
+    { .uri = "/text",          .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
     { .uri = "/video/*",       .method = HTTP_GET,    .handler = handle_video_get,       .user_ctx = nullptr },
     { .uri = "/video/*",       .method = HTTP_OPTIONS,.handler = handle_options,         .user_ctx = nullptr },
     { .uri = "/generate_204",  .method = HTTP_GET,    .handler = handle_generate_204,    .user_ctx = nullptr },
@@ -1035,7 +1301,12 @@ void data_server_start(void)
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn   = httpd_uri_match_wildcard;
-    config.max_uri_handlers = 24;
+    // Each URI typically registers 2 handlers (the verb + OPTIONS for CORS)
+    // and a couple have 3 (e.g. /session/* with GET+DELETE+OPTIONS). The
+    // s_uri_handlers table now holds ~34 entries; default 24 silently
+    // dropped the last 10 ("no slots left") which made /touch + /text
+    // 404 even though the code was correct. Keep some headroom.
+    config.max_uri_handlers = 48;
     config.lru_purge_enable = true;
     // Default stack is 4 KB — too small for POST /track, which allocates a
     // TrackDef on stack, parses cJSON, writes SD, then reloads the whole
@@ -1063,6 +1334,49 @@ void data_server_start(void)
         httpd_register_uri_handler(s_httpd, &s_uri_handlers[i]);
     }
 
+    // Second httpd instance on port 8081 for the screen-mirror stream.
+    // esp_http_server is single-threaded; the MJPEG handler blocks for the
+    // duration of the stream, so it has to live on a server that nothing
+    // else uses -- otherwise /touch and /status would stall while a phone
+    // is mirroring. ctrl_port is bumped so the two servers don't collide
+    // on the default control socket.
+    {
+        httpd_config_t mc = HTTPD_DEFAULT_CONFIG();
+        mc.server_port      = MIRROR_HTTPD_PORT;
+        mc.ctrl_port        = 32769;
+        mc.lru_purge_enable = true;
+        mc.max_uri_handlers = 6;
+        mc.stack_size       = 6144;
+        // Mirror server only sees the long-lived MJPEG stream + the
+        // occasional /screen.jpg poke -- 3 sockets is plenty and saves
+        // 4 of the LWIP socket pool for the main port-80 server.
+        mc.max_open_sockets = 3;
+        // The stream sends ~100 KB chunks over WiFi; if the phone briefly
+        // stalls we don't want to drop a frame mid-write.
+        mc.send_wait_timeout = 15;
+        mc.recv_wait_timeout = 15;
+        if (httpd_start(&s_httpd_mirror, &mc) == ESP_OK) {
+            httpd_uri_t u;
+            u = (httpd_uri_t){ .uri="/mirror.mjpeg", .method=HTTP_GET,
+                               .handler=handle_mirror_mjpeg, .user_ctx=nullptr };
+            httpd_register_uri_handler(s_httpd_mirror, &u);
+            u = (httpd_uri_t){ .uri="/mirror.mjpeg", .method=HTTP_OPTIONS,
+                               .handler=handle_options,      .user_ctx=nullptr };
+            httpd_register_uri_handler(s_httpd_mirror, &u);
+            u = (httpd_uri_t){ .uri="/screen.jpg",  .method=HTTP_GET,
+                               .handler=handle_screen_jpg,   .user_ctx=nullptr };
+            httpd_register_uri_handler(s_httpd_mirror, &u);
+            u = (httpd_uri_t){ .uri="/screen.jpg",  .method=HTTP_OPTIONS,
+                               .handler=handle_options,      .user_ctx=nullptr };
+            httpd_register_uri_handler(s_httpd_mirror, &u);
+            ESP_LOGI(TAG, "Mirror HTTP server started on port %d",
+                     (int)MIRROR_HTTPD_PORT);
+        } else {
+            ESP_LOGE(TAG, "Mirror httpd_start failed");
+            s_httpd_mirror = nullptr;
+        }
+    }
+
     // Start DNS captive-portal responder
     dns_server_start();
 
@@ -1076,6 +1390,10 @@ void data_server_stop(void)
 
     dns_server_stop();
 
+    if (s_httpd_mirror) {
+        httpd_stop(s_httpd_mirror);
+        s_httpd_mirror = nullptr;
+    }
     if (s_httpd) {
         httpd_stop(s_httpd);
         s_httpd = nullptr;

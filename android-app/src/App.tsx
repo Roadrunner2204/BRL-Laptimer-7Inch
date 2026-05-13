@@ -15,6 +15,7 @@ import CompareScreen   from './screens/CompareScreen';
 import OverlayConfigScreen from './screens/OverlayConfigScreen';
 import TrackCreatorScreen from './screens/TrackCreatorScreen';
 import TracksScreen from './screens/TracksScreen';
+import MirrorScreen from './screens/MirrorScreen';
 import { C } from './theme';
 
 // Suppress RN's in-app yellow LogBox overlay. Logs still go to logcat for
@@ -34,6 +35,7 @@ export type RootStackParamList = {
   OverlayConfig: undefined;
   TrackCreator: { initial?: import('./types').Track } | undefined;
   Tracks: undefined;
+  Mirror: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -54,6 +56,10 @@ export default function App() {
           headerTintColor: C.text,
           headerTitleStyle: { fontWeight: '700' },
           contentStyle: { backgroundColor: C.bg },
+          // Lock the rest of the app to portrait. The Mirror screen overrides
+          // this to 'all' so the user can rotate the phone to landscape and
+          // get a tighter fit on the 1024x600 laptimer canvas.
+          orientation: 'portrait',
         }}
       >
         <Stack.Screen name="Home"     component={HomeScreen}     options={{ headerShown: false }} />
@@ -68,6 +74,7 @@ export default function App() {
         <Stack.Screen name="OverlayConfig" component={OverlayConfigScreen} options={{ title: 'Overlay anpassen' }} />
         <Stack.Screen name="TrackCreator"  component={TrackCreatorScreen}  options={{ title: 'Strecke erstellen' }} />
         <Stack.Screen name="Tracks"        component={TracksScreen}        options={{ title: 'Strecken' }} />
+        <Stack.Screen name="Mirror"        component={MirrorScreen}        options={{ headerShown: false, orientation: 'all' }} />
       </Stack.Navigator>
     </NavigationContainer>
   );

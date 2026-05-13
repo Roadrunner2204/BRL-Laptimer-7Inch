@@ -55,9 +55,9 @@ extern CarProfile g_car_profile;
 bool car_profile_load(const char *filename);
 
 // Load a .brl profile into a caller-supplied CarProfile struct instead of
-// overwriting g_car_profile. Used e.g. by the OBD BLE module to load
-// /cars/OBD.brl as an OBD2 fallback when the main vehicle profile doesn't
-// have OBD2 sensors. Returns true on success.
+// overwriting g_car_profile. Used e.g. by the OBD BLE module to load a
+// vehicle-specific profile (BMW UDS DIDs etc.) alongside the einkompilierten
+// Universal-OBD2-Liste. Returns true on success.
 bool car_profile_load_into(const char *filename, CarProfile *dst);
 
 // Serialize the current g_car_profile back to /cars/<filename> as an

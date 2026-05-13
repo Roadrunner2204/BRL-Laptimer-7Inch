@@ -1,5 +1,5 @@
 /**
- * can_bus.cpp -- Direct CAN bus reader via TWAI + SN65HVD230
+ * can_bus.cpp -- Direct CAN bus reader via TWAI + on-board TJA1051
  *
  * Reads raw CAN frames, matches them against the active car profile's
  * sensor definitions, extracts values using scale/offset, and writes

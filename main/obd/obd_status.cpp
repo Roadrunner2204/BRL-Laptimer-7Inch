@@ -2,7 +2,7 @@
  * obd_status.cpp — per-FieldId freshness tracker.
  *
  * Tiny module: 256 uint32_t timestamps (1 KB total). No locking — writes
- * happen on the logic core (obd_bt poll, analog_in_poll), reads happen
+ * happen on the logic core (obd_bt poll), reads happen
  * on logic core (display picker via obd_status_is_live) and on the http
  * server task (renders JSON). Single 32-bit-aligned word writes are
  * atomic on RISC-V; readers see either the old or the new ms value, not

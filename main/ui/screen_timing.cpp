@@ -29,7 +29,6 @@
 #include "../data/car_profile.h"
 #include "../wifi/wifi_mgr.h"
 #include "../camera_link/cam_link.h"
-#include "../sensors/analog_in.h"
 #include "../storage/session_store.h"
 #include "compat.h"
 static const char *TAG = "screen_timing";
@@ -96,7 +95,7 @@ int32_t timing_get_delta_scale() { return (int32_t)g_dash_cfg.delta_scale_ms; }
 // Field metadata — `field_title()` lives in dash_config.cpp now so the
 // picker UI, the slot renderer, BRL Studio, and the Android app all
 // agree on what each slot is called. See dash_config.h for the slot
-// ID layout (built-in / legacy OBD / dynamic OBD / dynamic CAN / analog).
+// ID layout (built-in / legacy OBD / dynamic OBD / dynamic CAN).
 // ---------------------------------------------------------------------------
 
 // Is this field a time value? (needs more chars → smaller font than pure numerics)
@@ -325,16 +324,41 @@ static int build_z3_fields(uint8_t *out, int max_count, bool /*include_silent*/)
     };
 
     if (g_dash_cfg.veh_conn_mode == 0) {
-        // OBD-via-BLE: combine OBD.brl (Mode 01 generic) + active
-        // vehicle profile (Mode 22 BMW DIDs + extra Mode 01 PIDs).
-        // PT-CAN broadcast (proto=0) sensors are skipped here — only
-        // the CAN-direct path can read those passively.
+        // OBD-via-BLE: kombiniere OBD.brl (Mode 01 universal) + aktives
+        // Vehicle-Profil. PT-CAN-Broadcast (proto=0) wird hier übersprungen
+        // — den kann nur der CAN-direct-Pfad passiv lesen.
+        //
+        // Discovery-Filter: wenn der Adapter (≥ v1.1) eine Bitmap der
+        // supporteten PIDs geliefert hat, zeigen wir hier nur die PIDs zur
+        // Auswahl die das Auto wirklich kann. Adapter v1.0 oder Discovery-
+        // Antwort ausgeblieben → obd_pid_is_supported liefert immer true,
+        // dann sieht der User wie bisher alle PIDs der OBD.brl.
         const CarProfile *p_obd = (const CarProfile *)obd_bt_pid_profile();
         const CarProfile *p_veh = (const CarProfile *)obd_bt_vehicle_profile();
         int obd_n = p_obd ? p_obd->sensor_count : 0;
+
+        // Computed Live-Werte zur Auswahl, sofern die Inputs supportet sind:
+        //   - Boost (calc) braucht PID 0x0B (MAP). Baro 0x33 ist optional —
+        //     wenn nicht da, nehmen wir 101.3 kPa NN als Annahme.
+        //   - AFR braucht irgendeinen Lambda-Sensor (PID 0x14/0x24).
+        //   - Power braucht RPM (0x0C) + Reference Torque (0x63).
+        //   - Torque braucht Reference Torque (0x63) + Load (0x04) oder ActualTrq (0x62).
+        if (obd_pid_is_supported(0x0B)) push(FIELD_BOOST);
+        if (obd_pid_is_supported(0x14) || obd_pid_is_supported(0x24)) push(FIELD_AFR);
+        if (obd_pid_is_supported(0x0C) && obd_pid_is_supported(0x63)) {
+            push(FIELD_POWER_KW);
+            push(FIELD_POWER_PS);
+        }
+        if (obd_pid_is_supported(0x63)
+            && (obd_pid_is_supported(0x62) || obd_pid_is_supported(0x04))) {
+            push(FIELD_TORQUE_NM);
+        }
+
         if (p_obd) {
             for (int i = 0; i < obd_n && i < 64; i++) {
                 if (p_obd->sensors[i].proto != 7) continue;
+                uint8_t pid = (uint8_t)(p_obd->sensors[i].can_id & 0xFFu);
+                if (!obd_pid_is_supported(pid)) continue;
                 push((uint8_t)(DASH_SLOT_OBD_DYN_BASE + i));
             }
         }
@@ -345,6 +369,11 @@ static int build_z3_fields(uint8_t *out, int max_count, bool /*include_silent*/)
                  j++) {
                 uint8_t pr = p_veh->sensors[j].proto;
                 if (pr != 7 && pr != 2) continue;   // skip PT-CAN
+                if (pr == 7) {
+                    // Mode-01 PIDs auch im Vehicle-Profil filtern
+                    uint8_t pid = (uint8_t)(p_veh->sensors[j].can_id & 0xFFu);
+                    if (!obd_pid_is_supported(pid)) continue;
+                }
                 push((uint8_t)(DASH_SLOT_OBD_DYN_BASE + obd_n + j));
             }
         }
@@ -359,11 +388,6 @@ static int build_z3_fields(uint8_t *out, int max_count, bool /*include_silent*/)
         }
     }
 
-    // Analog inputs always available (channels are physical).
-    push(FIELD_AN1);
-    push(FIELD_AN2);
-    push(FIELD_AN3);
-    push(FIELD_AN4);
     // Off slot last
     push(FIELD_NONE);
     return n;
@@ -432,13 +456,18 @@ static void open_field_picker(int zone, int slot, uint8_t current_field) {
                 for (int i = 0; i < p->sensor_count; i++) {
                     if (p->sensors[i].proto != 7) continue;
                     uint8_t pid = (uint8_t)(p->sensors[i].can_id & 0xFFu);
+                    if (!obd_pid_is_supported(pid)) continue;
                     if (!obd_pid_cache_is_dead(pid)) alive++;
                 }
             }
             snprintf(sub, sizeof(sub),
                      i18n_get_language() == 0
-                       ? "Quelle: OBD.brl  ·  %d Sensoren erkannt"
-                       : "Source: OBD.brl  ·  %d sensors detected",
+                       ? (obd_pid_discovery_complete()
+                          ? "Quelle: Universal OBD2  ·  %d Sensoren (Auto-Discovery)"
+                          : "Quelle: Universal OBD2  ·  %d Sensoren erkannt")
+                       : (obd_pid_discovery_complete()
+                          ? "Source: Universal OBD2  ·  %d sensors (auto-discovered)"
+                          : "Source: Universal OBD2  ·  %d sensors detected"),
                      alive);
         } else if (g_car_profile.loaded) {
             snprintf(sub, sizeof(sub),
@@ -492,7 +521,7 @@ static void open_field_picker(int zone, int slot, uint8_t current_field) {
     // (OBD-BLE or CAN-direct) the user is on, filtered to sensors that
     // this specific car actually answers. Zone 1/2 stay on the fixed
     // built-in list. Buffer needs to accommodate up to 64 .brl sensors
-    // + 4 analog + OFF + slack.
+    // + OFF + slack.
     static uint8_t z3_fields_buf[80];
     const uint8_t *fields;
     int n_fields;
@@ -514,9 +543,9 @@ static void open_field_picker(int zone, int slot, uint8_t current_field) {
         bool active = (fid == current_field);
 
         // Live-indicator: every sensor in the picker has a freshness
-        // state. Built-in fields (1..31) are always live. Analog inputs
-        // are always live. OBD/CAN dynamic + legacy OBD fields go via
-        // field_is_live() which checks obd_dynamic freshness.
+        // state. Built-in fields (1..31) are always live. OBD/CAN
+        // dynamic + legacy OBD fields go via field_is_live() which
+        // checks obd_dynamic freshness.
         bool live = field_is_live(fid) || fid == FIELD_NONE;
 
         if (active) {
@@ -841,6 +870,14 @@ lv_obj_t *timing_screen_build() {
     lv_label_set_text(tw.sb_obd_lbl, LV_SYMBOL_BLUETOOTH " OBD --");
     brl_style_label(tw.sb_obd_lbl, &BRL_FONT_16, BRL_CLR_TEXT_DIM);
     lv_obj_set_pos(tw.sb_obd_lbl, 900, 12);
+
+    // Reference-lap indicator — small dot + label between OBD and the
+    // track name. Green ● when a reference lap is active (delta bar has
+    // something to compare against), grey ○ when there isn't one yet.
+    tw.sb_ref_lbl = lv_label_create(sb);
+    lv_label_set_text(tw.sb_ref_lbl, "\xE2\x97\x8B no Ref");   // ○
+    brl_style_label(tw.sb_ref_lbl, &BRL_FONT_14, BRL_CLR_TEXT_DIM);
+    lv_obj_set_pos(tw.sb_ref_lbl, 760, 14);
 
     // ── Delta bar (80 px, fixed) ──────────────────────────────────────────
     const int DBAR_GAP = 6;

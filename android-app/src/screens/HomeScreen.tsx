@@ -250,6 +250,12 @@ export default function HomeScreen({ navigation }: Props) {
                 : <Text style={s.liveBtnTxt}>Neue Session</Text>}
             </TouchableOpacity>
           </View>
+          <TouchableOpacity
+            style={s.mirrorBtn}
+            onPress={() => navigation.navigate('Mirror')}
+          >
+            <Text style={s.mirrorBtnTxt}>📱  Display fernsteuern</Text>
+          </TouchableOpacity>
         </View>
       )}
 
@@ -414,6 +420,9 @@ const s = StyleSheet.create({
                   paddingVertical: 10, alignItems: 'center',
                   borderWidth: 1, borderColor: C.border },
   liveBtnTxt:   { color: C.text, fontSize: 13, fontWeight: '700' },
+  mirrorBtn:    { marginTop: 8, backgroundColor: C.accent, borderRadius: 8,
+                  paddingVertical: 11, alignItems: 'center' },
+  mirrorBtnTxt: { color: '#fff', fontSize: 13, fontWeight: '700' },
 
   quickRow:     { flexDirection: 'row', gap: 10, marginBottom: 18 },
   quickCard:    { flex: 1, backgroundColor: C.surface, borderRadius: 12, padding: 14,

@@ -20,11 +20,9 @@
  * forward rate so the link stays headroom-positive. */
 #define PUMP_GPS_PERIOD_MS     100   /* 10 Hz */
 #define PUMP_OBD_PERIOD_MS     50    /* 20 Hz */
-#define PUMP_ANALOG_PERIOD_MS  100   /* 10 Hz */
 
 static uint64_t s_last_gps_ms    = 0;
 static uint64_t s_last_obd_ms    = 0;
-static uint64_t s_last_analog_ms = 0;
 
 /* Anchor for telemetry timestamps. We send esp_timer ms (boot-monotonic
  * on the main side) — the cam stamps its own monotonic clock too, and
@@ -74,20 +72,6 @@ extern "C" void cam_link_pump_telemetry(void)
         cam_link_send_obd(&p);
     }
 
-    if (t - s_last_analog_ms >= PUMP_ANALOG_PERIOD_MS) {
-        s_last_analog_ms = t;
-        CamTelemetryAnalog p = {};
-        p.gps_utc_ms = t;
-        uint8_t mask = 0;
-        for (int i = 0; i < ANALOG_CHANNELS && i < 4; i++) {
-            const AnalogChannel &a = g_state.analog[i];
-            p.raw_mv[i] = a.raw_mv;
-            p.value[i]  = a.value;
-            if (a.valid) mask |= (uint8_t)(1u << i);
-        }
-        p.valid_mask = mask;
-        cam_link_send_analog(&p);
-    }
 }
 
 /* Build + send a lap marker from a freshly-completed RecordedLap. Called

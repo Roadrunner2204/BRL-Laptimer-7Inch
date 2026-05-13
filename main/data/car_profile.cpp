@@ -601,9 +601,14 @@ int car_profile_fetch_list(CarProfileEntry *entries, int max_count)
                 display_str = sep2 + 1;
             }
 
-            // First field must be a .brl filename
+            // First field must be a .brl filename. OBD.brl wird ausgefiltert —
+            // OBD-BLE-Mode nutzt die fest einkompilierte Universal-Liste, der
+            // User soll keine generische OBD.brl mehr als "Vehicle Profile"
+            // auswählen können. Defensive: greift auch wenn die Server-list.txt
+            // den Eintrag noch enthält.
             ll = strlen(line);
-            if (ll >= 5 && strcmp(line + ll - 4, ".brl") == 0) {
+            if (ll >= 5 && strcmp(line + ll - 4, ".brl") == 0
+                && strcasecmp(line, "OBD.brl") != 0) {
                 strncpy(entries[count].filename, line, CAR_NAME_LEN - 1);
                 entries[count].filename[CAR_NAME_LEN - 1] = '\0';
                 strncpy(entries[count].make, make_str, CAR_NAME_LEN - 1);
@@ -620,9 +625,10 @@ int car_profile_fetch_list(CarProfileEntry *entries, int max_count)
                 count++;
             }
         } else {
-            // Legacy format: just filename
+            // Legacy format: just filename — same OBD.brl filter as above.
             ll = strlen(line);
-            if (ll >= 5 && strcmp(line + ll - 4, ".brl") == 0) {
+            if (ll >= 5 && strcmp(line + ll - 4, ".brl") == 0
+                && strcasecmp(line, "OBD.brl") != 0) {
                 strncpy(entries[count].filename, line, CAR_NAME_LEN - 1);
                 entries[count].filename[CAR_NAME_LEN - 1] = '\0';
                 entries[count].make[0] = '\0';

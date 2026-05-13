@@ -194,6 +194,8 @@ static const char* const s_str[2][TR_COUNT] = {
     /* TR_VIDEO_SD_FREE      */ "SD frei",
     /* TR_VIDEO_REC_STATUS   */ "Status",
     /* TR_VIDEO_RESOLUTION   */ "Auflösung",
+    /* TR_BRIGHTNESS_LABEL   */ "Helligkeit",
+    /* TR_BRIGHTNESS_SUB     */ "Display-Hintergrundbeleuchtung",
 },
 // ── English ─────────────────────────────────────────────────────────────────
 {
@@ -381,6 +383,8 @@ static const char* const s_str[2][TR_COUNT] = {
     /* TR_VIDEO_SD_FREE      */ "SD free",
     /* TR_VIDEO_REC_STATUS   */ "Status",
     /* TR_VIDEO_RESOLUTION   */ "Resolution",
+    /* TR_BRIGHTNESS_LABEL   */ "Brightness",
+    /* TR_BRIGHTNESS_SUB     */ "Display backlight",
 },
 };
 

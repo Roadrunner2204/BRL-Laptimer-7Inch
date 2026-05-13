@@ -52,12 +52,11 @@ bool cam_link_ping(void);
 /* ── Telemetry stream (call from logic task at native sample rates) ── */
 bool cam_link_send_gps(const CamTelemetryGps    *t);
 bool cam_link_send_obd(const CamTelemetryObd    *t);
-bool cam_link_send_analog(const CamTelemetryAnalog *t);
 bool cam_link_send_lap_marker(const CamLapMarker *m);
 
 /* ── Telemetry pump (defined in cam_link_pump.cpp) ────────────────── *
- * Reads g_state and forwards GPS / OBD / analog samples at throttled
- * rates while a recording is active. Call once per logic_task iteration. */
+ * Reads g_state and forwards GPS / OBD samples at throttled rates while
+ * a recording is active. Call once per logic_task iteration. */
 void cam_link_pump_telemetry(void);
 
 /* Build + send a CAM_FRAME_LAP_MARKER from session.laps[lap_idx]. Call

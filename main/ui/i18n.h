@@ -214,6 +214,9 @@ enum TrKey : uint8_t {
     TR_VIDEO_SD_FREE,
     TR_VIDEO_REC_STATUS,
     TR_VIDEO_RESOLUTION,
+    // Display brightness setting
+    TR_BRIGHTNESS_LABEL,
+    TR_BRIGHTNESS_SUB,
     TR_COUNT
 };
 

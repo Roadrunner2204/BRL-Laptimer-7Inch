@@ -17,7 +17,7 @@ the video UI when a cam is actually connected.
 | Touch            | GT911 capacitive, 5-point, I2C                   |
 | Wi-Fi / BT       | ESP32-C6 co-processor (Wi-Fi 6 / BLE 5) via SDIO |
 | GPS              | u-blox TAU1201, UART + PPS, 10 Hz, L1+L5         |
-| CAN Bus          | SN65HVD230 transceiver module                    |
+| CAN Bus          | On-board TJA1051T/3/1J (Waveshare 7B)            |
 | SD Card (fixed)  | SDMMC 4-bit, FAT32 — non-user-removable          |
 | Camera (optional)| External DFR1172 + RPi Cam v1.3 OV5647 over UART2 + WiFi |
 
@@ -31,12 +31,15 @@ the video UI when a cam is actually connected.
 | TX     | 3    | IO3        | ESP32 TX -> TAU1201 RX   |
 | PPS    | 4    | IO4        | Pulse-per-second input   |
 
-### CAN Bus (SN65HVD230 Transceiver)
+### CAN Bus (on-board TJA1051T/3/1J)
 
-| Signal | GPIO | Header Pin | Notes                         |
-|--------|------|------------|-------------------------------|
-| TX     | 5    | IO5        | ESP32 TX -> SN65HVD230 D pin  |
-| RX     | 28   | IO28       | SN65HVD230 R pin -> ESP32     |
+| Signal | GPIO | Notes                                     |
+|--------|------|-------------------------------------------|
+| TX     | 22   | ESP32 TXD -> TJA1051 (CANH/CANL on board) |
+| RX     | 21   | TJA1051 RXD -> ESP32                      |
+
+CANH/CANL are exposed on the dedicated CAN connector — no external
+transceiver module required.
 
 ### ESP32-C6 Co-Processor (esp_hosted, SDIO Slot 1)
 
@@ -95,7 +98,7 @@ Two modes selectable in Settings:
 | Mode            | Hardware              | Data Source                    |
 |-----------------|-----------------------|--------------------------------|
 | **OBD Dongle**  | BRL BLE OBD Adapter   | Standard OBD-II PIDs via BLE   |
-| **CAN Bus**     | SN65HVD230 module     | Direct CAN signals via .brl profile |
+| **CAN Bus**     | On-board TJA1051      | Direct CAN signals via .brl profile |
 
 ## Software Stack
 
@@ -104,7 +107,7 @@ Two modes selectable in Settings:
 - **BSP:** `waveshare/esp32_p4_wifi6_touch_lcd_7b`
 - **WiFi:** `esp_hosted` 2.10.0 + `esp_wifi_remote` ~1.3.0 (proxied to C6)
 - **Bluetooth:** NimBLE host on P4, controller on C6 via VHCI
-- **CAN:** ESP32-P4 TWAI peripheral + SN65HVD230 transceiver
+- **CAN:** ESP32-P4 TWAI peripheral + on-board TJA1051 transceiver
 - **JPEG decode:** `driver/jpeg_decode.h` (HW engine, used only for cam preview)
 
 ## Project Structure
@@ -115,9 +118,8 @@ main/                            Laptimer firmware (this directory)
   data/                          AppState, lap/session/track/car structs
   gps/                           u-blox TAU1201 NMEA parser, PPS, 10 Hz config
   timing/                        Lap/sector timing, live delta
-  can/                           Direct CAN via TWAI + SN65HVD230
+  can/                           Direct CAN via TWAI + on-board TJA1051
   obd/                           OBD-II via BLE (NimBLE)
-  sensors/                       Analog inputs (4× ADC1)
   wifi/                          AP/STA mgr + HTTP data_server
   storage/                       SD mount + session/track persistence
   camera_link/                   ↔ cam module:
@@ -212,7 +214,7 @@ See `cam-firmware/README.md` for the cam-side bring-up status.
 
 ## ✅ Done — Laptimer side
 
-- **GPS / OBD / CAN / Analog inputs** — production
+- **GPS / OBD / CAN** — production
 - **LVGL UI** — 4-tile menu, timing dashboard with configurable zones,
   tracks/history/settings screens
 - **WiFi AP + DNS captive-portal redirect** for the phone app
@@ -222,7 +224,7 @@ See `cam-firmware/README.md` for the cam-side bring-up status.
   protocol (`SOF | TYPE | LEN-LE | PAYLOAD | CRC8/MAXIM`)
   - Auto REC START on `session_store_begin()`
   - Auto REC STOP on timing-screen back button
-  - Forwards GPS @ 10 Hz, OBD @ 20 Hz, analog @ 10 Hz, lap markers
+  - Forwards GPS @ 10 Hz, OBD @ 20 Hz, lap markers
   - Decodes STATUS heartbeat (link health, REC state, IP, SD free)
   - Drops frames silently when no cam is connected — fail-safe
 - **REC indicator** in status bar (auto-shown only when link_up)
